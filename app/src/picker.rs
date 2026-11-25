@@ -234,11 +234,12 @@ impl Picker {
             return o;
         }
         let screen = ctx.content_rect();
-        let size = vec2((screen.width() * 0.8).min(1100.0), (screen.height() * 0.8).min(760.0));
+        let size = vec2((screen.width() * 0.8).min(1100.0), (screen.height() * 0.88).min(980.0));
         let mut close = false;
         let what = if self.kind == ArtKind::Cover { "cover" } else { "banner" };
         let resp = egui::Modal::new(egui::Id::unique("art_picker")).backdrop_color(Color32::from_black_alpha(120)).show(ctx, |ui| {
             ui.set_width(size.x);
+            let top = ui.cursor().top();
             ui.horizontal(|ui| {
                 ui.heading(format!("Choose a {what}"));
                 ui.label(theme::hint(&self.game_name));
@@ -296,7 +297,9 @@ impl Picker {
             ui.separator();
             let tile = if self.kind == ArtKind::Cover { vec2(150.0, 225.0) } else { vec2(330.0, 107.0) };
             let mut picked = None;
-            egui::ScrollArea::vertical().max_height(size.y - 130.0).auto_shrink([false, false]).show(ui, |ui| {
+            // The grid fills whatever height the header left over.
+            let grid_h = (size.y - (ui.cursor().top() - top)).max(240.0);
+            egui::ScrollArea::vertical().min_scrolled_height(grid_h).max_height(grid_h).auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
                     for (i, t) in self.tiles.iter().enumerate() {
