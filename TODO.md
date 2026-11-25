@@ -8,7 +8,7 @@
 - [ ] GOG (GOG Galaxy / installed games)
 - [ ] Epic Games Store
 - [ ] Xbox / Microsoft Store (PC Game Pass)
-- [ ] Emulators (ROM folders → per-system launch command)
+- [ ] **Emulator auto-scanners** – point at ROM folders, detect the system (RetroArch, Dolphin, PCSX2, RPCS3, Ryujinx/yuzu forks, Cemu, DuckStation, PPSSPP…), create entries with the right launch command, then fetch metadata and covers per platform
 - [ ] Battle.net, EA app, Ubisoft Connect
 
 ## Library & UI
@@ -23,6 +23,17 @@
 ## Metadata
 - [ ] IGDB as an additional metadata source (richer data for non-Steam games)
 - [ ] Manual "search and match" when automatic name matching fails
+
+## Playtime & stats
+- [x] Playtime for custom games (tracked while the launched process runs)
+- [ ] Track the real game process when a custom entry starts a launcher that exits immediately (follow child processes / watch the install folder)
+- [ ] **Statistics** – total/recent playtime, most played, per-platform and per-genre breakdowns, completion status
+
+## Integrations (later, once the core UI and basics are solid)
+- [ ] **Special K** – optionally inject Special K automatically when launching a game (like Playnite's Special K Helper), with per-game on/off
+- [ ] **RetroAchievements** – show achievement progress for emulated games
+- [ ] **Achievements (Success Story-style)** – Steam and other platforms' achievements in the details view
+- [ ] **HowLongToBeat** – main/extra/completionist times in the details view
 
 ## Extras
 - [ ] Fullscreen / controller mode (gamepad navigation, big-picture style)

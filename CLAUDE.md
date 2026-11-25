@@ -9,6 +9,7 @@ Native Windows game library (Playnite alternative). Rust workspace: `core/` (lib
 - One SQLite handle per thread (`Library::open`), WAL mode. Scraped metadata never overwrites user edits (`COALESCE`).
 - Verify egui/eframe APIs against the crate source in `~/.cargo/registry` — they change between releases.
 - Keep comments to 1–2 lines.
+- Never drive the user's desktop (mouse, keyboard, screenshots, closing their Gamut) without asking first; verify with tests/CLI/logs.
 
 ## Test
 `cargo test`; `gamut-cli --data <tmp> scan|fetch|list|seed N` exercises core against the real Steam install.
