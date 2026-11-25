@@ -43,6 +43,18 @@ pub fn release(s: &str) -> String {
     }
 }
 
+/// Typed release date back to storage form: "DD/MM/YYYY" -> "YYYY-MM-DD"; anything else is kept.
+pub fn release_input(s: &str) -> String {
+    let p: Vec<&str> = s.trim().split('/').collect();
+    match p.as_slice() {
+        [d, m, y] if y.len() == 4 => match (d.parse::<u32>(), m.parse::<u32>(), y.parse::<u32>()) {
+            (Ok(d), Ok(m), Ok(y)) if (1..=31).contains(&d) && (1..=12).contains(&m) => format!("{y:04}-{m:02}-{d:02}"),
+            _ => s.trim().to_string(),
+        },
+        _ => s.trim().to_string(),
+    }
+}
+
 pub fn opt(s: &str) -> Option<String> {
     let t = s.trim();
     (!t.is_empty()).then(|| t.to_string())
@@ -50,6 +62,13 @@ pub fn opt(s: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_round_trip() {
+        assert_eq!(super::release_input("27/09/2022"), "2022-09-27");
+        assert_eq!(super::release(&super::release_input("05/10/2016")), "05/10/2016");
+        assert_eq!(super::release_input("2016"), "2016");
+    }
+
     #[test]
     fn dates() {
         assert_eq!(super::date(0), "Never");

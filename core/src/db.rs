@@ -330,11 +330,14 @@ impl Library {
     pub fn update_user_fields(&self, g: &Game) -> Result<()> {
         self.conn.execute(
             "UPDATE games SET name = ?2, exe = ?3, args = ?4, work_dir = ?5, favorite = ?6, hidden = ?7,
-             description = ?8, developer = ?9, publisher = ?10, release_date = ?11, genres = ?12
+             description = ?8, developer = ?9, publisher = ?10, release_date = ?11, genres = ?12,
+             platform = ?13, store = ?14, completion = ?15, critic_score = ?16, community_score = ?17,
+             tags = ?18, series = ?19
              WHERE id = ?1",
             params![
                 g.id, g.name, g.exe, g.args, g.work_dir, g.favorite, g.hidden,
-                g.description, g.developer, g.publisher, g.release_date, g.genres
+                g.description, g.developer, g.publisher, g.release_date, g.genres,
+                g.platform, g.store, g.completion, g.critic_score, g.community_score, g.tags, g.series
             ],
         )?;
         Ok(())

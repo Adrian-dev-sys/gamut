@@ -1,3 +1,4 @@
+use crate::editor::{Editor, EditorOutcome, Lists};
 use crate::notify::Toasts;
 use crate::picker::{ArtKind, Outcome, Picker};
 use crate::theme::{self, ACCENT, CARD, CARD_HI, GOOD, TEXT_DIM};
@@ -62,16 +63,6 @@ enum Action {
     PickArt(i64, ArtKind),
 }
 
-struct Editor {
-    id: i64,
-    source: Source,
-    name: String,
-    exe: String,
-    args: String,
-    work_dir: String,
-    description: String,
-    cover_file: Option<std::path::PathBuf>,
-}
 
 pub struct GamutApp {
     paths: Paths,
@@ -97,6 +88,8 @@ pub struct GamutApp {
     hero_tx: Sender<(i64, Option<ColorImage>)>,
     hero_rx: Receiver<(i64, Option<ColorImage>)>,
     editor: Option<Editor>,
+    /// Genre and completion suggestions, gathered when the editor opens.
+    ed_lists: (Vec<(String, usize)>, Vec<(String, usize)>),
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     picker: Option<Picker>,
@@ -151,6 +144,7 @@ impl GamutApp {
             hero_tx,
             hero_rx,
             editor: None,
+            ed_lists: Default::default(),
             settings: None,
             confirm_remove: None,
             picker: None,
@@ -274,16 +268,8 @@ impl GamutApp {
                 }
                 Action::Edit(id) => {
                     if let Some(g) = self.game(id) {
-                        self.editor = Some(Editor {
-                            id,
-                            source: g.source,
-                            name: g.name.clone(),
-                            exe: g.exe.clone().unwrap_or_default(),
-                            args: g.args.clone().unwrap_or_default(),
-                            work_dir: g.work_dir.clone().unwrap_or_default(),
-                            description: g.description.clone().unwrap_or_default(),
-                            cover_file: None,
-                        });
+                        self.editor = Some(Editor::from_game(g));
+                        self.ed_lists = editor_facets(&self.games);
                     }
                 }
                 Action::ToggleFav(id) | Action::ToggleHidden(id) => {
@@ -392,16 +378,8 @@ impl GamutApp {
                     self.workers.rescan();
                 }
                 if ui.button("Add game").clicked() {
-                    self.editor = Some(Editor {
-                        id: 0,
-                        source: Source::Custom,
-                        name: String::new(),
-                        exe: String::new(),
-                        args: String::new(),
-                        work_dir: String::new(),
-                        description: String::new(),
-                        cover_file: None,
-                    });
+                    self.editor = Some(Editor::new_custom());
+                    self.ed_lists = editor_facets(&self.games);
                 }
             });
         });
@@ -799,88 +777,17 @@ impl GamutApp {
 
     fn editor_window(&mut self, ctx: &egui::Context) {
         let Some(ed) = self.editor.as_mut() else { return };
-        let mut open = true;
-        let mut save = false;
-        let title = if ed.id == 0 { "Add game" } else { "Edit game" };
-        egui::Window::new(title)
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(540.0)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                dialog_header(ui, title, &mut open);
-                egui::Grid::new("ed").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-                    ui.label("Name");
-                    ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(400.0));
-                    ui.end_row();
-                    if ed.source == Source::Custom {
-                        ui.label("Executable");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut ed.exe).desired_width(320.0).hint_text("exe, shortcut or URL"));
-                            if ui.button("Browse…").clicked() {
-                                if let Some(p) = rfd::FileDialog::new()
-                                    .add_filter("Programs", &["exe", "bat", "cmd", "lnk", "url"])
-                                    .add_filter("All files", &["*"])
-                                    .pick_file()
-                                {
-                                    if ed.name.trim().is_empty() {
-                                        if let Some(stem) = p.file_stem() {
-                                            ed.name = stem.to_string_lossy().into();
-                                        }
-                                    }
-                                    ed.exe = p.to_string_lossy().into();
-                                }
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Arguments");
-                        ui.add(egui::TextEdit::singleline(&mut ed.args).desired_width(400.0));
-                        ui.end_row();
-                        ui.label("Working dir");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut ed.work_dir)
-                                .desired_width(400.0)
-                                .hint_text("defaults to the exe's folder"),
-                        );
-                        ui.end_row();
-                    }
-                    ui.label("Cover");
-                    ui.horizontal(|ui| {
-                        if ui.button("Choose image…").clicked() {
-                            ed.cover_file = rfd::FileDialog::new()
-                                .add_filter("Images", &["jpg", "jpeg", "png", "webp"])
-                                .pick_file();
-                        }
-                        let t = match &ed.cover_file {
-                            Some(p) => p.file_name().unwrap_or_default().to_string_lossy().to_string(),
-                            None => "auto (scraped)".into(),
-                        };
-                        ui.label(RichText::new(t).color(TEXT_DIM));
-                    });
-                    ui.end_row();
-                    ui.label("Description");
-                    // Fixed-height box: long store descriptions scroll instead of stretching the dialog.
-                    egui::ScrollArea::vertical().id_salt("ed_desc").max_height(240.0).show(ui, |ui| {
-                        ui.add(egui::TextEdit::multiline(&mut ed.description).desired_width(400.0).desired_rows(10));
-                    });
-                    ui.end_row();
-                });
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let ok = !ed.name.trim().is_empty();
-                    if ui.add_enabled(ok, egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
-                        save = true;
-                    }
-                });
-            });
-        if save {
-            if let Err(e) = self.save_editor() {
-                self.toasts.error(format!("{e:#}"));
+        let lists = Lists { platforms: &self.platforms, tags: &self.tags, genres: &self.ed_lists.0, completions: &self.ed_lists.1 };
+        match ed.show(ctx, &lists) {
+            EditorOutcome::Open => {}
+            EditorOutcome::Cancel => self.editor = None,
+            EditorOutcome::Save => {
+                if let Err(e) = self.save_editor() {
+                    self.toasts.error(format!("Saving failed: {e:#}"));
+                }
+                self.editor = None;
             }
-            self.editor = None;
-        } else if !open {
-            self.editor = None;
+            EditorOutcome::PickArt(id, kind) => self.apply(Action::PickArt(id, kind)),
         }
     }
 
@@ -897,12 +804,12 @@ impl GamutApp {
             ed.id
         };
         let Some(mut g) = self.lib.get(id)? else { return Ok(()) };
-        g.name = ed.name.trim().into();
-        g.exe = opt(&ed.exe);
-        g.args = opt(&ed.args);
-        g.work_dir = opt(&ed.work_dir);
-        g.description = opt(&ed.description);
+        ed.apply_to(&mut g);
         self.lib.update_user_fields(&g)?;
+        self.toasts.success(format!("Saved {}.", g.name));
+        // New tags/platforms should show up in the filters right away.
+        self.reload_one(id);
+        (self.platforms, self.tags) = facets(&self.games);
         if let Some(p) = ed.cover_file {
             let bytes = std::fs::read(p)?;
             images::store_cover(&bytes, &self.paths.cover(id), &self.paths.thumb(id))?;
@@ -1214,7 +1121,7 @@ fn art_pill(ui: &mut Ui, c: egui::Pos2, text: &str, salt: &str) -> bool {
 }
 
 /// Dialog title row with a close button (also Esc); clears `open` when used.
-fn dialog_header(ui: &mut Ui, title: &str, open: &mut bool) {
+pub(crate) fn dialog_header(ui: &mut Ui, title: &str, open: &mut bool) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).size(17.0).color(Color32::WHITE));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1405,6 +1312,26 @@ fn facets(games: &[Game]) -> (Vec<(String, usize)>, Vec<(String, usize)>) {
         v
     };
     (sorted(p, true), sorted(t, false))
+}
+
+/// Genre and completion values in the library, for the editor's suggestions.
+fn editor_facets(games: &[Game]) -> (Vec<(String, usize)>, Vec<(String, usize)>) {
+    let mut genres: std::collections::HashMap<&str, usize> = Default::default();
+    let mut comp: std::collections::HashMap<&str, usize> = Default::default();
+    for g in games {
+        for x in split_list(&g.genres) {
+            *genres.entry(x).or_default() += 1;
+        }
+        if let Some(c) = g.completion.as_deref() {
+            *comp.entry(c).or_default() += 1;
+        }
+    }
+    let sorted = |m: std::collections::HashMap<&str, usize>| {
+        let mut v: Vec<(String, usize)> = m.into_iter().map(|(k, n)| (k.to_string(), n)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v
+    };
+    (sorted(genres), sorted(comp))
 }
 
 /// External reference pages for a game (just links, nothing is fetched).
