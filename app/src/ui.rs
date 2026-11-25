@@ -920,10 +920,10 @@ impl eframe::App for GamutApp {
         }
 
         egui::Panel::top("top")
-            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(12, 10)))
+            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 10)))
             .show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("status")
-            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(12, 5)))
+            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 5)))
             .show(ui, |ui| self.status_bar(ui));
         let central = egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
