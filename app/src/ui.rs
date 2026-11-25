@@ -100,6 +100,8 @@ pub struct GamutApp {
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     picker: Option<Picker>,
+    /// Lowercased names shared by several entries (e.g. Steam + PS5); their cards show the platform.
+    dup_names: HashSet<String>,
     ctx_handle: egui::Context,
     toasts: Toasts,
     /// Playnite folder + preview report awaiting confirmation.
@@ -154,6 +156,7 @@ impl GamutApp {
             settings: None,
             confirm_remove: None,
             picker: None,
+            dup_names: HashSet::new(),
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice),
             playnite: None,
@@ -231,6 +234,8 @@ impl GamutApp {
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
+        let mut seen = HashSet::new();
+        self.dup_names = self.games.iter().map(|g| g.name.to_lowercase()).filter(|n| !seen.insert(n.clone())).collect();
         let q = self.search.to_lowercase();
         let mut v: Vec<usize> = (0..self.games.len())
             .filter(|&i| {
@@ -465,6 +470,7 @@ impl GamutApp {
         let view = &self.view;
         let thumbs = &mut self.thumbs;
         let selected = &mut self.selected;
+        let dup_names = &self.dup_names;
         let opened_at = &mut self.opened_at;
         ui.spacing_mut().item_spacing.y = gap;
         ScrollArea::vertical().auto_shrink([false; 2]).show_rows(ui, row_h, rows, |ui, range| {
@@ -522,12 +528,24 @@ impl GamutApp {
                         let s = if is_sel { Stroke::new(2.5, ACCENT) } else { Stroke::new(1.5, ACCENT.gamma_multiply(0.8)) };
                         painter.rect_stroke(cover, r, s, StrokeKind::Outside);
                     }
+                    // Same name twice (e.g. Steam and PS5): tell them apart by platform.
+                    let mut title_w = card_w;
+                    if dup_names.contains(&g.name.to_lowercase()) {
+                        let tag = painter.layout_no_wrap(short_platform(g), FontId::proportional(11.5), TEXT_DIM);
+                        let pill = Rect::from_min_size(
+                            pos2(x + card_w - tag.size().x - 10.0, cover.bottom() + 6.0),
+                            tag.size() + vec2(10.0, 4.0),
+                        );
+                        painter.rect_filled(pill, CornerRadius::same(4), CARD);
+                        painter.galley(pill.min + vec2(5.0, 2.0), tag, TEXT_DIM);
+                        title_w = pill.left() - x - 6.0;
+                    }
                     let mut job = egui::text::LayoutJob::simple_singleline(
                         g.name.clone(),
                         FontId::proportional(13.5),
                         if is_sel { Color32::WHITE } else { Color32::from_gray(200) },
                     );
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(card_w);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(title_w.max(20.0));
                     let galley = painter.layout_job(job);
                     painter.galley(pos2(x, cover.bottom() + 6.0), galley, Color32::WHITE);
 
@@ -538,11 +556,7 @@ impl GamutApp {
                     if resp.double_clicked() {
                         actions.push(Action::Play(g.id));
                     }
-                    let id = g.id;
-                    resp.context_menu(|ui| {
-                        *selected = Some(id);
-                        context_menu(ui, g, actions);
-                    });
+                    resp.context_menu(|ui| context_menu(ui, g, actions));
                 }
             }
         });
@@ -796,12 +810,13 @@ impl GamutApp {
         let mut save = false;
         let title = if ed.id == 0 { "Add game" } else { "Edit game" };
         egui::Window::new(title)
-            .open(&mut open)
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .default_width(480.0)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
+                dialog_header(ui, title, &mut open);
                 egui::Grid::new("ed").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
                     ui.label("Name");
                     ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(340.0));
@@ -912,12 +927,13 @@ impl GamutApp {
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
             .unwrap_or_default();
         egui::Window::new("Settings")
-            .open(&mut open)
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_width(460.0);
+                dialog_header(ui, "Settings", &mut open);
                 theme::section(ui, "Steam");
                 egui::Grid::new("st").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     ui.label("Web API key");
@@ -998,17 +1014,20 @@ impl GamutApp {
     fn confirm_window(&mut self, ctx: &egui::Context) {
         let Some(id) = self.confirm_remove else { return };
         let name = self.game(id).map(|g| g.name.clone()).unwrap_or_default();
-        let mut close = false;
+        let (mut close, mut open) = (false, true);
         egui::Window::new("Remove game")
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
+                dialog_header(ui, "Remove game", &mut open);
                 ui.label(format!("Remove \"{name}\" from the library? The game's files aren't touched."));
                 ui.horizontal(|ui| {
                     if ui.button("Remove").clicked() {
-                        if let Err(e) = self.lib.delete(id) {
-                            self.toasts.error(format!("{e:#}"));
+                        match self.lib.delete(id) {
+                            Ok(()) => self.toasts.success(format!("Removed {name}.")),
+                            Err(e) => self.toasts.error(format!("{e:#}")),
                         }
                         for p in [self.paths.cover(id), self.paths.thumb(id), self.paths.hero(id)] {
                             let _ = std::fs::remove_file(p);
@@ -1024,7 +1043,7 @@ impl GamutApp {
                     }
                 });
             });
-        if close {
+        if close || !open {
             self.confirm_remove = None;
         }
     }
@@ -1034,12 +1053,13 @@ impl GamutApp {
         let mut open = true;
         let (mut go, mut cancel) = (false, false);
         egui::Window::new("Import from Playnite")
-            .open(&mut open)
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_width(520.0);
+                dialog_header(ui, "Import from Playnite", &mut open);
                 ui.label(theme::hint(&dir.display().to_string()));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -1197,6 +1217,29 @@ fn art_pill(ui: &mut Ui, c: egui::Pos2, text: &str, salt: &str) -> bool {
     r.clicked()
 }
 
+/// Dialog title row with a close button (also Esc); clears `open` when used.
+fn dialog_header(ui: &mut Ui, title: &str, open: &mut bool) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).size(17.0).color(Color32::WHITE));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (rect, r) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+            let r = r.on_hover_text("Close (Esc)");
+            let c = rect.center();
+            if r.hovered() {
+                ui.painter().circle_filled(c, 14.0, CARD_HI);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let st = Stroke::new(1.6, if r.hovered() { Color32::WHITE } else { TEXT_DIM });
+            ui.painter().line_segment([c + vec2(-5.0, -5.0), c + vec2(5.0, 5.0)], st);
+            ui.painter().line_segment([c + vec2(-5.0, 5.0), c + vec2(5.0, -5.0)], st);
+            if r.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                *open = false;
+            }
+        });
+    });
+    ui.add_space(4.0);
+}
+
 /// Round close "X" button; clears `selected` when clicked.
 fn close_button(ui: &mut Ui, c: egui::Pos2, selected: &mut Option<i64>) {
     let rect = Rect::from_center_size(c, vec2(32.0, 32.0));
@@ -1310,6 +1353,27 @@ fn facet_picker(ui: &mut Ui, id: &str, all: &str, current: &str, query: &mut Str
         query.clear();
     }
     pick
+}
+
+/// Compact platform label for a card ("PS5", "Switch", "Steam", "GOG").
+fn short_platform(g: &Game) -> String {
+    if g.source == Source::Steam {
+        return "Steam".into();
+    }
+    let platform = g.platform.as_deref().unwrap_or("PC (Windows)");
+    if platform.starts_with("PC") {
+        return g.store.clone().unwrap_or_else(|| "PC".into());
+    }
+    let p = ["Sony ", "Nintendo ", "Microsoft ", "Sega "].iter().fold(platform, |p, v| p.strip_prefix(v).unwrap_or(p));
+    match p {
+        "PlayStation" => "PS1".into(),
+        "PlayStation Vita" => "Vita".into(),
+        "Game Boy Advance" => "GBA".into(),
+        "Game Boy Color" => "GBC".into(),
+        "Game Boy" => "GB".into(),
+        "Xbox 360" => "X360".into(),
+        _ => p.strip_prefix("PlayStation ").map_or(p.to_string(), |n| format!("PS{n}")),
+    }
 }
 
 fn split_list(v: &Option<String>) -> impl Iterator<Item = &str> {
