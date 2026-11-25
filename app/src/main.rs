@@ -17,13 +17,21 @@ fn main() -> eframe::Result {
             .show();
         return Ok(());
     };
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Gamut")
-            .with_inner_size([1440.0, 880.0])
-            .with_min_inner_size([720.0, 480.0]),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Gamut")
+        .with_inner_size([1440.0, 880.0])
+        .with_min_inner_size([720.0, 480.0]);
+    // Restore last placement; skip obviously bogus values (e.g. a disconnected monitor far away).
+    if let Some(w) = gamut_core::Config::load(&paths.config).window {
+        if w.width >= 720.0 && w.height >= 480.0 {
+            viewport = viewport.with_inner_size([w.width, w.height]);
+        }
+        if w.x.abs() < 20_000.0 && w.y.abs() < 20_000.0 {
+            viewport = viewport.with_position([w.x, w.y]);
+        }
+        viewport = viewport.with_maximized(w.maximized);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "Gamut",
         options,

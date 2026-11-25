@@ -12,6 +12,22 @@ pub struct Config {
     pub steamgriddb_key: String,
     /// Grid card width in logical pixels.
     pub card_width: f32,
+    /// Last grid sort ("name", "last_played", "playtime", "added").
+    pub sort: String,
+    /// Last grid filter ("all", "installed", "favorites", "steam", "custom", "hidden").
+    pub filter: String,
+    /// Last window placement (kept last: TOML tables follow plain keys).
+    pub window: Option<WindowState>,
+}
+
+/// Window placement in logical points; size/position are the un-maximized ones.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+pub struct WindowState {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
 }
 
 impl Config {
@@ -38,6 +54,38 @@ impl Config {
     pub fn save_ui_prefs(&self, path: &Path) -> anyhow::Result<()> {
         let mut on_disk = Config::load(path);
         on_disk.card_width = self.card_width;
+        on_disk.sort = self.sort.clone();
+        on_disk.filter = self.filter.clone();
+        on_disk.window = self.window;
         on_disk.save(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_prefs_round_trip_and_keep_keys() {
+        let dir = std::env::temp_dir().join(format!("gamut-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let keys = Config { steam_api_key: "KEY".into(), steamgriddb_key: "SG".into(), ..Config::load(&path) };
+        keys.save(&path).unwrap();
+
+        // A UI-only save from a copy without keys must not wipe them.
+        let mut ui = Config::load(&dir.join("missing.toml"));
+        ui.sort = "last_played".into();
+        ui.filter = "installed".into();
+        ui.window = Some(WindowState { x: -1800.0, y: 40.0, width: 1500.0, height: 900.0, maximized: true });
+        ui.save_ui_prefs(&path).unwrap();
+
+        let back = Config::load(&path);
+        assert_eq!(back.steam_api_key, "KEY");
+        assert_eq!(back.steamgriddb_key, "SG");
+        assert_eq!(back.sort, "last_played");
+        assert_eq!(back.filter, "installed");
+        assert_eq!(back.window, ui.window);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

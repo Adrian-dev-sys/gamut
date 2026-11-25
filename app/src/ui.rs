@@ -30,6 +30,25 @@ enum Sort {
     Added,
 }
 
+// Stable names used in config.toml.
+const FILTERS: [(Filter, &str); 6] = [
+    (Filter::All, "all"),
+    (Filter::Installed, "installed"),
+    (Filter::Favorites, "favorites"),
+    (Filter::Steam, "steam"),
+    (Filter::Custom, "custom"),
+    (Filter::Hidden, "hidden"),
+];
+const SORTS: [(Sort, &str); 4] =
+    [(Sort::Name, "name"), (Sort::LastPlayed, "last_played"), (Sort::Playtime, "playtime"), (Sort::Added, "added")];
+
+fn key_of<T: PartialEq + Copy>(table: &[(T, &'static str)], v: T) -> &'static str {
+    table.iter().find(|(t, _)| *t == v).map(|(_, k)| *k).unwrap_or("")
+}
+fn from_key<T: Copy>(table: &[(T, &'static str)], k: &str) -> T {
+    table.iter().find(|(_, n)| *n == k).map(|(t, _)| *t).unwrap_or(table[0].0)
+}
+
 enum Action {
     Play(i64),
     Edit(i64),
@@ -71,12 +90,19 @@ pub struct GamutApp {
     confirm_remove: Option<i64>,
     error: Option<String>,
     focus_search: bool,
+    /// Latest un-maximized placement + maximized flag, saved on exit.
+    window: Option<gamut_core::config::WindowState>,
+    /// Sort/filter as last written to config.
+    saved_view: (Sort, Filter),
 }
 
 impl GamutApp {
     pub fn new(cc: &eframe::CreationContext, paths: Paths) -> anyhow::Result<Self> {
         theme::apply(&cc.egui_ctx);
-        let cfg = Arc::new(RwLock::new(Config::load(&paths.config)));
+        let loaded = Config::load(&paths.config);
+        let (sort, filter) = (from_key(&SORTS, &loaded.sort), from_key(&FILTERS, &loaded.filter));
+        let window = loaded.window;
+        let cfg = Arc::new(RwLock::new(loaded));
         let (lib, repair_notice) = Library::open_checked(&paths.db)?;
         let games = lib.all()?;
         let workers = Workers::start(&cc.egui_ctx, paths.clone(), cfg.clone());
@@ -91,8 +117,8 @@ impl GamutApp {
             view: Vec::new(),
             view_key: None,
             search: String::new(),
-            filter: Filter::All,
-            sort: Sort::Name,
+            filter,
+            sort,
             selected: None,
             workers,
             hero: None,
@@ -103,6 +129,8 @@ impl GamutApp {
             confirm_remove: None,
             error: repair_notice,
             focus_search: false,
+            window,
+            saved_view: (sort, filter),
         })
     }
 
@@ -770,6 +798,52 @@ impl GamutApp {
     }
 }
 
+impl GamutApp {
+    /// Remembers the normal (un-maximized) size/position and whether the window is maximized.
+    fn track_window(&mut self, ctx: &egui::Context) {
+        let (inner, outer, maximized, minimized) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.inner_rect, v.outer_rect, v.maximized.unwrap_or(false), v.minimized.unwrap_or(false))
+        });
+        if minimized {
+            return;
+        }
+        if !maximized {
+            if let (Some(inner), Some(outer)) = (inner, outer) {
+                self.window = Some(gamut_core::config::WindowState {
+                    x: outer.min.x,
+                    y: outer.min.y,
+                    width: inner.width(),
+                    height: inner.height(),
+                    maximized: false,
+                });
+            }
+        }
+        match self.window.as_mut() {
+            Some(w) => w.maximized = maximized,
+            // Maximized since the first launch: remember that, with the default normal size.
+            None if maximized => {
+                self.window = Some(gamut_core::config::WindowState {
+                    x: 100.0,
+                    y: 100.0,
+                    width: 1440.0,
+                    height: 880.0,
+                    maximized: true,
+                })
+            }
+            None => {}
+        }
+    }
+
+    fn save_prefs(&self) {
+        let mut c = self.cfg.write().unwrap();
+        c.sort = key_of(&SORTS, self.sort).into();
+        c.filter = key_of(&FILTERS, self.filter).into();
+        c.window = self.window;
+        let _ = c.save_ui_prefs(&self.paths.config);
+    }
+}
+
 fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
     let id = g.id;
     let mut item = |ui: &mut Ui, label: &str, a: Action| {
@@ -888,9 +962,14 @@ impl eframe::App for GamutApp {
             self.apply(a);
         }
         self.thumbs.end_frame();
+        self.track_window(&ctx);
+        if self.saved_view != (self.sort, self.filter) {
+            self.saved_view = (self.sort, self.filter);
+            self.save_prefs();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        let _ = self.cfg.read().unwrap().save_ui_prefs(&self.paths.config);
+        self.save_prefs();
     }
 }
