@@ -26,10 +26,14 @@ pub struct SteamEntry {
 impl Library {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        // Switching to WAL needs an exclusive lock, so only do it once.
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+        }
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
+            "PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
                 source TEXT NOT NULL,

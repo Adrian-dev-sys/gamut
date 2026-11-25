@@ -12,6 +12,11 @@ fn main() -> anyhow::Result<()> {
         None => Paths::resolve()?,
     };
     let cfg = Config::load(&paths.config);
+    // Writing commands must not run alongside the app.
+    let _lock = match args.first().map(String::as_str) {
+        Some("list") | None => None,
+        _ => Some(paths.lock().ok_or_else(|| anyhow::anyhow!("Gamut is running; close it first"))?),
+    };
     let (mut lib, notice) = Library::open_checked(&paths.db)?;
     if let Some(n) = notice {
         eprintln!("{n}");

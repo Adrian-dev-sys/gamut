@@ -891,6 +891,6 @@ impl eframe::App for GamutApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        let _ = self.cfg.read().unwrap().save(&self.paths.config);
+        let _ = self.cfg.read().unwrap().save_ui_prefs(&self.paths.config);
     }
 }

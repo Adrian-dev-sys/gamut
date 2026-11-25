@@ -9,6 +9,14 @@ mod workers;
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let paths = gamut_core::Paths::resolve().expect("cannot create data folder");
+    // One instance at a time: two would fight over the library and settings.
+    let Some(_lock) = paths.lock() else {
+        rfd::MessageDialog::new()
+            .set_title("Gamut")
+            .set_description("Gamut is already running.")
+            .show();
+        return Ok(());
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Gamut")

@@ -55,6 +55,18 @@ impl Paths {
         Ok(p)
     }
 
+    /// Exclusive lock on the data folder; `None` if another Gamut process holds it.
+    pub fn lock(&self) -> Option<InstanceLock> {
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join("gamut.lock"))
+            .ok()?;
+        f.try_lock().ok()?;
+        Some(InstanceLock(f))
+    }
+
     pub fn thumb(&self, id: i64) -> PathBuf {
         self.thumbs.join(format!("{id}.jpg"))
     }
@@ -65,6 +77,9 @@ impl Paths {
         self.heroes.join(format!("{id}.img"))
     }
 }
+
+/// Released when dropped (or when the process exits).
+pub struct InstanceLock(#[allow(dead_code)] std::fs::File);
 
 pub fn now() -> i64 {
     std::time::SystemTime::now()

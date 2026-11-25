@@ -26,8 +26,18 @@ impl Config {
         c
     }
 
+    /// Writes via a temp file + rename so a crash never leaves a half-written config.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, toml::to_string_pretty(self)?)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+
+    /// Persists only UI preferences, keeping whatever keys are on disk.
+    pub fn save_ui_prefs(&self, path: &Path) -> anyhow::Result<()> {
+        let mut on_disk = Config::load(path);
+        on_disk.card_width = self.card_width;
+        on_disk.save(path)
     }
 }
