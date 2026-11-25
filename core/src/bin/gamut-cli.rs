@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -12,6 +12,36 @@ fn main() -> anyhow::Result<()> {
         None => Paths::resolve()?,
     };
     let cfg = Config::load(&paths.config);
+    if args.first().map(String::as_str) == Some("import-playnite") {
+        let dry = args.iter().any(|a| a == "--dry-run");
+        let dir = match args.iter().skip(1).find(|a| !a.starts_with("--")) {
+            Some(d) => std::path::PathBuf::from(d),
+            None => gamut_core::playnite::default_dir().ok_or_else(|| anyhow::anyhow!("no Playnite library found"))?,
+        };
+        let t = std::time::Instant::now();
+        let items = gamut_core::playnite::load(&dir)?;
+        println!("Read {} in {:.1}s", dir.display(), t.elapsed().as_secs_f32());
+        print!("{}", gamut_core::playnite::report(&items));
+        if args.iter().any(|a| a == "--verbose") {
+            for it in &items {
+                if let gamut_core::playnite::Launch::Unresolved(r) = &it.launch {
+                    println!("  [{}] {}: {r}", it.game.platform.as_deref().unwrap_or("?"), it.game.name);
+                }
+            }
+        }
+        if dry {
+            return Ok(());
+        }
+        let _lock = paths.lock().ok_or_else(|| anyhow::anyhow!("Gamut is running; close it first"))?;
+        let (mut lib, _) = Library::open_checked(&paths.db)?;
+        let t = std::time::Instant::now();
+        let st = gamut_core::playnite::import(&mut lib, &paths, &items, &|_, _| {})?;
+        println!(
+            "Imported {} games, {} covers, {} backgrounds in {:.1}s",
+            st.games, st.covers, st.backgrounds, t.elapsed().as_secs_f32()
+        );
+        return Ok(());
+    }
     // Writing commands must not run alongside the app.
     let _lock = match args.first().map(String::as_str) {
         Some("list") | None => None,

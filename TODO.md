@@ -1,7 +1,7 @@
 # TODO
 
 ## Next up
-- [ ] **Import from Playnite** – read Playnite's library (games, custom entries, edited metadata, covers, playtime) so an existing setup carries over in one go.
+- [x] **Import from Playnite** – read Playnite's library (games, custom entries, edited metadata, covers, playtime) so an existing setup carries over in one go.
 - [ ] **Themes** – load colors, fonts, spacing and corner radius from a `theme.toml`; hot-reload while editing.
 
 ## More sources
@@ -18,7 +18,7 @@
 - [ ] Tags/categories and user collections
 - [ ] Multi-select + bulk edit (hide, favorite, refresh metadata)
 - [ ] Choose between several covers/banners per game (SteamGridDB alternatives)
-- [ ] Remember window size/position and last selected filter/sort
+- [x] Remember window size/position and last selected filter/sort
 
 ## Metadata
 - [ ] IGDB as an additional metadata source (richer data for non-Steam games)

@@ -10,6 +10,10 @@ pub enum Event {
     LibraryChanged,
     GameUpdated(i64),
     Error(String),
+    /// Playnite folder + dry-run report, or why it couldn't be read.
+    PlaynitePreview(Result<(std::path::PathBuf, String), String>),
+    /// Finished import summary (or error); covers changed for these ids.
+    PlayniteImported(Result<String, String>),
 }
 
 pub struct Workers {
@@ -20,6 +24,8 @@ pub struct Workers {
     pub pending_cover: Arc<AtomicUsize>,
     pub pending_meta: Arc<AtomicUsize>,
     pub scanning: Arc<AtomicBool>,
+    /// Playnite import progress: (images done, images total); total 0 while idle.
+    pub importing: Arc<(AtomicUsize, AtomicUsize)>,
     cfg: Arc<RwLock<Config>>,
     paths: Paths,
     ctx: Context,
@@ -38,6 +44,7 @@ impl Workers {
             pending_cover: Default::default(),
             pending_meta: Default::default(),
             scanning: Default::default(),
+            importing: Default::default(),
             cfg,
             paths,
             ctx: ctx.clone(),
@@ -106,6 +113,58 @@ impl Workers {
     pub fn kick(&self) {
         let _ = self.kick_cover.send(());
         let _ = self.kick_meta.send(());
+    }
+
+    /// Reads a Playnite library (default location when `dir` is None) and reports what an import would do.
+    pub fn playnite_preview(&self, dir: Option<std::path::PathBuf>) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let r = (|| {
+                let dir = match dir {
+                    Some(d) => d,
+                    None => gamut_core::playnite::default_dir()
+                        .ok_or_else(|| anyhow::anyhow!("Couldn't find a Playnite library in %APPDATA%\\Playnite. Use \"Choose folder\" for a portable Playnite."))?,
+                };
+                let items = gamut_core::playnite::load(&dir)?;
+                anyhow::Ok((dir, gamut_core::playnite::report(&items)))
+            })();
+            let _ = tx.send(Event::PlaynitePreview(r.map_err(|e| format!("{e:#}"))));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn playnite_import(&self, dir: std::path::PathBuf) {
+        let progress = self.importing.clone();
+        if progress.1.swap(1, Ordering::SeqCst) != 0 {
+            return;
+        }
+        progress.0.store(0, Ordering::SeqCst);
+        let (paths, tx, ctx) = (self.paths.clone(), self.tx.clone(), self.ctx.clone());
+        let (kc, km) = (self.kick_cover.clone(), self.kick_meta.clone());
+        std::thread::spawn(move || {
+            let r = (|| {
+                let items = gamut_core::playnite::load(&dir)?;
+                let mut lib = Library::open(&paths.db)?;
+                let tick = |done: usize, total: usize| {
+                    progress.0.store(done, Ordering::Relaxed);
+                    progress.1.store(total.max(1), Ordering::Relaxed);
+                    if done % 25 == 0 {
+                        ctx.request_repaint();
+                    }
+                };
+                let st = gamut_core::playnite::import(&mut lib, &paths, &items, &tick)?;
+                anyhow::Ok(format!(
+                    "Imported {} games from Playnite, with {} covers and {} backgrounds.",
+                    st.games, st.covers, st.backgrounds
+                ))
+            })();
+            progress.1.store(0, Ordering::SeqCst);
+            let _ = tx.send(Event::LibraryChanged);
+            let _ = tx.send(Event::PlayniteImported(r.map_err(|e| format!("Playnite import failed: {e:#}"))));
+            let _ = kc.send(());
+            let _ = km.send(());
+            ctx.request_repaint();
+        });
     }
 
     pub fn rescan(&self) {

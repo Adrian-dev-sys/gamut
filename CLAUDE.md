@@ -14,3 +14,6 @@ Native Windows game library (Playnite alternative). Rust workspace: `core/` (lib
 ## Test
 `cargo test`; `gamut-cli --data <tmp> scan|fetch|list|seed N` exercises core against the real Steam install.
 Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a short path.
+
+## Docs
+- `docs/playnite-import.md` – Playnite import: LiteDB reader, field mapping, emulator launch resolution, merge rules.

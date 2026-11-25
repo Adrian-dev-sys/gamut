@@ -10,7 +10,21 @@ pub struct Library {
 
 const COLS: &str = "id, source, source_id, name, installed, install_dir, exe, args, work_dir, \
     playtime_min, last_played, description, developer, publisher, release_date, genres, \
-    has_cover, has_hero, cover_state, meta_state, favorite, hidden, added";
+    has_cover, has_hero, cover_state, meta_state, favorite, hidden, added, \
+    playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series";
+
+/// Columns added after the first release: (name, SQL type).
+const ADDED_COLS: [(&str, &str); 9] = [
+    ("playnite_id", "TEXT"),
+    ("platform", "TEXT"),
+    ("store", "TEXT"),
+    ("completion", "TEXT"),
+    ("play_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("critic_score", "INTEGER"),
+    ("community_score", "INTEGER"),
+    ("tags", "TEXT"),
+    ("series", "TEXT"),
+];
 
 /// A Steam app as seen by a scan (local manifest and/or owned-games API).
 #[derive(Debug, Clone)]
@@ -54,7 +68,31 @@ impl Library {
              );
              CREATE UNIQUE INDEX IF NOT EXISTS games_steam ON games(source_id) WHERE source = 'steam';",
         )?;
-        Ok(Library { conn })
+        let mut lib = Library { conn };
+        lib.migrate()?;
+        Ok(lib)
+    }
+
+    /// Adds missing columns; safe to race with another handle (checked under a write lock).
+    fn migrate(&mut self) -> Result<()> {
+        let missing = |c: &Connection| -> rusqlite::Result<Vec<(&str, &str)>> {
+            let mut st = c.prepare("SELECT name FROM pragma_table_info('games')")?;
+            let have: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(ADDED_COLS.iter().copied().filter(|(n, _)| !have.iter().any(|h| h == n)).collect())
+        };
+        if missing(&self.conn)?.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for (name, ty) in missing(&tx)? {
+            tx.execute(&format!("ALTER TABLE games ADD COLUMN {name} {ty}"), [])?;
+        }
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS games_playnite ON games(playnite_id) WHERE playnite_id IS NOT NULL",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Opens the library; if SQLite finds damage, rebuilds it from every readable row.
@@ -83,8 +121,9 @@ impl Library {
             let new = Self::open(&tmp)?;
             let old = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             let mut seen = HashSet::new();
+            let cols = Self::readable_cols(&old);
             // Sequential scan until the first unreadable row...
-            if let Ok(mut st) = old.prepare(&format!("SELECT {COLS} FROM games")) {
+            if let Ok(mut st) = old.prepare(&format!("SELECT {cols} FROM games")) {
                 if let Ok(mut rows) = st.query([]) {
                     while let Ok(Some(r)) = rows.next() {
                         if let Ok(g) = Self::row(r) {
@@ -103,7 +142,7 @@ impl Library {
                 .flatten()
                 .unwrap_or(0)
                 .max(max_seen + 2000);
-            let sql = format!("SELECT {COLS} FROM games WHERE id = ?1");
+            let sql = format!("SELECT {cols} FROM games WHERE id = ?1");
             for id in 1..=max {
                 if seen.contains(&id) {
                     continue;
@@ -130,14 +169,34 @@ impl Library {
         ))
     }
 
+    /// COLS, with defaults in place of columns an older (unmigrated) file lacks.
+    fn readable_cols(c: &Connection) -> String {
+        let have: Vec<String> = c
+            .prepare("SELECT name FROM pragma_table_info('games')")
+            .and_then(|mut st| st.query_map([], |r| r.get(0))?.collect())
+            .unwrap_or_default();
+        COLS.split(',')
+            .map(str::trim)
+            .map(|col| match ADDED_COLS.iter().find(|(n, _)| *n == col) {
+                Some((n, ty)) if !have.iter().any(|h| h == n) => {
+                    if ty.contains("DEFAULT 0") { "0" } else { "NULL" }.to_string()
+                }
+                _ => col.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// Inserts a complete row, keeping its id (used when rebuilding).
     fn insert_full(&self, g: &Game) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)"),
+            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)"),
             params![
                 g.id, g.source.as_str(), g.source_id, g.name, g.installed, g.install_dir, g.exe, g.args, g.work_dir,
                 g.playtime_min, g.last_played, g.description, g.developer, g.publisher, g.release_date, g.genres,
-                g.has_cover, g.has_hero, g.cover_state, g.meta_state, g.favorite, g.hidden, g.added
+                g.has_cover, g.has_hero, g.cover_state, g.meta_state, g.favorite, g.hidden, g.added,
+                g.playnite_id, g.platform, g.store, g.completion, g.play_count, g.critic_score, g.community_score,
+                g.tags, g.series
             ],
         )?;
         Ok(())
@@ -173,6 +232,15 @@ impl Library {
             favorite: r.get(20)?,
             hidden: r.get(21)?,
             added: r.get(22)?,
+            playnite_id: r.get(23)?,
+            platform: r.get(24)?,
+            store: r.get(25)?,
+            completion: r.get(26)?,
+            play_count: r.get(27)?,
+            critic_score: r.get(28)?,
+            community_score: r.get(29)?,
+            tags: r.get(30)?,
+            series: r.get(31)?,
         })
     }
 
@@ -325,6 +393,88 @@ impl Library {
         Ok(())
     }
 
+    /// Upserts Playnite games in one transaction and returns their row ids (same order).
+    /// Merge: playtime/last played/play count take the max, added the min, favorite/hidden are OR'd,
+    /// Playnite's metadata wins where it has a value.
+    pub fn import_playnite(&mut self, games: &[Game]) -> Result<Vec<i64>> {
+        const SHARED: &str = "
+            playtime_min = MAX(playtime_min, excluded.playtime_min),
+            last_played = MAX(last_played, excluded.last_played),
+            added = CASE WHEN excluded.added > 0 AND (added = 0 OR excluded.added < added) THEN excluded.added ELSE added END,
+            play_count = MAX(play_count, excluded.play_count),
+            favorite = favorite OR excluded.favorite,
+            hidden = hidden OR excluded.hidden,
+            playnite_id = excluded.playnite_id,
+            platform = COALESCE(excluded.platform, platform),
+            store = COALESCE(excluded.store, store),
+            completion = COALESCE(excluded.completion, completion),
+            critic_score = COALESCE(excluded.critic_score, critic_score),
+            community_score = COALESCE(excluded.community_score, community_score),
+            tags = COALESCE(excluded.tags, tags),
+            series = COALESCE(excluded.series, series),
+            description = COALESCE(excluded.description, description),
+            developer = COALESCE(excluded.developer, developer),
+            publisher = COALESCE(excluded.publisher, publisher),
+            release_date = COALESCE(excluded.release_date, release_date),
+            genres = COALESCE(excluded.genres, genres)";
+        let insert = "INSERT INTO games (source, source_id, name, installed, install_dir, exe, args, work_dir,
+                playtime_min, last_played, added, play_count, favorite, hidden, playnite_id, platform, store,
+                completion, critic_score, community_score, tags, series, description, developer, publisher,
+                release_date, genres, meta_state, cover_state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)";
+        let steam_sql = format!(
+            "{insert} ON CONFLICT(source_id) WHERE source = 'steam' DO UPDATE SET {SHARED},
+                meta_state = CASE WHEN excluded.description IS NOT NULL THEN 1 ELSE meta_state END
+             RETURNING id"
+        );
+        let custom_sql = format!(
+            "{insert} ON CONFLICT(playnite_id) WHERE playnite_id IS NOT NULL DO UPDATE SET {SHARED},
+                name = excluded.name, installed = excluded.installed, install_dir = excluded.install_dir,
+                exe = excluded.exe, args = excluded.args, work_dir = excluded.work_dir
+             RETURNING id"
+        );
+        let tx = self.conn.transaction()?;
+        let mut ids = Vec::with_capacity(games.len());
+        {
+            let mut steam = tx.prepare(&steam_sql)?;
+            let mut custom = tx.prepare(&custom_sql)?;
+            for g in games {
+                let st = if g.source == Source::Steam { &mut steam } else { &mut custom };
+                // Imported custom games skip the scrapers: art comes from Playnite (cover_state 2 until copied).
+                let cover_state = if g.source == Source::Steam { state::PENDING } else { state::NOT_FOUND };
+                let id = st.query_row(
+                    params![
+                        g.source.as_str(), g.source_id, g.name, g.installed, g.install_dir, g.exe, g.args, g.work_dir,
+                        g.playtime_min, g.last_played, g.added, g.play_count, g.favorite, g.hidden, g.playnite_id,
+                        g.platform, g.store, g.completion, g.critic_score, g.community_score, g.tags, g.series,
+                        g.description, g.developer, g.publisher, g.release_date, g.genres, g.meta_state, cover_state
+                    ],
+                    |r| r.get(0),
+                )?;
+                ids.push(id);
+            }
+        }
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    /// Records imported art: (id, cover copied, background copied). Custom games without a usable
+    /// cover go back to the scraper queue.
+    pub fn apply_imported_art(&mut self, results: &[(i64, bool, bool)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for &(id, cover, hero) in results {
+            tx.execute(
+                "UPDATE games SET has_cover = has_cover OR ?2, has_hero = has_hero OR ?3,
+                    cover_state = CASE WHEN ?2 THEN 1 WHEN source = 'custom' AND has_cover = 0 THEN 0 ELSE cover_state END
+                 WHERE id = ?1",
+                params![id, cover, hero],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Retries every game whose cover wasn't found (e.g. after adding a SteamGridDB key).
     pub fn retry_missing_covers(&self) -> Result<usize> {
         Ok(self.conn.execute(
@@ -337,6 +487,52 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrates_old_schema_and_merges_playnite() {
+        let dir = std::env::temp_dir().join(format!("gamut-mig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        {
+            // Schema as shipped before the Playnite columns existed.
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE games (id INTEGER PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL DEFAULT '',
+                 name TEXT NOT NULL, installed INTEGER NOT NULL DEFAULT 0, install_dir TEXT, exe TEXT, args TEXT,
+                 work_dir TEXT, playtime_min INTEGER NOT NULL DEFAULT 0, last_played INTEGER NOT NULL DEFAULT 0,
+                 description TEXT, developer TEXT, publisher TEXT, release_date TEXT, genres TEXT,
+                 has_cover INTEGER NOT NULL DEFAULT 0, has_hero INTEGER NOT NULL DEFAULT 0,
+                 cover_state INTEGER NOT NULL DEFAULT 0, meta_state INTEGER NOT NULL DEFAULT 0,
+                 favorite INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, added INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO games (source, source_id, name, playtime_min, added) VALUES ('steam', '10', 'Old', 100, 500);",
+            )
+            .unwrap();
+            assert!(Library::readable_cols(&c).contains("NULL"));
+        }
+        let mut lib = Library::open(&path).unwrap();
+        let mut steam = Game::new_custom("Old".into(), None);
+        steam.source = Source::Steam;
+        steam.source_id = "10".into();
+        steam.playnite_id = Some("a".into());
+        steam.playtime_min = 50;
+        steam.added = 200;
+        steam.favorite = true;
+        steam.completion = Some("Beaten".into());
+        let mut custom = Game::new_custom("Rom".into(), Some("emu.exe".into()));
+        custom.playnite_id = Some("b".into());
+        let ids = lib.import_playnite(&[steam.clone(), custom.clone()]).unwrap();
+        custom.name = "Rom (renamed)".into();
+        let again = lib.import_playnite(&[steam, custom]).unwrap();
+        assert_eq!(ids, again, "re-import updates the same rows");
+        let all = lib.all().unwrap();
+        assert_eq!(all.len(), 2);
+        let s = all.iter().find(|g| g.source_id == "10").unwrap();
+        assert_eq!((s.playtime_min, s.added, s.favorite), (100, 200, true));
+        assert_eq!(s.completion.as_deref(), Some("Beaten"));
+        assert_eq!(all.iter().find(|g| g.playnite_id.as_deref() == Some("b")).unwrap().name, "Rom (renamed)");
+        drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn steam_sync_and_custom() {

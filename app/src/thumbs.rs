@@ -107,6 +107,12 @@ impl ThumbCache {
         }
     }
 
+    /// Drops every cached texture (after bulk cover changes).
+    pub fn clear(&mut self) {
+        self.tex.clear();
+        self.missing.clear();
+    }
+
     pub fn invalidate(&mut self, id: i64) {
         self.tex.remove(&id);
         self.missing.remove(&id);

@@ -50,6 +50,11 @@ fn damaged_db_is_rebuilt() {
             .collect();
         lib.sync_steam(&entries).unwrap();
         lib.add_custom(&gamut_core::Game::new_custom("Mine".into(), None)).unwrap();
+        let mut g = gamut_core::Game::new_custom("Imported".into(), None);
+        g.playnite_id = Some("pn-1".into());
+        g.platform = Some("Nintendo Switch".into());
+        g.play_count = 7;
+        lib.import_playnite(&[g]).unwrap();
     }
     // Scribble over a page in the middle of the file.
     let mut bytes = std::fs::read(&db).unwrap();
@@ -63,4 +68,8 @@ fn damaged_db_is_rebuilt() {
     println!("{notice} -> {n} rows");
     assert_eq!(lib.integrity_check().unwrap(), "ok");
     assert!(n > 300 && n < 400, "recovered {n}");
+    // Newer columns survive the rebuild too.
+    let all = lib.all().unwrap();
+    let g = all.iter().find(|g| g.playnite_id.as_deref() == Some("pn-1")).expect("imported row recovered");
+    assert_eq!((g.platform.as_deref(), g.play_count), (Some("Nintendo Switch"), 7));
 }

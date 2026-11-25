@@ -15,6 +15,8 @@ one ~14 MB executable that opens in under half a second.
   matched to Steam by name, or found on SteamGridDB.
 - **Fast grid** – only visible rows are drawn; covers are pre-scaled thumbnails decoded on background threads with a
   bounded GPU cache. Stays smooth with thousands of games.
+- **Playnite import** – games from every Playnite library, emulated ROMs with their emulator launch settings,
+  playtime, favorites, completion status, covers and backgrounds (Settings → Import from Playnite).
 - Search, filters (installed, favorites, hidden, source), sorting, favorites, hiding, per-game metadata refresh.
 
 ## Getting started
@@ -47,7 +49,7 @@ cargo test
 cargo run -p gamut                      # debug build of the UI
 cargo run -p gamut-core --bin gamut-cli -- scan
 ```
-`gamut-cli [--data DIR] scan | list | fetch [N] | add NAME EXE | remove ID | launch ID | seed N` runs the core
+`gamut-cli [--data DIR] scan | list | fetch [N] | add NAME EXE | remove ID | launch ID | seed N | import-playnite [DIR] [--dry-run]` runs the core
 without the UI (`seed` creates stress-test entries).
 
 If the project lives in a very long path, the MSVC linker can fail with `LNK1104`; set `CARGO_TARGET_DIR` to a short

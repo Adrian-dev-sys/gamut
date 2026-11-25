@@ -52,6 +52,17 @@ pub struct Game {
     pub favorite: bool,
     pub hidden: bool,
     pub added: i64,
+    /// Playnite's game id when imported from Playnite (re-imports update the same row).
+    pub playnite_id: Option<String>,
+    pub platform: Option<String>,
+    /// Where the game comes from when it isn't Steam, e.g. "GOG", "PlayStation".
+    pub store: Option<String>,
+    pub completion: Option<String>,
+    pub play_count: i64,
+    pub critic_score: Option<i64>,
+    pub community_score: Option<i64>,
+    pub tags: Option<String>,
+    pub series: Option<String>,
 }
 
 impl Game {
@@ -80,6 +91,15 @@ impl Game {
             favorite: false,
             hidden: false,
             added: crate::now(),
+            playnite_id: None,
+            platform: None,
+            store: None,
+            completion: None,
+            play_count: 0,
+            critic_score: None,
+            community_score: None,
+            tags: None,
+            series: None,
         }
     }
 

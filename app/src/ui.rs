@@ -89,6 +89,8 @@ pub struct GamutApp {
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     error: Option<String>,
+    /// Playnite folder + preview report awaiting confirmation.
+    playnite: Option<(std::path::PathBuf, String)>,
     focus_search: bool,
     /// When the details popup was opened by a click; a quick second click there means Play.
     opened_at: f64,
@@ -131,6 +133,7 @@ impl GamutApp {
             settings: None,
             confirm_remove: None,
             error: repair_notice,
+            playnite: None,
             focus_search: false,
             opened_at: 0.0,
             startup: window.as_ref().filter(|w| w.maximized).and_then(|_| crate::startup::Startup::maximize_hidden(cc)),
@@ -172,6 +175,14 @@ impl GamutApp {
                 Event::LibraryChanged => self.reload_all(),
                 Event::GameUpdated(id) => self.reload_one(id),
                 Event::Error(e) => self.error = Some(e),
+                Event::PlaynitePreview(Ok(p)) => self.playnite = Some(p),
+                Event::PlaynitePreview(Err(e)) => self.error = Some(e),
+                Event::PlayniteImported(r) => {
+                    // Covers were replaced in bulk.
+                    self.thumbs.clear();
+                    self.hero = None;
+                    self.error = Some(r.unwrap_or_else(|e| e));
+                }
             }
         }
     }
@@ -348,6 +359,13 @@ impl GamutApp {
             if self.workers.scanning.load(Ordering::Relaxed) {
                 ui.spinner();
                 ui.label(RichText::new("Scanning Steam…").color(TEXT_DIM));
+            }
+            let imp = &self.workers.importing;
+            let total = imp.1.load(Ordering::Relaxed);
+            if total > 0 {
+                ui.spinner();
+                let done = imp.0.load(Ordering::Relaxed);
+                ui.label(RichText::new(format!("Importing from Playnite: {done}/{total} images")).color(TEXT_DIM));
             }
             let c = self.workers.pending_cover.load(Ordering::Relaxed);
             let m = self.workers.pending_meta.load(Ordering::Relaxed);
@@ -547,7 +565,9 @@ impl GamutApp {
                     let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
                         .fill(ACCENT)
                         .min_size(vec2(150.0, 38.0));
-                    if ui.add(play).clicked() {
+                    let can_play = g.source == Source::Steam || g.exe.is_some();
+                    let r = ui.add_enabled(can_play, play).on_disabled_hover_text("No way to start this game on this PC");
+                    if r.clicked() {
                         actions.push(Action::Play(id));
                     }
                     let fav = ui
@@ -569,12 +589,19 @@ impl GamutApp {
                     let status = match (g.source, g.installed) {
                         (Source::Steam, true) => "Installed",
                         (Source::Steam, false) => "Not installed",
-                        (Source::Custom, _) => "Custom game",
+                        (Source::Custom, true) => "Ready",
+                        (Source::Custom, false) => "Not installed",
                     };
                     stat(ui, "LAST PLAYED", &util::date(g.last_played));
                     stat(ui, "TIME PLAYED", &util::playtime(g.playtime_min));
                     stat(ui, "ADDED", &util::date(g.added));
                     stat(ui, "STATUS", status);
+                    if let Some(c) = &g.completion {
+                        stat(ui, "COMPLETION", c);
+                    }
+                    if g.play_count > 0 {
+                        stat(ui, "PLAY COUNT", &g.play_count.to_string());
+                    }
                 });
                 ui.add_space(12.0);
                 ui.horizontal_wrapped(|ui| {
@@ -606,12 +633,27 @@ impl GamutApp {
                         ui.add(egui::Label::new(v).truncate()).on_hover_text(v);
                         ui.add_space(6.0);
                     };
-                    row("Source", if g.source == Source::Steam { "Steam" } else { "Custom" });
+                    let source = match (g.source, &g.store) {
+                        (Source::Steam, _) => "Steam",
+                        (_, Some(s)) => s.as_str(),
+                        _ => "Custom",
+                    };
+                    row("Source", source);
+                    let scores = match (g.critic_score, g.community_score) {
+                        (Some(c), Some(u)) => Some(format!("Critics {c} · Users {u}")),
+                        (Some(c), None) => Some(format!("Critics {c}")),
+                        (None, Some(u)) => Some(format!("Users {u}")),
+                        _ => None,
+                    };
                     for (k, v) in [
+                        ("Platform", &g.platform),
                         ("Developer", &g.developer),
                         ("Publisher", &g.publisher),
                         ("Released", &g.release_date),
                         ("Genres", &g.genres),
+                        ("Series", &g.series),
+                        ("Score", &scores),
+                        ("Tags", &g.tags),
                     ] {
                         if let Some(v) = v {
                             row(k, v);
@@ -761,6 +803,8 @@ impl GamutApp {
         let Some(s) = self.settings.as_mut() else { return };
         let mut open = true;
         let mut save = false;
+        let mut preview: Option<Option<std::path::PathBuf>> = None;
+        let importing = self.workers.importing.1.load(Ordering::Relaxed) > 0;
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
             .unwrap_or_default();
@@ -798,12 +842,35 @@ impl GamutApp {
                 });
                 ui.hyperlink_to("Get a SteamGridDB key", "https://www.steamgriddb.com/profile/preferences/api");
                 ui.add_space(10.0);
+                ui.heading("Playnite");
+                ui.label(
+                    RichText::new("Copies games, playtime, favorites, covers and launch settings. Close Playnite first.")
+                        .color(TEXT_DIM)
+                        .small(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!importing, egui::Button::new("Import from Playnite…")).clicked() {
+                        preview = Some(None);
+                    }
+                    let pick = ui
+                        .add_enabled(!importing, egui::Button::new("Choose folder…"))
+                        .on_hover_text("For portable Playnite: the folder that contains \"library\"");
+                    if pick.clicked() {
+                        if let Some(d) = rfd::FileDialog::new().set_title("Playnite folder").pick_folder() {
+                            preview = Some(Some(d));
+                        }
+                    }
+                });
+                ui.add_space(10.0);
                 ui.label(RichText::new(format!("Data folder: {}", self.paths.root.display())).color(TEXT_DIM).small());
                 ui.add_space(6.0);
                 if ui.add(egui::Button::new("Save").fill(ACCENT)).clicked() {
                     save = true;
                 }
             });
+        if let Some(dir) = preview {
+            self.workers.playnite_preview(dir);
+        }
         if save {
             let new = self.settings.take().unwrap();
             let old = self.cfg.read().unwrap().clone();
@@ -851,6 +918,50 @@ impl GamutApp {
             });
         if close {
             self.confirm_remove = None;
+        }
+    }
+
+    fn playnite_window(&mut self, ctx: &egui::Context) {
+        let Some((dir, report)) = self.playnite.clone() else { return };
+        let mut open = true;
+        let (mut go, mut cancel) = (false, false);
+        egui::Window::new("Import from Playnite")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(RichText::new(dir.display().to_string()).color(TEXT_DIM).small());
+                ui.add_space(6.0);
+                ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    ui.label(RichText::new(&report).monospace().size(12.5));
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Steam games merge into your existing ones (playtime and last played keep the higher value, \
+                         favorites and hidden are added). Playnite's covers and backgrounds replace Gamut's. \
+                         Importing again later updates the same games instead of duplicating them.",
+                    )
+                    .color(TEXT_DIM)
+                    .small(),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(RichText::new("Import").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                        go = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if go {
+            self.workers.playnite_import(dir);
+            self.playnite = None;
+            self.settings = None;
+        } else if cancel || !open {
+            self.playnite = None;
         }
     }
 
@@ -1075,7 +1186,11 @@ impl eframe::App for GamutApp {
         }
         // Other dialogs would sit under the modal, so it steps aside while they are open.
         let dialog_open =
-            self.editor.is_some() || self.settings.is_some() || self.confirm_remove.is_some() || self.error.is_some();
+            self.editor.is_some()
+            || self.settings.is_some()
+            || self.confirm_remove.is_some()
+            || self.error.is_some()
+            || self.playnite.is_some();
         if let (Some(id), false) = (self.selected, dialog_open) {
             let screen = ctx.content_rect();
             let size = vec2((screen.width() * 0.86).min(1320.0), (screen.height() * 0.88).min(940.0));
@@ -1108,6 +1223,7 @@ impl eframe::App for GamutApp {
         self.editor_window(&ctx);
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
+        self.playnite_window(&ctx);
         self.error_window(&ctx);
 
         for a in actions {
