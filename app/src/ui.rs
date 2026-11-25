@@ -1,3 +1,4 @@
+use crate::picker::{ArtKind, Outcome, Picker};
 use crate::theme::{self, ACCENT, CARD, CARD_HI, GOOD, TEXT_DIM};
 use crate::thumbs::{self, ThumbCache};
 use crate::util::{self, opt};
@@ -57,6 +58,7 @@ enum Action {
     ToggleHidden(i64),
     Refresh(i64),
     Remove(i64),
+    PickArt(i64, ArtKind),
 }
 
 struct Editor {
@@ -96,6 +98,8 @@ pub struct GamutApp {
     editor: Option<Editor>,
     settings: Option<Config>,
     confirm_remove: Option<i64>,
+    picker: Option<Picker>,
+    ctx_handle: egui::Context,
     error: Option<String>,
     /// Playnite folder + preview report awaiting confirmation.
     playnite: Option<(std::path::PathBuf, gamut_core::playnite::Summary)>,
@@ -148,6 +152,8 @@ impl GamutApp {
             editor: None,
             settings: None,
             confirm_remove: None,
+            picker: None,
+            ctx_handle: cc.egui_ctx.clone(),
             error: repair_notice,
             playnite: None,
             focus_search: false,
@@ -291,6 +297,12 @@ impl GamutApp {
                     self.workers.kick();
                 }
                 Action::Remove(id) => self.confirm_remove = Some(id),
+                Action::PickArt(id, kind) => {
+                    if let Some(g) = self.game(id) {
+                        let key = self.cfg.read().unwrap().steamgriddb_key.clone();
+                        self.picker = Some(Picker::open(&self.ctx_handle, g, kind, &key, self.paths.clone()));
+                    }
+                }
             }
             Ok(())
         })();
@@ -592,6 +604,16 @@ impl GamutApp {
             }
             None => {
                 ui.painter().rect_filled(cover, CornerRadius::same(8), CARD);
+            }
+        }
+        // Art pickers appear on hover: one for the cover, one for the banner.
+        if ui.rect_contains_pointer(cover) {
+            if art_pill(ui, pos2(cover.center().x, cover.bottom() - 26.0), "Change cover", "pick_cover") {
+                actions.push(Action::PickArt(id, ArtKind::Cover));
+            }
+        } else if ui.rect_contains_pointer(banner) {
+            if art_pill(ui, banner.right_top() + vec2(-112.0, 24.0), "Change banner", "pick_banner") {
+                actions.push(Action::PickArt(id, ArtKind::Banner));
             }
         }
 
@@ -1140,6 +1162,8 @@ fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
     item(ui, "Edit…", Action::Edit(id));
     item(ui, if g.favorite { "Unfavorite" } else { "Favorite" }, Action::ToggleFav(id));
     item(ui, if g.hidden { "Unhide" } else { "Hide" }, Action::ToggleHidden(id));
+    item(ui, "Change cover…", Action::PickArt(id, ArtKind::Cover));
+    item(ui, "Change banner…", Action::PickArt(id, ArtKind::Banner));
     item(ui, "Refresh metadata", Action::Refresh(id));
     if g.source == Source::Custom {
         ui.separator();
@@ -1165,6 +1189,20 @@ fn paint_star(p: &egui::Painter, c: egui::Pos2, r: f32, on: bool) {
     } else {
         p.add(egui::Shape::closed_line(pts, Stroke::new(1.5, TEXT_DIM)));
     }
+}
+
+/// Small translucent button centred at `c`; true when clicked.
+fn art_pill(ui: &mut Ui, c: egui::Pos2, text: &str, salt: &str) -> bool {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(13.0), Color32::WHITE);
+    let rect = Rect::from_center_size(c, galley.size() + vec2(24.0, 14.0));
+    let r = ui.interact(rect, ui.scope_id().with(salt), Sense::click());
+    let bg = if r.hovered() { ACCENT } else { Color32::from_black_alpha(170) };
+    ui.painter().rect_filled(rect, CornerRadius::same(16), bg);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    r.clicked()
 }
 
 /// Round close "X" button; clears `selected` when clicked.
@@ -1335,7 +1373,7 @@ fn links(g: &Game) -> Vec<(&'static str, String)> {
 }
 
 /// UV rect that crops an image of aspect `img` to fill a rect of aspect `rect`.
-fn cover_uv(img: f32, rect: f32) -> Rect {
+pub(crate) fn cover_uv(img: f32, rect: f32) -> Rect {
     if img > rect {
         let u = rect / img;
         Rect::from_min_max(pos2((1.0 - u) / 2.0, 0.0), pos2((1.0 + u) / 2.0, 1.0))
@@ -1423,6 +1461,19 @@ impl eframe::App for GamutApp {
             }
         }
 
+        if let Some(p) = self.picker.as_mut() {
+            match p.show(&ctx) {
+                Outcome::Open => {}
+                Outcome::Closed => self.picker = None,
+                Outcome::Changed(id, kind) => {
+                    self.picker = None;
+                    if kind == ArtKind::Banner || self.game(id).is_some_and(|g| !g.has_hero) {
+                        self.hero = None;
+                    }
+                    self.reload_one(id);
+                }
+            }
+        }
         self.editor_window(&ctx);
         self.settings_window(&ctx);
         self.confirm_window(&ctx);

@@ -186,6 +186,57 @@ pub fn sgdb_art(key: &str, r: SgdbRef, cover: bool, hero: bool) -> Result<(Optio
     Ok((cover, hero))
 }
 
+/// A SteamGridDB game the art picker can browse.
+#[derive(Debug, Clone)]
+pub struct SgdbMatch {
+    /// API path segment, e.g. `game/123` or `steam/400`.
+    pub path: String,
+    pub name: String,
+    pub year: Option<i32>,
+}
+
+/// One image choice: full-size url plus a small preview.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SgdbArt {
+    pub url: String,
+    pub thumb: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+}
+
+#[derive(Deserialize)]
+struct SgdbHit {
+    id: u64,
+    name: String,
+    release_date: Option<i64>,
+}
+
+/// Games matching a name, best first.
+pub fn sgdb_search(key: &str, name: &str) -> Result<Vec<SgdbMatch>> {
+    let l: SgdbList<SgdbHit> = sgdb_get(key, &format!("/search/autocomplete/{}", encode(name)))?;
+    Ok(l.data
+        .into_iter()
+        .map(|h| SgdbMatch {
+            path: format!("game/{}", h.id),
+            name: h.name,
+            year: h.release_date.map(|t| 1970 + (t / 31_556_952) as i32),
+        })
+        .collect())
+}
+
+/// Every static cover (portrait grid) or banner (hero) for a game.
+pub fn sgdb_list(key: &str, game: &str, hero: bool, nsfw: bool) -> Result<Vec<SgdbArt>> {
+    let nsfw = if nsfw { "&nsfw=any" } else { "" };
+    let (kind, q) = if hero { ("heroes", "types=static") } else { ("grids", "dimensions=600x900,342x482,660x930&types=static") };
+    match sgdb_get::<SgdbList<SgdbArt>>(key, &format!("/{kind}/{game}?{q}{nsfw}")) {
+        Ok(l) => Ok(l.data),
+        Err(e) if is_missing(&e) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
 // ---------- helpers ----------
 
 /// Lowercase alphanumerics only, so "DOOM Eternal™" == "doom eternal".

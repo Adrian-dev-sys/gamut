@@ -22,7 +22,6 @@ pub fn store_cover(bytes: &[u8], cover: &Path, thumb: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validates and stores a hero/background image.
 /// True when an image is roughly 2:3 portrait, i.e. usable as a grid cover without heavy cropping.
 pub fn is_cover_shaped(bytes: &[u8]) -> bool {
     let dims = image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -32,6 +31,7 @@ pub fn is_cover_shaped(bytes: &[u8]) -> bool {
     dims.is_some_and(|(w, h)| h > 0 && (0.6..=0.72).contains(&(w as f32 / h as f32)))
 }
 
+/// Validates and stores a hero/background image.
 pub fn store_hero(bytes: &[u8], hero: &Path) -> Result<()> {
     image::guess_format(bytes)?;
     std::fs::write(hero, bytes)?;
@@ -41,7 +41,12 @@ pub fn store_hero(bytes: &[u8], hero: &Path) -> Result<()> {
 /// Decodes an image file to RGBA, downscaling so it fits within `max_w` wide.
 pub fn decode(path: &Path, max_w: u32) -> Result<Rgba> {
     // Sniff format from content (cover/hero files use a neutral .img extension).
-    let mut img = image::load_from_memory(&std::fs::read(path)?)?;
+    decode_bytes(&std::fs::read(path)?, max_w)
+}
+
+/// Same as [`decode`] for in-memory bytes.
+pub fn decode_bytes(bytes: &[u8], max_w: u32) -> Result<Rgba> {
+    let mut img = image::load_from_memory(bytes)?;
     if img.width() > max_w {
         let h = (img.height() as u64 * max_w as u64 / img.width() as u64) as u32;
         img = img.resize_exact(max_w, h.max(1), FilterType::Triangle);
