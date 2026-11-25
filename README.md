@@ -20,9 +20,11 @@ Requirements: Windows 10/11, [Rust](https://rustup.rs/) (stable, MSVC toolchain)
 ```powershell
 git clone https://github.com/Adrian-dev-sys/gamut
 cd gamut
-cargo build --release
-.\target\release\gamut.exe
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+`install.ps1` builds a release, copies it to `%LOCALAPPDATA%\Programs\Gamut\` and adds **Gamut** shortcuts to the
+Desktop and Start Menu. Re-run it after pulling to update. (Or just `cargo build --release` and run
+`target\release\gamut.exe`.)
 
 Optional, in **Settings**:
 - **Steam Web API key** ([get one](https://steamcommunity.com/dev/apikey)) – imports your whole owned library, not just
