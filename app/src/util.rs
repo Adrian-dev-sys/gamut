@@ -6,7 +6,7 @@ pub fn playtime(min: i64) -> String {
     }
 }
 
-/// Unix seconds → "YYYY-MM-DD" (UTC).
+/// Unix seconds → "DD/MM/YYYY" (UTC).
 pub fn date(unix: i64) -> String {
     if unix <= 0 {
         return "Never".into();
@@ -21,7 +21,26 @@ pub fn date(unix: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}")
+    format!("{d:02}/{m:02}/{y:04}")
+}
+
+/// Release dates from Steam ("9 Jun, 2009", "Jun 9, 2009") or Playnite ("2009-06-09") → "DD/MM/YYYY".
+/// Partial dates (just a year, "Q3 2024", "Coming soon") are shown as they are.
+pub fn release(s: &str) -> String {
+    const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let month = |t: &str| MONTHS.iter().position(|m| t.to_ascii_lowercase().starts_with(m)).map(|i| i + 1);
+    let num = |t: &str| t.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok();
+    let parts: Vec<&str> = s.split(|c: char| c == '-' || c == ' ' || c == ',' || c == '.').filter(|p| !p.is_empty()).collect();
+    let dmy = match parts.as_slice() {
+        [y, m, d] if y.len() == 4 => num(y).zip(num(m)).zip(num(d)).map(|((y, m), d)| (d, m, y)),
+        [d, m, y] if month(m).is_some() => num(d).zip(num(y)).map(|(d, y)| (d, month(m).unwrap() as u32, y)),
+        [m, d, y] if month(m).is_some() => num(d).zip(num(y)).map(|(d, y)| (d, month(m).unwrap() as u32, y)),
+        _ => None,
+    };
+    match dmy {
+        Some((d, m, y)) if (1..=31).contains(&d) && (1..=12).contains(&m) => format!("{d:02}/{m:02}/{y:04}"),
+        _ => s.to_string(),
+    }
 }
 
 pub fn opt(s: &str) -> Option<String> {
@@ -34,6 +53,11 @@ mod tests {
     #[test]
     fn dates() {
         assert_eq!(super::date(0), "Never");
-        assert_eq!(super::date(1_700_000_000), "2023-11-14");
+        assert_eq!(super::date(1_700_000_000), "14/11/2023");
+        assert_eq!(super::release("2009-6-9"), "09/06/2009");
+        assert_eq!(super::release("9 Jun, 2009"), "09/06/2009");
+        assert_eq!(super::release("Jun 9, 2009"), "09/06/2009");
+        assert_eq!(super::release("2009"), "2009");
+        assert_eq!(super::release("Coming soon"), "Coming soon");
     }
 }

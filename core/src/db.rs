@@ -81,7 +81,8 @@ impl Library {
             let have: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
             Ok(ADDED_COLS.iter().copied().filter(|(n, _)| !have.iter().any(|h| h == n)).collect())
         };
-        if missing(&self.conn)?.is_empty() {
+        let version = |c: &Connection| c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0));
+        if missing(&self.conn)?.is_empty() && version(&self.conn)? >= 2 {
             return Ok(());
         }
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -92,6 +93,11 @@ impl Library {
             "CREATE UNIQUE INDEX IF NOT EXISTS games_playnite ON games(playnite_id) WHERE playnite_id IS NOT NULL",
             [],
         )?;
+        if version(&tx)? < 2 {
+            // v2: games with a cover but no banner go back to the art queue once, for a banner only.
+            tx.execute("UPDATE games SET cover_state = 0 WHERE has_cover = 1 AND has_hero = 0 AND cover_state = 1", [])?;
+            tx.execute("PRAGMA user_version = 2", [])?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -267,7 +273,7 @@ impl Library {
     }
 
     pub fn needing_cover(&self) -> Result<Vec<Game>> {
-        self.query_where("cover_state = 0 ORDER BY installed DESC, last_played DESC")
+        self.query_where("cover_state IN (0, 3) ORDER BY installed DESC, last_played DESC")
     }
 
     pub fn needing_meta(&self) -> Result<Vec<Game>> {
@@ -468,18 +474,28 @@ impl Library {
         Ok(ids)
     }
 
-    /// Records imported art: (id, cover copied, background copied). Custom games without a usable
-    /// cover go back to the scraper queue.
-    pub fn apply_imported_art(&mut self, results: &[(i64, bool, bool)]) -> Result<()> {
+    /// Records imported art: (id, cover copied, background copied, cover has the wrong shape).
+    /// Anything still missing a cover or banner goes to the art queue.
+    pub fn apply_imported_art(&mut self, results: &[(i64, bool, bool, bool)]) -> Result<()> {
         let tx = self.conn.transaction()?;
-        for &(id, cover, hero) in results {
+        for &(id, cover, hero, weak) in results {
             tx.execute(
                 "UPDATE games SET has_cover = has_cover OR ?2, has_hero = has_hero OR ?3,
-                    cover_state = CASE WHEN ?2 THEN 1 WHEN source = 'custom' AND has_cover = 0 THEN 0 ELSE cover_state END
+                    cover_state = CASE
+                        WHEN ?2 AND ?4 THEN 3
+                        WHEN ?2 AND NOT (has_hero OR ?3) THEN 0
+                        WHEN ?2 THEN 1
+                        WHEN has_cover = 0 THEN 0
+                        ELSE cover_state END
                  WHERE id = ?1",
-                params![id, cover, hero],
+                params![id, cover, hero, weak],
             )?;
         }
+        // Imported games Playnite had no art for at all.
+        tx.execute(
+            "UPDATE games SET cover_state = 0 WHERE playnite_id IS NOT NULL AND has_cover = 0 AND cover_state = 2",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
     }

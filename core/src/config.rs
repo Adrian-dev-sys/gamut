@@ -16,6 +16,9 @@ pub struct Config {
     pub sort: String,
     /// Last grid filter ("all", "installed", "favorites", "steam", "custom", "hidden").
     pub filter: String,
+    /// Platform / tag the grid was narrowed to ("" = any).
+    pub platform: String,
+    pub tag: String,
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
 }
@@ -56,6 +59,8 @@ impl Config {
         on_disk.card_width = self.card_width;
         on_disk.sort = self.sort.clone();
         on_disk.filter = self.filter.clone();
+        on_disk.platform = self.platform.clone();
+        on_disk.tag = self.tag.clone();
         on_disk.window = self.window;
         on_disk.save(path)
     }

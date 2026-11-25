@@ -172,7 +172,10 @@ impl Tables {
     fn launch(&self, d: &Doc, plugin: &str, g: &mut Game) -> Launch {
         let actions = d.get("GameActions").map(Value::array).unwrap_or_default();
         let play = actions.iter().filter_map(Value::doc).find(|a| a.get("IsPlayAction").is_some_and(Value::bool));
-        let install_dir = g.install_dir.clone().unwrap_or_default();
+        if let Some(found) = g.install_dir.as_deref().and_then(relocate) {
+            g.install_dir = Some(found);
+        }
+        let install_dir = g.install_dir.clone().unwrap_or_default().trim_end_matches(['\\', '/']).to_string();
         let vars = |v: &str| v.replace("{InstallDir}", &install_dir).replace("{InstallDirName}", dir_name(&install_dir));
         let Some(a) = play else {
             let game_id = s(d, "GameId").unwrap_or_default();
@@ -282,6 +285,16 @@ impl Tables {
         g.work_dir = work.map(|w| expand(&w));
         Ok(emu_name)
     }
+}
+
+/// A missing install folder that was moved into a sibling folder (e.g. `Games\X` -> `Games\Ports\X`).
+fn relocate(dir: &str) -> Option<String> {
+    let p = Path::new(dir.trim_end_matches(['\\', '/']));
+    if p.exists() {
+        return None;
+    }
+    let (parent, name) = (p.parent()?, p.file_name()?);
+    std::fs::read_dir(parent).ok()?.flatten().map(|e| e.path().join(name)).find(|c| c.is_dir()).map(|c| c.display().to_string())
 }
 
 fn dir_name(p: &str) -> &str {
@@ -407,43 +420,81 @@ fn yaml_scalar(v: &str) -> String {
     }
 }
 
-/// Human-readable summary of what an import would do.
-pub fn report(items: &[Item]) -> String {
+/// What an import would do, grouped for display.
+#[derive(Debug, Clone, Default)]
+pub struct Summary {
+    pub games: usize,
+    pub covers: usize,
+    pub backgrounds: usize,
+    /// (group, games) that Gamut can start.
+    pub playable: Vec<(String, usize)>,
+    /// (group, games) imported without a way to start them.
+    pub unplayable: Vec<(String, usize)>,
+    /// (reason, games) for launches that couldn't be resolved.
+    pub reasons: Vec<(String, usize)>,
+}
+
+pub fn summarize(items: &[Item]) -> Summary {
     use std::collections::BTreeMap;
-    let mut by: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
-    let (mut covers, mut bgs) = (0, 0);
+    let (mut ok, mut no, mut why): (BTreeMap<String, usize>, BTreeMap<String, usize>, BTreeMap<String, usize>) =
+        Default::default();
     for it in items {
-        let group = match &it.launch {
-            Launch::Steam => "Steam".to_string(),
-            Launch::Exe => "Custom (exe)".into(),
-            Launch::Emulator(e) => format!("Emulator: {e}"),
-            Launch::Url => format!("Store link ({})", it.game.store.as_deref().unwrap_or("URL")),
-            Launch::Unresolved(_) => format!("Can't launch ({})", it.game.platform.as_deref().unwrap_or("?")),
-            Launch::None => format!("No launch: {}", it.game.store.as_deref().unwrap_or("unknown source")),
-        };
-        let e = by.entry(group).or_default();
-        e.0 += 1;
-        e.1 += usize::from(it.cover.is_some());
-        if let Launch::Unresolved(r) = &it.launch {
-            // Group similar reasons: drop paths after the first colon.
-            let key = r.split(": ").next().unwrap_or(r).to_string();
-            *reasons.entry(key).or_default() += 1;
-        }
-        covers += usize::from(it.cover.is_some());
-        bgs += usize::from(it.background.is_some());
-    }
-    let mut s = format!("{} games, {covers} covers, {bgs} backgrounds\n", items.len());
-    for (k, (n, c)) in &by {
-        s += &format!("  {n:>5}  {k}  ({c} with cover)\n");
-    }
-    if !reasons.is_empty() {
-        s += "Unresolved launches:\n";
-        for (k, n) in &reasons {
-            s += &format!("  {n:>5}  {k}\n");
+        let store = it.game.store.as_deref();
+        match &it.launch {
+            Launch::Steam => *ok.entry("Steam".into()).or_default() += 1,
+            Launch::Exe => *ok.entry("PC games (exe)".into()).or_default() += 1,
+            Launch::Emulator(e) => *ok.entry(e.clone()).or_default() += 1,
+            Launch::Url => *ok.entry(format!("{} (opens launcher)", store.unwrap_or("Link"))).or_default() += 1,
+            Launch::None => *no.entry(format!("{} library", store.unwrap_or("Other"))).or_default() += 1,
+            Launch::Unresolved(r) => {
+                *no.entry(it.game.platform.clone().unwrap_or_else(|| "Unknown platform".into())).or_default() += 1;
+                let key = match r.split(": ").next().unwrap_or(r) {
+                    "ROM not found" => "ROM file is missing",
+                    "file not found" => "Game files are missing",
+                    k => k,
+                };
+                *why.entry(key.to_string()).or_default() += 1;
+            }
         }
     }
-    s
+    let sorted = |m: BTreeMap<String, usize>| {
+        let mut v: Vec<_> = m.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v
+    };
+    Summary {
+        games: items.len(),
+        covers: items.iter().filter(|i| i.cover.is_some()).count(),
+        backgrounds: items.iter().filter(|i| i.background.is_some()).count(),
+        playable: sorted(ok),
+        unplayable: sorted(no),
+        reasons: sorted(why),
+    }
+}
+
+/// Plain-text version of [`summarize`] for the CLI.
+pub fn report(items: &[Item]) -> String {
+    let s = summarize(items);
+    let mut out = format!("{} games, {} covers, {} backgrounds
+Can be started:
+", s.games, s.covers, s.backgrounds);
+    for (k, n) in &s.playable {
+        out += &format!("  {n:>5}  {k}
+");
+    }
+    out += "Imported, but can't be started:
+";
+    for (k, n) in &s.unplayable {
+        out += &format!("  {n:>5}  {k}
+");
+    }
+    out += "Why:
+";
+    for (k, n) in &s.reasons {
+        out += &format!("  {n:>5}  {k}
+");
+    }
+    out
 }
 
 /// Writes the import: one transaction for rows, then covers/backgrounds on worker threads.
@@ -455,7 +506,7 @@ pub fn import(lib: &mut Library, paths: &Paths, items: &[Item], progress: &(dyn 
     let done = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
     let chunk = jobs.len().div_ceil(threads).max(1);
-    let results: Vec<(i64, bool, bool)> = std::thread::scope(|sc| {
+    let results: Vec<(i64, bool, bool, bool)> = std::thread::scope(|sc| {
         let hs: Vec<_> = jobs
             .chunks(chunk)
             .map(|part| {
@@ -463,15 +514,19 @@ pub fn import(lib: &mut Library, paths: &Paths, items: &[Item], progress: &(dyn 
                 sc.spawn(move || {
                     part.iter()
                         .map(|(id, it)| {
+                            let mut weak = false;
                             let cover = it.cover.as_ref().is_some_and(|p| {
-                                std::fs::read(p).is_ok_and(|b| images::store_cover(&b, &paths.cover(*id), &paths.thumb(*id)).is_ok())
+                                std::fs::read(p).is_ok_and(|b| {
+                                    weak = !images::is_cover_shaped(&b);
+                                    images::store_cover(&b, &paths.cover(*id), &paths.thumb(*id)).is_ok()
+                                })
                             });
                             let hero = it.background.as_ref().is_some_and(|p| {
                                 std::fs::read(p).is_ok_and(|b| images::store_hero(&b, &paths.hero(*id)).is_ok())
                             });
                             let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                             progress(n, total);
-                            (*id, cover, hero)
+                            (*id, cover, hero, weak)
                         })
                         .collect::<Vec<_>>()
                 })

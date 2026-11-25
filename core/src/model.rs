@@ -24,6 +24,8 @@ pub mod state {
     pub const PENDING: i32 = 0;
     pub const DONE: i32 = 1;
     pub const NOT_FOUND: i32 = 2;
+    /// Has a cover, but a better one should be looked for (e.g. imported art with the wrong shape).
+    pub const REPLACE: i32 = 3;
 }
 
 #[derive(Debug, Clone)]

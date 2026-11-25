@@ -23,6 +23,15 @@ pub fn store_cover(bytes: &[u8], cover: &Path, thumb: &Path) -> Result<()> {
 }
 
 /// Validates and stores a hero/background image.
+/// True when an image is roughly 2:3 portrait, i.e. usable as a grid cover without heavy cropping.
+pub fn is_cover_shaped(bytes: &[u8]) -> bool {
+    let dims = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok());
+    dims.is_some_and(|(w, h)| h > 0 && (0.6..=0.72).contains(&(w as f32 / h as f32)))
+}
+
 pub fn store_hero(bytes: &[u8], hero: &Path) -> Result<()> {
     image::guess_format(bytes)?;
     std::fs::write(hero, bytes)?;

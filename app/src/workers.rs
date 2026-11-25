@@ -2,8 +2,9 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Context;
 use gamut_core::{launch::Launched, steam, sync, Config, Library, Paths};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 pub enum Event {
@@ -11,7 +12,7 @@ pub enum Event {
     GameUpdated(i64),
     Error(String),
     /// Playnite folder + dry-run report, or why it couldn't be read.
-    PlaynitePreview(Result<(std::path::PathBuf, String), String>),
+    PlaynitePreview(Result<(std::path::PathBuf, gamut_core::playnite::Summary), String>),
     /// Finished import summary (or error); covers changed for these ids.
     PlayniteImported(Result<String, String>),
 }
@@ -26,6 +27,10 @@ pub struct Workers {
     pub scanning: Arc<AtomicBool>,
     /// Playnite import progress: (images done, images total); total 0 while idle.
     pub importing: Arc<(AtomicUsize, AtomicUsize)>,
+    /// Games Gamut started itself and whose process is still alive.
+    pub running: Arc<Mutex<HashSet<i64>>>,
+    /// Steam's currently running app id (0 = none).
+    pub steam_running: Arc<AtomicU32>,
     cfg: Arc<RwLock<Config>>,
     paths: Paths,
     ctx: Context,
@@ -45,12 +50,22 @@ impl Workers {
             pending_meta: Default::default(),
             scanning: Default::default(),
             importing: Default::default(),
+            running: Default::default(),
+            steam_running: Default::default(),
             cfg,
             paths,
             ctx: ctx.clone(),
         };
         w.spawn_scraper(kc_rx, w.pending_cover.clone(), false);
         w.spawn_scraper(km_rx, w.pending_meta.clone(), true);
+        let (steam, ctx) = (w.steam_running.clone(), w.ctx.clone());
+        std::thread::spawn(move || loop {
+            let id = steam::running_appid().unwrap_or(0);
+            if steam.swap(id, Ordering::Relaxed) != id {
+                ctx.request_repaint();
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        });
         w
     }
 
@@ -126,7 +141,7 @@ impl Workers {
                         .ok_or_else(|| anyhow::anyhow!("Couldn't find a Playnite library in %APPDATA%\\Playnite. Use \"Choose folder\" for a portable Playnite."))?,
                 };
                 let items = gamut_core::playnite::load(&dir)?;
-                anyhow::Ok((dir, gamut_core::playnite::report(&items)))
+                anyhow::Ok((dir, gamut_core::playnite::summarize(&items)))
             })();
             let _ = tx.send(Event::PlaynitePreview(r.map_err(|e| format!("{e:#}"))));
             ctx.request_repaint();
@@ -201,9 +216,13 @@ impl Workers {
     /// Adds the session's playtime when a tracked custom game exits.
     pub fn track(&self, id: i64, launched: Launched) {
         let Launched::Tracked(handle) = launched else { return };
-        let (paths, tx, ctx) = (self.paths.clone(), self.tx.clone(), self.ctx.clone());
+        let (paths, tx, ctx, running) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.running.clone());
+        running.lock().unwrap().insert(id);
         std::thread::spawn(move || {
-            if let Ok(Some((mins, start))) = handle.join() {
+            let r = handle.join();
+            running.lock().unwrap().remove(&id);
+            ctx.request_repaint();
+            if let Ok(Some((mins, start))) = r {
                 if let Ok(lib) = Library::open(&paths.db) {
                     let _ = lib.add_playtime(id, mins, start);
                     let _ = tx.send(Event::GameUpdated(id));

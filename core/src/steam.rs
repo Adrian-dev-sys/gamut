@@ -6,6 +6,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Steam client install folder, from the registry with a default fallback.
+/// App id of the game Steam says is running right now (Steam keeps this in the registry).
+pub fn running_appid() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        use winreg::enums::HKEY_CURRENT_USER;
+        let key = winreg::RegKey::predef(HKEY_CURRENT_USER).open_subkey(r"Software\Valve\Steam").ok()?;
+        let id: u32 = key.get_value("RunningAppID").ok()?;
+        return (id != 0).then_some(id);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 pub fn steam_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {

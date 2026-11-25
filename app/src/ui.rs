@@ -1,4 +1,4 @@
-use crate::theme::{self, ACCENT, CARD, TEXT_DIM};
+use crate::theme::{self, ACCENT, CARD, CARD_HI, GOOD, TEXT_DIM};
 use crate::thumbs::{self, ThumbCache};
 use crate::util::{self, opt};
 use crate::workers::{Event, Workers};
@@ -10,6 +10,7 @@ use egui::{
 use gamut_core::model::state;
 use gamut_core::{images, launch, Config, Game, Library, Paths, Source};
 use std::sync::atomic::Ordering;
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -75,10 +76,16 @@ pub struct GamutApp {
     lib: Library,
     games: Vec<Game>,
     view: Vec<usize>,
-    view_key: Option<(String, Filter, Sort, usize)>,
+    view_key: Option<(String, Filter, Sort, usize, String, String)>,
     search: String,
     filter: Filter,
     sort: Sort,
+    /// Platform / tag narrowing ("" = any), with the values present in the library and their counts.
+    platform: String,
+    tag: String,
+    platforms: Vec<(String, usize)>,
+    tags: Vec<(String, usize)>,
+    tag_search: String,
     selected: Option<i64>,
     thumbs: ThumbCache,
     workers: Workers,
@@ -90,7 +97,7 @@ pub struct GamutApp {
     confirm_remove: Option<i64>,
     error: Option<String>,
     /// Playnite folder + preview report awaiting confirmation.
-    playnite: Option<(std::path::PathBuf, String)>,
+    playnite: Option<(std::path::PathBuf, gamut_core::playnite::Summary)>,
     focus_search: bool,
     /// When the details popup was opened by a click; a quick second click there means Play.
     opened_at: f64,
@@ -98,7 +105,7 @@ pub struct GamutApp {
     /// Latest un-maximized placement + maximized flag, saved on exit.
     window: Option<gamut_core::config::WindowState>,
     /// Sort/filter as last written to config.
-    saved_view: (Sort, Filter),
+    saved_view: (Sort, Filter, String, String),
 }
 
 impl GamutApp {
@@ -107,9 +114,11 @@ impl GamutApp {
         let loaded = Config::load(&paths.config);
         let (sort, filter) = (from_key(&SORTS, &loaded.sort), from_key(&FILTERS, &loaded.filter));
         let window = loaded.window;
+        let (platform, tag) = (loaded.platform.clone(), loaded.tag.clone());
         let cfg = Arc::new(RwLock::new(loaded));
         let (lib, repair_notice) = Library::open_checked(&paths.db)?;
         let games = lib.all()?;
+        let (platforms, tags) = facets(&games);
         let workers = Workers::start(&cc.egui_ctx, paths.clone(), cfg.clone());
         workers.rescan();
         let (hero_tx, hero_rx) = unbounded();
@@ -124,6 +133,11 @@ impl GamutApp {
             search: String::new(),
             filter,
             sort,
+            platform: platform.clone(),
+            tag: tag.clone(),
+            platforms,
+            tags,
+            tag_search: String::new(),
             selected: None,
             workers,
             hero: None,
@@ -138,8 +152,18 @@ impl GamutApp {
             opened_at: 0.0,
             startup: window.as_ref().filter(|w| w.maximized).and_then(|_| crate::startup::Startup::maximize_hidden(cc)),
             window,
-            saved_view: (sort, filter),
+            saved_view: (sort, filter, platform, tag),
         })
+    }
+
+    /// Ids of games running now: ones Gamut launched and is tracking, plus whatever Steam reports.
+    fn running(&self) -> HashSet<i64> {
+        let mut set = self.workers.running.lock().unwrap().clone();
+        let steam = self.workers.steam_running.load(Ordering::Relaxed);
+        if steam != 0 {
+            set.extend(self.games.iter().filter(|g| g.steam_appid() == Some(steam)).map(|g| g.id));
+        }
+        set
     }
 
     fn game(&self, id: i64) -> Option<&Game> {
@@ -151,6 +175,7 @@ impl GamutApp {
             Ok(g) => self.games = g,
             Err(e) => self.error = Some(format!("{e:#}")),
         }
+        (self.platforms, self.tags) = facets(&self.games);
         self.view_key = None;
     }
 
@@ -189,7 +214,7 @@ impl GamutApp {
 
     /// Rebuilds the filtered + sorted index list when inputs change.
     fn update_view(&mut self) {
-        let key = (self.search.clone(), self.filter, self.sort, self.games.len());
+        let key = (self.search.clone(), self.filter, self.sort, self.games.len(), self.platform.clone(), self.tag.clone());
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
@@ -206,7 +231,10 @@ impl GamutApp {
                     Filter::Steam => g.source == Source::Steam,
                     Filter::Custom => g.source == Source::Custom,
                 };
-                pass && (q.is_empty() || g.name.to_lowercase().contains(&q))
+                pass
+                    && (self.platform.is_empty() || platforms_of(g).any(|p| p == self.platform))
+                    && (self.tag.is_empty() || split_list(&g.tags).any(|t| t == self.tag))
+                    && (q.is_empty() || g.name.to_lowercase().contains(&q))
             })
             .collect();
         let gs = &self.games;
@@ -225,6 +253,9 @@ impl GamutApp {
             match a {
                 Action::Play(id) => {
                     let Some(g) = self.game(id).cloned() else { return Ok(()) };
+                    if self.running().contains(&id) {
+                        return Ok(());
+                    }
                     let l = launch::launch(&g)?;
                     self.workers.track(id, l);
                 }
@@ -270,8 +301,8 @@ impl GamutApp {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("GAMUT").strong().color(ACCENT).size(18.0));
-            ui.add_space(12.0);
+            theme::logo(ui);
+            ui.add_space(14.0);
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
                     .hint_text("Search  (Ctrl+F)")
@@ -299,6 +330,32 @@ impl GamutApp {
                         (Filter::Hidden, "Hidden"),
                     ] {
                         ui.selectable_value(&mut self.filter, f, l);
+                    }
+                })
+                .response
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let any = |s: &str, all: &str| if s.is_empty() { all.to_string() } else { s.to_string() };
+            egui::ComboBox::from_id_salt("platform")
+                .selected_text(any(&self.platform, "All platforms"))
+                .height(420.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.platform, String::new(), "All platforms");
+                    for (p, n) in &self.platforms {
+                        ui.selectable_value(&mut self.platform, p.clone(), format!("{p}  ·  {n}"));
+                    }
+                })
+                .response
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            egui::ComboBox::from_id_salt("tag")
+                .selected_text(any(&self.tag, "All tags"))
+                .height(420.0)
+                .show_ui(ui, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.tag_search).hint_text("Find a tag").desired_width(200.0))
+                        .request_focus();
+                    ui.selectable_value(&mut self.tag, String::new(), "All tags");
+                    let q = self.tag_search.to_lowercase();
+                    for (t, n) in self.tags.iter().filter(|(t, _)| q.is_empty() || t.to_lowercase().contains(&q)) {
+                        ui.selectable_value(&mut self.tag, t.clone(), format!("{t}  ·  {n}"));
                     }
                 })
                 .response
@@ -404,6 +461,7 @@ impl GamutApp {
             return;
         }
 
+        let running = self.running();
         let games = &self.games;
         let view = &self.view;
         let thumbs = &mut self.thumbs;
@@ -429,14 +487,20 @@ impl GamutApp {
                     let painter = ui.painter();
                     let r = CornerRadius::same(6);
 
-                    // Lift hovered cards slightly.
+                    // Lift hovered cards slightly, with a soft accent glow.
                     let cover = if hovered { cover.translate(vec2(0.0, -3.0)) } else { cover };
+                    if hovered || is_sel {
+                        let glow = egui::epaint::Shadow { offset: [0, 4], blur: 22, spread: 1, color: ACCENT.gamma_multiply(0.32) };
+                        painter.add(glow.as_shape(cover, r));
+                    }
                     match thumbs.get(g.id, g.has_cover) {
                         Some(t) => {
                             egui::Image::from_texture(t).corner_radius(r).paint_at(ui, cover);
                         }
                         None => {
                             painter.rect_filled(cover, r, CARD);
+                            let lower = Rect::from_min_max(pos2(cover.left(), cover.center().y), cover.max);
+                            paint_vgradient(painter, lower, Color32::TRANSPARENT, CARD_HI);
                             let galley = painter.layout(
                                 g.name.clone(),
                                 FontId::proportional(15.0),
@@ -452,8 +516,11 @@ impl GamutApp {
                         painter.circle_filled(c, 13.0, Color32::from_black_alpha(140));
                         paint_star(painter, c, 9.0, true);
                     }
+                    if running.contains(&g.id) {
+                        badge(painter, cover.left_top() + vec2(8.0, 8.0), "RUNNING", GOOD);
+                    }
                     if is_sel || hovered {
-                        let s = if is_sel { Stroke::new(2.5, ACCENT) } else { Stroke::new(1.5, Color32::from_gray(200)) };
+                        let s = if is_sel { Stroke::new(2.5, ACCENT) } else { Stroke::new(1.5, ACCENT.gamma_multiply(0.8)) };
                         painter.rect_stroke(cover, r, s, StrokeKind::Outside);
                     }
                     let mut job = egui::text::LayoutJob::simple_singleline(
@@ -484,6 +551,8 @@ impl GamutApp {
 
     fn details(&mut self, ui: &mut Ui, id: i64, actions: &mut Vec<Action>) {
         let Some(g) = self.game(id).cloned() else { return };
+        let is_running = self.running().contains(&id);
+        let mut pick_tag: Option<String> = None;
 
         // Load banner off-thread on selection change.
         if self.hero.as_ref().map(|(h, _)| *h) != Some(id) {
@@ -561,14 +630,22 @@ impl GamutApp {
             ui.vertical(|ui| {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
-                    let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
-                        .fill(ACCENT)
-                        .min_size(vec2(150.0, 38.0));
-                    let can_play = g.source == Source::Steam || g.exe.is_some();
-                    let r = ui.add_enabled(can_play, play).on_disabled_hover_text("No way to start this game on this PC");
-                    if r.clicked() {
-                        actions.push(Action::Play(id));
+                    if is_running {
+                        let b = egui::Button::new(RichText::new("Running").size(17.0).strong().color(Color32::WHITE))
+                            .fill(GOOD)
+                            .sense(Sense::hover())
+                            .min_size(vec2(150.0, 38.0));
+                        ui.add(b).on_hover_text("This game is running");
+                    } else {
+                        let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
+                        let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
+                            .fill(ACCENT)
+                            .min_size(vec2(150.0, 38.0));
+                        let can_play = g.source == Source::Steam || g.exe.is_some();
+                        let r = ui.add_enabled(can_play, play).on_disabled_hover_text("No way to start this game on this PC");
+                        if r.clicked() {
+                            actions.push(Action::Play(id));
+                        }
                     }
                     let fav = ui
                         .add(egui::Button::new("").min_size(vec2(38.0, 38.0)))
@@ -592,6 +669,7 @@ impl GamutApp {
                         (Source::Custom, true) => "Ready",
                         (Source::Custom, false) => "Not installed",
                     };
+                    let status = if is_running { "Running" } else { status };
                     stat(ui, "LAST PLAYED", &util::date(g.last_played));
                     stat(ui, "TIME PLAYED", &util::playtime(g.playtime_min));
                     stat(ui, "ADDED", &util::date(g.added));
@@ -618,6 +696,7 @@ impl GamutApp {
         if y < header_bottom {
             ui.add_space(header_bottom - y);
         }
+        ui.add_space(20.0);
 
         // Lower area: details on the left, description on the right.
         let rest = (ui.available_height() - pad).max(80.0);
@@ -626,55 +705,66 @@ impl GamutApp {
             let left_w = cover_w + 40.0;
             ui.allocate_ui_with_layout(vec2(left_w, rest), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(left_w);
-                section(ui, "DETAILS");
-                {
-                    let mut row = |k: &str, v: &str| {
-                        ui.label(RichText::new(k).color(TEXT_DIM).size(11.5));
-                        ui.add(egui::Label::new(v).truncate()).on_hover_text(v);
-                        ui.add_space(6.0);
-                    };
+                ScrollArea::vertical().id_salt("facts").auto_shrink([false, true]).show(ui, |ui| {
+                    theme::section(ui, "Details");
                     let source = match (g.source, &g.store) {
                         (Source::Steam, _) => "Steam",
                         (_, Some(s)) => s.as_str(),
                         _ => "Custom",
                     };
-                    row("Source", source);
+                    fact(ui, "Source", source);
                     let scores = match (g.critic_score, g.community_score) {
                         (Some(c), Some(u)) => Some(format!("Critics {c} · Users {u}")),
                         (Some(c), None) => Some(format!("Critics {c}")),
                         (None, Some(u)) => Some(format!("Users {u}")),
                         _ => None,
                     };
+                    let released = g.release_date.as_deref().map(util::release);
                     for (k, v) in [
                         ("Platform", &g.platform),
                         ("Developer", &g.developer),
                         ("Publisher", &g.publisher),
-                        ("Released", &g.release_date),
+                        ("Released", &released),
                         ("Genres", &g.genres),
                         ("Series", &g.series),
                         ("Score", &scores),
-                        ("Tags", &g.tags),
                     ] {
                         if let Some(v) = v {
-                            row(k, v);
+                            fact(ui, k, v);
                         }
                     }
                     if let Some(a) = g.steam_appid() {
-                        row("Steam ID", &a.to_string());
+                        fact(ui, "Steam ID", &a.to_string());
                     }
                     if let Some(d) = g.install_dir.as_deref().or(g.exe.as_deref()) {
-                        row("Location", d);
+                        ui.label(theme::caption("Location"));
+                        ui.add(egui::Label::new(d).truncate()).on_hover_text(d);
+                        ui.add_space(6.0);
                     }
-                }
+                    if g.tags.is_some() {
+                        ui.label(theme::caption("Tags"));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                            for t in split_list(&g.tags) {
+                                let b = egui::Button::new(RichText::new(t).size(12.5))
+                                    .fill(CARD)
+                                    .corner_radius(CornerRadius::same(10));
+                                if ui.add(b).on_hover_text("Show games with this tag").clicked() {
+                                    pick_tag = Some(t.to_string());
+                                }
+                            }
+                        });
+                    }
+                });
             });
             ui.add_space(32.0);
             let right_w = ui.available_width() - pad;
             ui.allocate_ui_with_layout(vec2(right_w, rest), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(right_w);
-                section(ui, "DESCRIPTION");
+                theme::section(ui, "Description");
                 ScrollArea::vertical().id_salt("desc").auto_shrink([false, true]).show(ui, |ui| {
                     match &g.description {
-                        Some(d) => ui.add(egui::Label::new(RichText::new(d).size(14.5).line_height(Some(21.0))).wrap()),
+                        Some(d) => ui.add(egui::Label::new(RichText::new(d).size(14.5).line_height(Some(22.0))).wrap()),
                         None if g.meta_state == state::PENDING => {
                             ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
                         }
@@ -683,6 +773,10 @@ impl GamutApp {
                 });
             });
         });
+        if let Some(t) = pick_tag {
+            self.tag = t;
+            self.selected = None;
+        }
     }
 
     // ---------- dialogs ----------
@@ -699,7 +793,7 @@ impl GamutApp {
             .default_width(480.0)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                egui::Grid::new("ed").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                egui::Grid::new("ed").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
                     ui.label("Name");
                     ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(340.0));
                     ui.end_row();
@@ -755,7 +849,7 @@ impl GamutApp {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let ok = !ed.name.trim().is_empty();
-                    if ui.add_enabled(ok, egui::Button::new("Save").fill(ACCENT)).clicked() {
+                    if ui.add_enabled(ok, egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
                         save = true;
                     }
                 });
@@ -814,7 +908,8 @@ impl GamutApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.heading("Steam");
+                ui.set_width(460.0);
+                theme::section(ui, "Steam");
                 egui::Grid::new("st").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     ui.label("Web API key");
                     ui.add(egui::TextEdit::singleline(&mut s.steam_api_key).password(true).desired_width(320.0));
@@ -828,26 +923,21 @@ impl GamutApp {
                     ui.end_row();
                 });
                 ui.hyperlink_to("Get a Steam Web API key", "https://steamcommunity.com/dev/apikey");
-                ui.label(
-                    RichText::new("Your profile's game details must be public, or the key must belong to this account.")
-                        .color(TEXT_DIM)
-                        .small(),
-                );
-                ui.add_space(10.0);
-                ui.heading("SteamGridDB");
+                ui.label(theme::hint("Your profile's game details must be public, or the key must belong to this account."));
+                ui.add_space(12.0);
+                ui.separator();
+                theme::section(ui, "SteamGridDB");
                 egui::Grid::new("sg").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     ui.label("API key");
                     ui.add(egui::TextEdit::singleline(&mut s.steamgriddb_key).password(true).desired_width(320.0));
                     ui.end_row();
                 });
                 ui.hyperlink_to("Get a SteamGridDB key", "https://www.steamgriddb.com/profile/preferences/api");
-                ui.add_space(10.0);
-                ui.heading("Playnite");
-                ui.label(
-                    RichText::new("Copies games, playtime, favorites, covers and launch settings. Close Playnite first.")
-                        .color(TEXT_DIM)
-                        .small(),
-                );
+                ui.label(theme::hint("Used for covers and banners Steam doesn't have."));
+                ui.add_space(12.0);
+                ui.separator();
+                theme::section(ui, "Playnite");
+                ui.label(theme::hint("Copies games, playtime, favorites, covers and launch settings. Close Playnite first."));
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!importing, egui::Button::new("Import from Playnite…")).clicked() {
                         preview = Some(None);
@@ -861,10 +951,11 @@ impl GamutApp {
                         }
                     }
                 });
-                ui.add_space(10.0);
-                ui.label(RichText::new(format!("Data folder: {}", self.paths.root.display())).color(TEXT_DIM).small());
-                ui.add_space(6.0);
-                if ui.add(egui::Button::new("Save").fill(ACCENT)).clicked() {
+                ui.add_space(12.0);
+                ui.separator();
+                ui.label(theme::hint(&format!("Data folder: {}", self.paths.root.display())));
+                ui.add_space(8.0);
+                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
                     save = true;
                 }
             });
@@ -922,7 +1013,7 @@ impl GamutApp {
     }
 
     fn playnite_window(&mut self, ctx: &egui::Context) {
-        let Some((dir, report)) = self.playnite.clone() else { return };
+        let Some((dir, sum)) = self.playnite.as_ref() else { return };
         let mut open = true;
         let (mut go, mut cancel) = (false, false);
         egui::Window::new("Import from Playnite")
@@ -931,22 +1022,41 @@ impl GamutApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(RichText::new(dir.display().to_string()).color(TEXT_DIM).small());
-                ui.add_space(6.0);
-                ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    ui.label(RichText::new(&report).monospace().size(12.5));
+                ui.set_width(520.0);
+                ui.label(theme::hint(&dir.display().to_string()));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    stat(ui, "Games", &sum.games.to_string());
+                    stat(ui, "Covers", &sum.covers.to_string());
+                    stat(ui, "Backgrounds", &sum.backgrounds.to_string());
                 });
                 ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "Steam games merge into your existing ones (playtime and last played keep the higher value, \
-                         favorites and hidden are added). Playnite's covers and backgrounds replace Gamut's. \
-                         Importing again later updates the same games instead of duplicating them.",
-                    )
-                    .color(TEXT_DIM)
-                    .small(),
-                );
-                ui.add_space(8.0);
+                ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
+                    let table = |ui: &mut Ui, title: &str, rows: &[(String, usize)]| {
+                        if rows.is_empty() {
+                            return;
+                        }
+                        theme::section(ui, title);
+                        egui::Grid::new(title).num_columns(2).striped(true).spacing([24.0, 6.0]).show(ui, |ui| {
+                            for (k, n) in rows {
+                                ui.add(egui::Label::new(k).wrap());
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(RichText::new(n.to_string()).strong()));
+                                ui.end_row();
+                            }
+                        });
+                        ui.add_space(8.0);
+                    };
+                    table(ui, "Can be started", &sum.playable);
+                    table(ui, "Imported without a way to start", &sum.unplayable);
+                    table(ui, "Why some can't start", &sum.reasons);
+                });
+                ui.add_space(6.0);
+                ui.label(theme::hint(
+                    "Steam games merge into your existing ones (playtime and last played keep the higher value, \
+                     favorites and hidden are added). Playnite's covers and backgrounds replace Gamut's. \
+                     Importing again later updates the same games instead of duplicating them.",
+                ));
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new(RichText::new("Import").color(Color32::WHITE)).fill(ACCENT)).clicked() {
                         go = true;
@@ -957,6 +1067,7 @@ impl GamutApp {
                 });
             });
         if go {
+            let dir = dir.clone();
             self.workers.playnite_import(dir);
             self.playnite = None;
             self.settings = None;
@@ -967,16 +1078,21 @@ impl GamutApp {
 
     fn error_window(&mut self, ctx: &egui::Context) {
         let Some(e) = self.error.clone() else { return };
-        let mut open = true;
+        let (mut open, mut ok) = (true, false);
         egui::Window::new("Gamut")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(e);
+                ui.set_max_width(440.0);
+                ui.add(egui::Label::new(e).wrap());
+                ui.add_space(8.0);
+                if ui.button("OK").clicked() {
+                    ok = true;
+                }
             });
-        if !open {
+        if !open || ok {
             self.error = None;
         }
     }
@@ -1023,6 +1139,8 @@ impl GamutApp {
         let mut c = self.cfg.write().unwrap();
         c.sort = key_of(&SORTS, self.sort).into();
         c.filter = key_of(&FILTERS, self.filter).into();
+        c.platform = self.platform.clone();
+        c.tag = self.tag.clone();
         c.window = self.window;
         let _ = c.save_ui_prefs(&self.paths.config);
     }
@@ -1096,24 +1214,72 @@ fn paint_vgradient(p: &egui::Painter, r: Rect, top: Color32, bottom: Color32) {
     p.add(m);
 }
 
-/// Small caps label over a value, used in the details header.
+/// Caption over a value, used for stat tiles.
 fn stat(ui: &mut Ui, label: &str, value: &str) {
     egui::Frame::new()
         .fill(CARD)
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(egui::Margin::symmetric(12, 7))
+        .stroke(Stroke::new(1.0, theme::BORDER))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(14, 8))
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(RichText::new(label).size(10.5).color(TEXT_DIM));
-                ui.label(RichText::new(value).size(14.0).strong());
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(theme::caption(label));
+                ui.label(RichText::new(value).size(15.0).strong());
             });
         });
 }
 
-fn section(ui: &mut Ui, title: &str) {
-    ui.label(RichText::new(title).size(12.0).strong().color(TEXT_DIM));
-    ui.add_space(6.0);
+/// Caption + wrapped value in the details column.
+fn fact(ui: &mut Ui, k: &str, v: &str) {
+    ui.spacing_mut().item_spacing.y = 3.0;
+    ui.label(theme::caption(k));
+    ui.add(egui::Label::new(v).wrap());
+    ui.add_space(8.0);
+}
+
+/// Small filled pill with uppercase text.
+fn badge(p: &egui::Painter, at: egui::Pos2, text: &str, fill: Color32) {
+    let galley = p.layout_no_wrap(text.into(), FontId::proportional(10.5), Color32::WHITE);
+    let rect = Rect::from_min_size(at, galley.size() + vec2(14.0, 6.0));
+    p.rect_filled(rect, CornerRadius::same(9), fill);
+    p.galley(rect.min + vec2(7.0, 3.0), galley, Color32::WHITE);
+}
+
+/// Items of a comma-joined list column.
+fn split_list(v: &Option<String>) -> impl Iterator<Item = &str> {
+    v.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// A game's platforms; games without one are PC games.
+fn platforms_of(g: &Game) -> impl Iterator<Item = &str> {
+    let v: Vec<&str> = split_list(&g.platform).collect();
+    let pc = v.is_empty().then_some("PC (Windows)");
+    v.into_iter().chain(pc)
+}
+
+/// Platforms and tags in the library with game counts, most common first.
+fn facets(games: &[Game]) -> (Vec<(String, usize)>, Vec<(String, usize)>) {
+    let mut p: std::collections::HashMap<&str, usize> = Default::default();
+    let mut t: std::collections::HashMap<&str, usize> = Default::default();
+    for g in games.iter().filter(|g| !g.hidden) {
+        for x in platforms_of(g) {
+            *p.entry(x).or_default() += 1;
+        }
+        for x in split_list(&g.tags) {
+            *t.entry(x).or_default() += 1;
+        }
+    }
+    let sorted = |m: std::collections::HashMap<&str, usize>, by_count: bool| {
+        let mut v: Vec<(String, usize)> = m.into_iter().map(|(k, n)| (k.to_string(), n)).collect();
+        if by_count {
+            v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        } else {
+            v.sort_by_key(|(k, _)| k.to_lowercase());
+        }
+        v
+    };
+    (sorted(p, true), sorted(t, false))
 }
 
 /// External reference pages for a game (just links, nothing is fetched).
@@ -1169,9 +1335,11 @@ impl eframe::App for GamutApp {
             }
         }
 
-        egui::Panel::top("top")
+        let top = egui::Panel::top("top")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 10)))
             .show(ui, |ui| self.top_bar(ui));
+        let line = Rect::from_min_size(top.response.rect.left_bottom() - vec2(0.0, 1.0), vec2(top.response.rect.width(), 1.5));
+        theme::hgradient(ui.painter(), line, ACCENT.gamma_multiply(0.7), theme::ACCENT_2.gamma_multiply(0.15));
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 5)))
             .show(ui, |ui| self.status_bar(ui));
@@ -1231,8 +1399,9 @@ impl eframe::App for GamutApp {
         }
         self.thumbs.end_frame();
         self.track_window(&ctx);
-        if self.saved_view != (self.sort, self.filter) {
-            self.saved_view = (self.sort, self.filter);
+        let view = (self.sort, self.filter, self.platform.clone(), self.tag.clone());
+        if self.saved_view != view {
+            self.saved_view = view;
             self.save_prefs();
         }
     }

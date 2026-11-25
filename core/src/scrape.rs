@@ -27,6 +27,11 @@ struct AppData {
     #[serde(default)]
     genres: Vec<Named>,
     release_date: Option<Release>,
+    fullgame: Option<FullGame>,
+}
+#[derive(Deserialize)]
+struct FullGame {
+    appid: serde_json::Value,
 }
 #[derive(Deserialize)]
 struct Named {
@@ -40,6 +45,8 @@ struct Release {
 
 pub struct SteamDetails {
     pub kind: String,
+    /// For demos/playtests: the game they belong to.
+    pub fullgame: Option<u32>,
     pub meta: Metadata,
 }
 
@@ -52,8 +59,14 @@ pub fn steam_details(appid: u32) -> Result<Option<SteamDetails>> {
     let about = strip_html(&d.about_the_game);
     let desc = if about.len() > d.short_description.len() { about } else { d.short_description.clone() };
     let join = |v: &[String]| (!v.is_empty()).then(|| v.join(", "));
+    let fullgame = d.fullgame.and_then(|f| match f.appid {
+        serde_json::Value::String(s) => s.parse().ok(),
+        serde_json::Value::Number(n) => n.as_u64().map(|n| n as u32),
+        _ => None,
+    });
     Ok(Some(SteamDetails {
         kind: d.kind,
+        fullgame,
         meta: Metadata {
             description: (!desc.trim().is_empty()).then(|| desc.trim().to_string()),
             developer: join(&d.developers),

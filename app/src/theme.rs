@@ -1,30 +1,118 @@
-use egui::{Color32, Context, CornerRadius, Stroke};
+//! Colors, type scale and small styling helpers shared by every view.
+use egui::{Color32, Context, CornerRadius, FontId, Margin, RichText, Shadow, Stroke, TextStyle};
 
-pub const ACCENT: Color32 = Color32::from_rgb(92, 140, 255);
-pub const BG: Color32 = Color32::from_rgb(18, 20, 25);
-pub const PANEL: Color32 = Color32::from_rgb(24, 27, 33);
-pub const CARD: Color32 = Color32::from_rgb(36, 40, 48);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(150, 156, 168);
+pub const ACCENT: Color32 = Color32::from_rgb(110, 140, 255);
+/// Second gradient stop, used sparingly (logo, top bar edge).
+pub const ACCENT_2: Color32 = Color32::from_rgb(176, 112, 255);
+pub const BG: Color32 = Color32::from_rgb(13, 15, 22);
+pub const PANEL: Color32 = Color32::from_rgb(19, 22, 32);
+pub const CARD: Color32 = Color32::from_rgb(30, 34, 48);
+pub const CARD_HI: Color32 = Color32::from_rgb(40, 46, 64);
+pub const BORDER: Color32 = Color32::from_rgb(44, 50, 70);
+pub const TEXT: Color32 = Color32::from_rgb(228, 232, 242);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(146, 154, 178);
+pub const GOOD: Color32 = Color32::from_rgb(56, 180, 112);
 
 pub fn apply(ctx: &Context) {
     let mut v = egui::Visuals::dark();
     v.panel_fill = PANEL;
     v.window_fill = PANEL;
-    v.extreme_bg_color = BG;
+    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.extreme_bg_color = Color32::from_rgb(16, 18, 27);
     v.faint_bg_color = CARD;
-    v.selection.bg_fill = ACCENT.linear_multiply(0.6);
+    v.code_bg_color = CARD;
+    v.selection.bg_fill = ACCENT.gamma_multiply(0.45);
     v.selection.stroke = Stroke::new(1.0, ACCENT);
     v.hyperlink_color = ACCENT;
-    v.window_corner_radius = CornerRadius::same(8);
-    for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-        w.corner_radius = CornerRadius::same(5);
+    v.window_corner_radius = CornerRadius::same(12);
+    v.menu_corner_radius = CornerRadius::same(8);
+    v.window_shadow = Shadow { offset: [0, 12], blur: 36, spread: 0, color: Color32::from_black_alpha(160) };
+    v.popup_shadow = Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(140) };
+
+    let w = &mut v.widgets;
+    w.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
+    w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+    for s in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        s.corner_radius = CornerRadius::same(6);
+        s.fg_stroke = Stroke::new(1.0, TEXT);
     }
+    w.inactive.bg_fill = CARD;
+    w.inactive.weak_bg_fill = CARD;
+    w.hovered.bg_fill = CARD_HI;
+    w.hovered.weak_bg_fill = CARD_HI;
+    w.hovered.bg_stroke = Stroke::new(1.0, ACCENT.gamma_multiply(0.7));
+    w.active.weak_bg_fill = ACCENT.gamma_multiply(0.35);
+    w.active.bg_stroke = Stroke::new(1.0, ACCENT);
+    w.open.weak_bg_fill = CARD_HI;
     v.interact_cursor = Some(egui::CursorIcon::PointingHand);
     ctx.set_visuals(v);
+
     // One wheel notch scrolls ~100 px (egui's default of 40 feels sluggish for a cover grid).
     ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
     ctx.all_styles_mut(|s| {
-        s.spacing.button_padding = egui::vec2(10.0, 5.0);
-        s.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        s.text_styles = [
+            (TextStyle::Small, FontId::proportional(12.0)),
+            (TextStyle::Body, FontId::proportional(14.0)),
+            (TextStyle::Button, FontId::proportional(14.0)),
+            (TextStyle::Heading, FontId::proportional(18.0)),
+            (TextStyle::Monospace, FontId::monospace(13.0)),
+        ]
+        .into();
+        s.spacing.button_padding = egui::vec2(12.0, 6.0);
+        s.spacing.item_spacing = egui::vec2(8.0, 8.0);
+        s.spacing.interact_size.y = 28.0;
+        s.spacing.window_margin = Margin::same(18);
+        s.spacing.menu_margin = Margin::same(8);
+        s.spacing.combo_width = 150.0;
     });
+}
+
+/// Small uppercase label for section titles and field names.
+pub fn caption(t: &str) -> RichText {
+    RichText::new(t.to_uppercase()).size(11.0).color(TEXT_DIM).extra_letter_spacing(0.8)
+}
+
+/// Secondary explanatory text.
+pub fn hint(t: &str) -> RichText {
+    RichText::new(t).size(12.5).color(TEXT_DIM)
+}
+
+/// Caption with consistent spacing around it.
+pub fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.label(caption(title));
+    ui.add_space(2.0);
+}
+
+/// Horizontal two-color gradient fill.
+pub fn hgradient(p: &egui::Painter, r: egui::Rect, left: Color32, right: Color32) {
+    let mut m = egui::Mesh::default();
+    m.colored_vertex(r.left_top(), left);
+    m.colored_vertex(r.right_top(), right);
+    m.colored_vertex(r.left_bottom(), left);
+    m.colored_vertex(r.right_bottom(), right);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(1, 2, 3);
+    p.add(m);
+}
+
+/// "GAMUT" wordmark with each letter stepping from ACCENT to ACCENT_2.
+pub fn logo(ui: &mut egui::Ui) {
+    let text = "GAMUT";
+    let mut job = egui::text::LayoutJob::default();
+    let n = text.chars().count().max(2) - 1;
+    for (i, ch) in text.chars().enumerate() {
+        let color = ACCENT.lerp_to_gamma(ACCENT_2, i as f32 / n as f32);
+        job.append(
+            &ch.to_string(),
+            0.0,
+            egui::TextFormat {
+                font_id: FontId::proportional(19.0),
+                color,
+                extra_letter_spacing: 1.5,
+                ..Default::default()
+            },
+        );
+    }
+    ui.label(job);
 }
