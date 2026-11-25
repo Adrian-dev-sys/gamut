@@ -204,6 +204,9 @@ pub struct SgdbArt {
     pub width: u32,
     #[serde(default)]
     pub height: u32,
+    /// Where it comes from, when that isn't SteamGridDB.
+    #[serde(skip)]
+    pub source: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -235,6 +238,30 @@ pub fn sgdb_list(key: &str, game: &str, hero: bool, nsfw: bool) -> Result<Vec<Sg
         Err(e) if is_missing(&e) => Ok(Vec::new()),
         Err(e) => Err(e),
     }
+}
+
+/// Steam's own library art: the local Steam cache copy (includes art customised in Steam), then the store CDN.
+pub fn steam_official_art(appid: u32, hero: bool) -> Vec<SgdbArt> {
+    let mut out = Vec::new();
+    let art = |url: String, bytes: &[u8], source| {
+        let (width, height) = crate::images::dimensions(bytes).unwrap_or((0, 0));
+        SgdbArt { thumb: url.clone(), url, width, height, source: Some(source) }
+    };
+    let file = if hero { "library_hero.jpg" } else { "library_600x900.jpg" };
+    if let Some(p) = crate::steam::local_art(appid, file) {
+        if let Ok(b) = std::fs::read(&p) {
+            out.push(art(p.display().to_string(), &b, "Your Steam library"));
+        }
+    }
+    let names = if hero { ["library_hero_2x.jpg", "library_hero.jpg"] } else { ["library_600x900_2x.jpg", "library_600x900.jpg"] };
+    for n in names {
+        let url = format!("{CDN}/{appid}/{n}");
+        if let Ok(Some(b)) = get_bytes_opt(&url) {
+            out.push(art(url, &b, "Steam store"));
+            break;
+        }
+    }
+    out
 }
 
 // ---------- helpers ----------

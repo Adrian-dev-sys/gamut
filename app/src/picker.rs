@@ -18,11 +18,28 @@ enum Msg {
     Arts(u64, Result<Vec<SgdbArt>, String>),
     Thumb(u64, usize, Option<ColorImage>),
     Applied(Result<(), String>),
+    /// Steam app id found by name, for games not from Steam.
+    Official(u32),
 }
 
 struct Tile {
     art: SgdbArt,
     tex: Option<TextureHandle>,
+    /// Preview couldn't be loaded (e.g. a 404): hidden.
+    failed: bool,
+}
+
+/// Bytes of an image url, or of a local file path (Steam's library cache).
+fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
+    if url.starts_with("http") {
+        gamut_core::http::get_bytes(url)
+    } else {
+        Ok(std::fs::read(url)?)
+    }
+}
+
+fn official(appid: u32) -> SgdbMatch {
+    SgdbMatch { path: format!("official/{appid}"), name: "Official Steam art".into(), year: None }
 }
 
 pub struct Picker {
@@ -36,6 +53,8 @@ pub struct Picker {
     paths: Paths,
     query: String,
     matches: Vec<SgdbMatch>,
+    /// Matches that survive a new name search (official Steam art, the Steam id on SteamGridDB).
+    pinned: Vec<SgdbMatch>,
     chosen: Option<usize>,
     tiles: Vec<Tile>,
     busy: bool,
@@ -72,6 +91,7 @@ impl Picker {
             paths,
             query: g.name.clone(),
             matches: Vec::new(),
+            pinned: Vec::new(),
             chosen: None,
             tiles: Vec::new(),
             busy: false,
@@ -83,14 +103,30 @@ impl Picker {
             tx,
             rx,
         };
-        if p.key.is_empty() {
-            p.note = Some("Add a SteamGridDB API key in Settings to search for images online.".into());
-        } else {
-            // Steam games resolve exactly by app id; the name search fills in alternatives.
-            if let Some(appid) = g.steam_appid().filter(|_| g.source == gamut_core::Source::Steam) {
-                p.matches.push(SgdbMatch { path: format!("steam/{appid}"), name: format!("{} (Steam)", g.name), year: None });
-                p.choose(ctx, 0);
+        let steam = g.steam_appid().filter(|_| g.source == gamut_core::Source::Steam);
+        if let Some(appid) = steam {
+            p.pinned.push(official(appid));
+            if !p.key.is_empty() {
+                // Steam games resolve exactly by app id; the name search fills in alternatives.
+                p.pinned.push(SgdbMatch { path: format!("steam/{appid}"), name: format!("{} (Steam id)", g.name), year: None });
             }
+            p.matches = p.pinned.clone();
+            p.choose(ctx, p.matches.len() - 1);
+        } else {
+            // Not from Steam: look for the same game on the store to offer its official art.
+            let (name, tx, ctx) = (g.name.clone(), p.tx.clone(), ctx.clone());
+            std::thread::spawn(move || match scrape::steam_search(&name) {
+                Ok(Some(appid)) => {
+                    let _ = tx.send(Msg::Official(appid));
+                    ctx.request_repaint();
+                }
+                Ok(None) => {}
+                Err(e) => log::warn!("art picker: Steam store search for {name:?}: {e:#}"),
+            });
+        }
+        if p.key.is_empty() {
+            p.note = Some("Add a SteamGridDB API key in Settings to get community art too.".into());
+        } else {
             p.search(ctx);
         }
         p
@@ -120,7 +156,10 @@ impl Picker {
         let (key, path, hero, nsfw) = (self.key.clone(), self.matches[i].path.clone(), self.kind == ArtKind::Banner, self.nsfw);
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let r = scrape::sgdb_list(&key, &path, hero, nsfw).map_err(|e| format!("{e:#}"));
+            let r = match path.strip_prefix("official/").and_then(|a| a.parse().ok()) {
+                Some(appid) => Ok(scrape::steam_official_art(appid, hero)),
+                None => scrape::sgdb_list(&key, &path, hero, nsfw).map_err(|e| format!("{e:#}")),
+            };
             let _ = tx.send(Msg::Arts(round, r));
             ctx.request_repaint();
         });
@@ -135,7 +174,7 @@ impl Picker {
             std::thread::spawn(move || {
                 while cur.load(Ordering::SeqCst) == round {
                     let Some((i, url)) = queue.lock().unwrap().pop() else { break };
-                    let img = gamut_core::http::get_bytes(&url)
+                    let img = fetch(&url)
                         .and_then(|b| images::decode_bytes(&b, 400))
                         .inspect_err(|e| log::warn!("art picker: preview {url}: {e:#}"))
                         .ok()
@@ -157,7 +196,7 @@ impl Picker {
         std::thread::spawn(move || {
             let r = (|| {
                 let bytes = match src {
-                    Ok(url) => gamut_core::http::get_bytes(&url)?,
+                    Ok(url) => fetch(&url)?,
                     Err(path) => std::fs::read(path)?,
                 };
                 let lib = Library::open(&paths.db)?;
@@ -187,14 +226,15 @@ impl Picker {
                     }
                     match r {
                         Ok(list) => {
-                            let steam = self.matches.first().filter(|m| m.path.starts_with("steam/")).cloned();
-                            self.matches = steam.into_iter().chain(list).collect();
+                            self.matches = self.pinned.iter().cloned().chain(list).collect();
                             if self.chosen.is_none() {
                                 if self.matches.is_empty() {
                                     self.busy = false;
                                     self.note = Some(format!("No game called \"{}\" on SteamGridDB.", self.query.trim()));
                                 } else {
-                                    self.choose(ctx, 0);
+                                    // Land on the first search hit, not the pinned Steam entries.
+                                    let first = if self.matches.len() > self.pinned.len() { self.pinned.len() } else { 0 };
+                                    self.choose(ctx, first);
                                 }
                             }
                         }
@@ -222,10 +262,15 @@ impl Picker {
                                 continue;
                             }
                             if arts.is_empty() {
-                                let what = if self.kind == ArtKind::Cover { "covers" } else { "banners" };
-                                self.note = Some(format!("SteamGridDB has no {what} for this game. Try another match or search."));
+                                let what = if self.kind == ArtKind::Cover { "cover" } else { "banner" };
+                                let from_steam = self.chosen.is_some_and(|c| self.matches[c].path.starts_with("official/"));
+                                self.note = Some(if from_steam {
+                                    format!("Steam has no official {what} for this game.")
+                                } else {
+                                    format!("SteamGridDB has no {what}s for this game. Try another match or search.")
+                                });
                             }
-                            self.tiles = arts.into_iter().map(|art| Tile { art, tex: None }).collect();
+                            self.tiles = arts.into_iter().map(|art| Tile { art, tex: None, failed: false }).collect();
                             self.load_thumbs(ctx, g);
                         }
                         Err(e) => {
@@ -236,8 +281,19 @@ impl Picker {
                 }
                 Msg::Thumb(g, i, img) => {
                     let cur = self.art_round.load(Ordering::SeqCst);
-                    if let (true, Some(img), Some(t)) = (g == cur, img, self.tiles.get_mut(i)) {
-                        t.tex = Some(ctx.load_texture(format!("pick{g}-{i}"), img, TextureOptions::LINEAR));
+                    if let (true, Some(t)) = (g == cur, self.tiles.get_mut(i)) {
+                        match img {
+                            Some(img) => t.tex = Some(ctx.load_texture(format!("pick{g}-{i}"), img, TextureOptions::LINEAR)),
+                            None => t.failed = true,
+                        }
+                    }
+                }
+                Msg::Official(appid) => {
+                    self.pinned.insert(0, official(appid));
+                    self.matches.insert(0, official(appid));
+                    self.chosen = self.chosen.map(|c| c + 1);
+                    if self.chosen.is_none() && self.key.is_empty() {
+                        self.choose(ctx, 0);
                     }
                 }
                 Msg::Applied(Ok(())) => return Some(Outcome::Changed(self.id, self.kind)),
@@ -292,7 +348,9 @@ impl Picker {
                         ui.spinner();
                     }
                 });
-                if self.matches.len() > 1 || self.chosen.is_none() && !self.matches.is_empty() {
+            }
+            {
+                if !self.matches.is_empty() {
                     ui.add_space(2.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(theme::caption("Game"));
@@ -326,7 +384,7 @@ impl Picker {
             egui::ScrollArea::vertical().min_scrolled_height(grid_h).max_height(grid_h).auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
-                    for (i, t) in self.tiles.iter().enumerate() {
+                    for (i, t) in self.tiles.iter().enumerate().filter(|(_, t)| !t.failed) {
                         let (rect, r) = ui.allocate_exact_size(tile, Sense::click());
                         if !ui.is_rect_visible(rect) {
                             continue;
@@ -347,7 +405,11 @@ impl Picker {
                         if r.hovered() && !self.applying {
                             ui.painter().rect_stroke(rect, round, Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
                         }
-                        let r = r.on_hover_text(format!("{} × {}", t.art.width, t.art.height));
+                        let size = format!("{} × {}", t.art.width, t.art.height);
+                        let r = r.on_hover_text(match t.art.source {
+                            Some(src) => format!("{src}\n{size}"),
+                            None => size,
+                        });
                         if r.clicked() && !self.applying {
                             picked = Some(i);
                         }

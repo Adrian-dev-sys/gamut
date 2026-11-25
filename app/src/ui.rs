@@ -100,8 +100,6 @@ pub struct GamutApp {
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     picker: Option<Picker>,
-    /// Lowercased names shared by several entries (e.g. Steam + PS5); their cards show the platform.
-    dup_names: HashSet<String>,
     ctx_handle: egui::Context,
     toasts: Toasts,
     /// Playnite folder + preview report awaiting confirmation.
@@ -156,7 +154,6 @@ impl GamutApp {
             settings: None,
             confirm_remove: None,
             picker: None,
-            dup_names: HashSet::new(),
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice),
             playnite: None,
@@ -234,8 +231,6 @@ impl GamutApp {
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
-        let mut seen = HashSet::new();
-        self.dup_names = self.games.iter().map(|g| g.name.to_lowercase()).filter(|n| !seen.insert(n.clone())).collect();
         let q = self.search.to_lowercase();
         let mut v: Vec<usize> = (0..self.games.len())
             .filter(|&i| {
@@ -470,7 +465,6 @@ impl GamutApp {
         let view = &self.view;
         let thumbs = &mut self.thumbs;
         let selected = &mut self.selected;
-        let dup_names = &self.dup_names;
         let opened_at = &mut self.opened_at;
         ui.spacing_mut().item_spacing.y = gap;
         ScrollArea::vertical().auto_shrink([false; 2]).show_rows(ui, row_h, rows, |ui, range| {
@@ -528,9 +522,8 @@ impl GamutApp {
                         let s = if is_sel { Stroke::new(2.5, ACCENT) } else { Stroke::new(1.5, ACCENT.gamma_multiply(0.8)) };
                         painter.rect_stroke(cover, r, s, StrokeKind::Outside);
                     }
-                    // Same name twice (e.g. Steam and PS5): tell them apart by platform.
-                    let mut title_w = card_w;
-                    if dup_names.contains(&g.name.to_lowercase()) {
+                    // Platform pill right of the title (Steam, PS5, Switch…).
+                    let title_w = {
                         let tag = painter.layout_no_wrap(short_platform(g), FontId::proportional(11.5), TEXT_DIM);
                         let pill = Rect::from_min_size(
                             pos2(x + card_w - tag.size().x - 10.0, cover.bottom() + 6.0),
@@ -538,8 +531,8 @@ impl GamutApp {
                         );
                         painter.rect_filled(pill, CornerRadius::same(4), CARD);
                         painter.galley(pill.min + vec2(5.0, 2.0), tag, TEXT_DIM);
-                        title_w = pill.left() - x - 6.0;
-                    }
+                        pill.left() - x - 6.0
+                    };
                     let mut job = egui::text::LayoutJob::simple_singleline(
                         g.name.clone(),
                         FontId::proportional(13.5),
