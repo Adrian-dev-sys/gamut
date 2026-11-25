@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod startup;
 mod theme;
 mod thumbs;
 mod ui;
@@ -29,7 +30,7 @@ fn main() -> eframe::Result {
         if w.x.abs() < 20_000.0 && w.y.abs() < 20_000.0 {
             viewport = viewport.with_position([w.x, w.y]);
         }
-        viewport = viewport.with_maximized(w.maximized);
+        // Maximizing happens after the first frame (see startup.rs) to avoid a white flash.
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(

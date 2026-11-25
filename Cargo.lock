@@ -1298,7 +1298,9 @@ dependencies = [
  "gamut-core",
  "log",
  "open",
+ "raw-window-handle",
  "rfd",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

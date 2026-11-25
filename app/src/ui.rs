@@ -90,8 +90,9 @@ pub struct GamutApp {
     confirm_remove: Option<i64>,
     error: Option<String>,
     focus_search: bool,
-    /// Click waiting out the double-click delay before the details popup opens.
-    pending_open: Option<(i64, f64)>,
+    /// When the details popup was opened by a click; a quick second click there means Play.
+    opened_at: f64,
+    startup: Option<crate::startup::Startup>,
     /// Latest un-maximized placement + maximized flag, saved on exit.
     window: Option<gamut_core::config::WindowState>,
     /// Sort/filter as last written to config.
@@ -131,7 +132,8 @@ impl GamutApp {
             confirm_remove: None,
             error: repair_notice,
             focus_search: false,
-            pending_open: None,
+            opened_at: 0.0,
+            startup: window.as_ref().filter(|w| w.maximized).and_then(|_| crate::startup::Startup::maximize_hidden(cc)),
             window,
             saved_view: (sort, filter),
         })
@@ -388,7 +390,7 @@ impl GamutApp {
         let view = &self.view;
         let thumbs = &mut self.thumbs;
         let selected = &mut self.selected;
-        let pending = &mut self.pending_open;
+        let opened_at = &mut self.opened_at;
         ui.spacing_mut().item_spacing.y = gap;
         ScrollArea::vertical().auto_shrink([false; 2]).show_rows(ui, row_h, rows, |ui, range| {
             ui.add_space(4.0);
@@ -446,10 +448,10 @@ impl GamutApp {
                     painter.galley(pos2(x, cover.bottom() + 6.0), galley, Color32::WHITE);
 
                     if resp.clicked() {
-                        *pending = Some((g.id, ui.input(|i| i.time)));
+                        *selected = Some(g.id);
+                        *opened_at = ui.input(|i| i.time);
                     }
                     if resp.double_clicked() {
-                        *pending = None;
                         actions.push(Action::Play(g.id));
                     }
                     let id = g.id;
@@ -595,7 +597,7 @@ impl GamutApp {
         ui.horizontal_top(|ui| {
             ui.add_space(pad);
             let left_w = cover_w + 40.0;
-            ui.allocate_ui(vec2(left_w, rest), |ui| {
+            ui.allocate_ui_with_layout(vec2(left_w, rest), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(left_w);
                 section(ui, "DETAILS");
                 {
@@ -625,12 +627,12 @@ impl GamutApp {
             });
             ui.add_space(32.0);
             let right_w = ui.available_width() - pad;
-            ui.allocate_ui(vec2(right_w, rest), |ui| {
+            ui.allocate_ui_with_layout(vec2(right_w, rest), Layout::top_down(Align::Min), |ui| {
                 ui.set_width(right_w);
                 section(ui, "DESCRIPTION");
                 ScrollArea::vertical().id_salt("desc").auto_shrink([false, true]).show(ui, |ui| {
                     match &g.description {
-                        Some(d) => ui.label(RichText::new(d).size(14.5).line_height(Some(21.0))),
+                        Some(d) => ui.add(egui::Label::new(RichText::new(d).size(14.5).line_height(Some(21.0))).wrap()),
                         None if g.meta_state == state::PENDING => {
                             ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
                         }
@@ -1066,14 +1068,9 @@ impl eframe::App for GamutApp {
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
             .show(ui, |ui| self.grid(ui, &mut actions));
 
-        // Open the details popup once a click can no longer become a double-click.
-        if let Some((id, t)) = self.pending_open {
-            let wait = 0.3 - (ctx.input(|i| i.time) - t);
-            if wait <= 0.0 {
-                self.pending_open = None;
-                self.selected = Some(id);
-            } else {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+        if let Some(s) = self.startup.as_mut() {
+            if s.tick(&ctx) {
+                self.startup = None;
             }
         }
         // Other dialogs would sit under the modal, so it steps aside while they are open.
@@ -1093,9 +1090,17 @@ impl eframe::App for GamutApp {
                 .show(&ctx, |ui| {
                     ui.set_min_size(size);
                     ui.set_max_size(size);
+                    ui.set_clip_rect(Rect::from_min_size(ui.max_rect().min, size));
                     self.details(ui, id, &mut actions);
                 });
-            if resp.should_close() {
+            // The popup opens on the first click, so the grid never sees a double-click: catch it here.
+            let quick = ctx.input(|i| {
+                i.time - self.opened_at < 0.5 && i.pointer.button_double_clicked(egui::PointerButton::Primary)
+            });
+            if quick {
+                actions.push(Action::Play(id));
+                self.selected = None;
+            } else if resp.should_close() {
                 self.selected = None;
             }
         }
