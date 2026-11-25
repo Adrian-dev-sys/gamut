@@ -85,7 +85,8 @@ pub struct GamutApp {
     tag: String,
     platforms: Vec<(String, usize)>,
     tags: Vec<(String, usize)>,
-    tag_search: String,
+    tag_query: String,
+    platform_query: String,
     selected: Option<i64>,
     thumbs: ThumbCache,
     workers: Workers,
@@ -137,7 +138,8 @@ impl GamutApp {
             tag: tag.clone(),
             platforms,
             tags,
-            tag_search: String::new(),
+            tag_query: String::new(),
+            platform_query: String::new(),
             selected: None,
             workers,
             hero: None,
@@ -334,32 +336,12 @@ impl GamutApp {
                 })
                 .response
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
-            let any = |s: &str, all: &str| if s.is_empty() { all.to_string() } else { s.to_string() };
-            egui::ComboBox::from_id_salt("platform")
-                .selected_text(any(&self.platform, "All platforms"))
-                .height(420.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.platform, String::new(), "All platforms");
-                    for (p, n) in &self.platforms {
-                        ui.selectable_value(&mut self.platform, p.clone(), format!("{p}  ·  {n}"));
-                    }
-                })
-                .response
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            egui::ComboBox::from_id_salt("tag")
-                .selected_text(any(&self.tag, "All tags"))
-                .height(420.0)
-                .show_ui(ui, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.tag_search).hint_text("Find a tag").desired_width(200.0))
-                        .request_focus();
-                    ui.selectable_value(&mut self.tag, String::new(), "All tags");
-                    let q = self.tag_search.to_lowercase();
-                    for (t, n) in self.tags.iter().filter(|(t, _)| q.is_empty() || t.to_lowercase().contains(&q)) {
-                        ui.selectable_value(&mut self.tag, t.clone(), format!("{t}  ·  {n}"));
-                    }
-                })
-                .response
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if let Some(p) = facet_picker(ui, "platform", "All platforms", &self.platform, &mut self.platform_query, &self.platforms) {
+                self.platform = p;
+            }
+            if let Some(t) = facet_picker(ui, "tag", "All tags", &self.tag, &mut self.tag_query, &self.tags) {
+                self.tag = t;
+            }
             egui::ComboBox::from_id_salt("sort")
                 .selected_text(match self.sort {
                     Sort::Name => "Name",
@@ -1247,6 +1229,59 @@ fn badge(p: &egui::Painter, at: egui::Pos2, text: &str, fill: Color32) {
 }
 
 /// Items of a comma-joined list column.
+/// Type-to-filter field with a suggestion list; returns the picked value ("" = all).
+fn facet_picker(ui: &mut Ui, id: &str, all: &str, current: &str, query: &mut String, items: &[(String, usize)]) -> Option<String> {
+    use egui::containers::{Popup, PopupCloseBehavior, SetOpenCommand};
+    let te_id = ui.make_persistent_id(id);
+    let pid = te_id.with("popup");
+    let editing = ui.memory(|m| m.has_focus(te_id)) || Popup::is_id_open(ui.ctx(), pid);
+    let mut text = if editing { query.clone() } else { current.to_string() };
+    let hint = if current.is_empty() { all } else { current };
+    let r = ui.add(egui::TextEdit::singleline(&mut text).id(te_id).hint_text(hint).desired_width(160.0));
+    if r.gained_focus() {
+        text.clear();
+    }
+    *query = text;
+    let q = query.trim().to_lowercase();
+    let mut hits: Vec<&(String, usize)> = items.iter().filter(|(t, _)| t.to_lowercase().contains(&q)).collect();
+    hits.sort_by_key(|(t, _)| !t.to_lowercase().starts_with(&q));
+
+    let mut pick = None;
+    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        pick = Some(if q.is_empty() { String::new() } else { hits.first().map_or(current.to_string(), |(t, _)| t.clone()) });
+    }
+    let open = (r.gained_focus() || r.changed()).then_some(SetOpenCommand::Bool(true));
+    Popup::from_response(&r)
+        .id(pid)
+        .open_memory(open)
+        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+        .width(r.rect.width().max(260.0))
+        .show(|ui| {
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                if q.is_empty() && ui.selectable_label(current.is_empty(), all).clicked() {
+                    pick = Some(String::new());
+                }
+                for (t, n) in hits.iter().take(200) {
+                    if ui.selectable_label(t == current, format!("{t}  ·  {n}")).clicked() {
+                        pick = Some(t.clone());
+                    }
+                }
+                if hits.is_empty() {
+                    ui.label(theme::hint("No matches"));
+                }
+            });
+        });
+    if !current.is_empty() && !editing && ui.small_button("✕").on_hover_text(format!("Show {}", all.to_lowercase())).clicked() {
+        pick = Some(String::new());
+    }
+    if pick.is_some() {
+        Popup::close_id(ui.ctx(), pid);
+        ui.memory_mut(|m| m.surrender_focus(te_id));
+        query.clear();
+    }
+    pick
+}
+
 fn split_list(v: &Option<String>) -> impl Iterator<Item = &str> {
     v.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty())
 }

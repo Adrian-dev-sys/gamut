@@ -129,6 +129,8 @@ struct SgdbImage {
 #[derive(Deserialize)]
 struct SgdbGame {
     id: u64,
+    #[serde(default)]
+    name: String,
 }
 
 fn sgdb_get<T: serde::de::DeserializeOwned>(key: &str, path: &str) -> Result<T> {
@@ -156,7 +158,9 @@ fn sgdb_game_path(key: &str, r: &SgdbRef) -> Result<Option<String>> {
         SgdbRef::Steam(id) => Some(format!("steam/{id}")),
         SgdbRef::Name(name) => {
             let l: SgdbList<SgdbGame> = sgdb_get(key, &format!("/search/autocomplete/{}", encode(name)))?;
-            l.data.first().map(|g| format!("game/{}", g.id))
+            // Only an exact name match: the top fuzzy hit is often a different game.
+            let want = normalize(name);
+            l.data.iter().find(|g| normalize(&g.name) == want).map(|g| format!("game/{}", g.id))
         }
     })
 }

@@ -56,6 +56,8 @@ impl Workers {
             paths,
             ctx: ctx.clone(),
         };
+        let paths = w.paths.clone();
+        std::thread::spawn(move || prune_orphan_art(&paths));
         w.spawn_scraper(kc_rx, w.pending_cover.clone(), false);
         w.spawn_scraper(km_rx, w.pending_meta.clone(), true);
         let (steam, ctx) = (w.steam_running.clone(), w.ctx.clone());
@@ -213,7 +215,7 @@ impl Workers {
         });
     }
 
-    /// Adds the session's playtime when a tracked custom game exits.
+    /// Adds the session's playtime when a tracked game exits.
     pub fn track(&self, id: i64, launched: Launched) {
         let Launched::Tracked(handle) = launched else { return };
         let (paths, tx, ctx, running) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.running.clone());
@@ -230,5 +232,26 @@ impl Workers {
                 }
             }
         });
+    }
+}
+
+/// Deletes art whose game no longer exists, so a reused id never shows another game's cover.
+fn prune_orphan_art(paths: &Paths) {
+    let started = std::time::SystemTime::now();
+    let Ok(games) = Library::open(&paths.db).and_then(|l| l.all()) else { return };
+    if games.is_empty() {
+        return;
+    }
+    let ids: HashSet<i64> = games.iter().map(|g| g.id).collect();
+    for dir in [&paths.covers, &paths.heroes, &paths.thumbs] {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            let id = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<i64>().ok());
+            // Files newer than the id snapshot may belong to a game added meanwhile.
+            let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < started);
+            if old && id.is_some_and(|id| !ids.contains(&id)) {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
     }
 }

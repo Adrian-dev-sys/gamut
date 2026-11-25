@@ -9,6 +9,7 @@ Native Windows game library (Playnite alternative). Rust workspace: `core/` (lib
 - One SQLite handle per thread (`Library::open`), rollback journal (WAL got corrupted twice by a second process). Never open the live `library.db` from another process (Python, sqlite3, a second Gamut) while Gamut runs; the CLI refuses to. Scraped metadata never overwrites user edits (`COALESCE`).
 - Verify egui/eframe APIs against the crate source in `~/.cargo/registry` — they change between releases.
 - Keep comments to 1–2 lines.
+- Claude's tools run MSIX-sandboxed: new files they create under `%LOCALAPPDATA%` go to `Packages\Claude_*\LocalCache\Local\` and the real Gamut never sees them. Never import/fetch/copy into the real data dir from tools; ask the user to run it in their own terminal.
 - Never drive the user's desktop (mouse, keyboard, screenshots, closing their Gamut) without asking first; verify with tests/CLI/logs.
 
 ## Test
