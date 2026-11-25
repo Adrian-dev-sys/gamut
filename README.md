@@ -1,30 +1,63 @@
 # Gamut
 
-A small, fast native game library for Windows (Playnite alternative). Rust + egui (OpenGL), SQLite, no web stack.
+A small, fast, native game library for Windows — a lightweight alternative to launchers like Playnite.
+Written in Rust with [egui](https://github.com/emilk/egui) (OpenGL) and SQLite. No Electron, no web stack:
+one ~14 MB executable that opens in under half a second.
 
 ## Features
-- **Steam**: installed games from local manifests; full owned library + playtime via the Steam Web API.
-- **Custom games**: any exe / shortcut / URL, with arguments and working dir; playtime tracked while the process runs.
-- **Metadata & art**: Steam store (description, developer, publisher, genres, release date), covers and banners from
-  Steam's local cache → Steam CDN → SteamGridDB. Custom games are matched to Steam by name, or use SteamGridDB search.
-- **Fast grid**: virtualized rows, covers pre-scaled to 300×450 thumbnails on disk, decoded on worker threads,
-  bounded GPU texture cache.
+- **Steam** – installed games from local Steam files; your full owned library and playtime via the Steam Web API.
+- **Custom games** – any exe, shortcut or URL, with arguments and working folder; playtime is tracked while it runs.
+- **Metadata & art** – descriptions, developer, publisher, genres and release dates from the Steam store; covers and
+  banners from Steam's local cache, Steam's CDN, or [SteamGridDB](https://www.steamgriddb.com/). Custom games are
+  matched to Steam by name, or found on SteamGridDB.
+- **Fast grid** – only visible rows are drawn; covers are pre-scaled thumbnails decoded on background threads with a
+  bounded GPU cache. Stays smooth with thousands of games.
+- Search, filters (installed, favorites, hidden, source), sorting, favorites, hiding, per-game metadata refresh.
 
-## Build
+## Getting started
+Requirements: Windows 10/11, [Rust](https://rustup.rs/) (stable, MSVC toolchain) and the Visual Studio C++ Build Tools.
+
 ```powershell
-cargo build --release          # target\release\gamut.exe (+ gamut-cli.exe)
-cargo test
+git clone https://github.com/Adrian-dev-sys/gamut
+cd gamut
+cargo build --release
+.\target\release\gamut.exe
 ```
-If the project path is very long, MSVC's linker can fail with `LNK1104`; set `CARGO_TARGET_DIR` to a short path.
+
+Optional, in **Settings**:
+- **Steam Web API key** ([get one](https://steamcommunity.com/dev/apikey)) – imports your whole owned library, not just
+  installed games. Your SteamID is detected automatically.
+- **SteamGridDB API key** ([get one](https://www.steamgriddb.com/profile/preferences/api)) – covers for non-Steam games
+  and anything Steam has no art for.
+
+Keys are stored locally in your data folder and never leave your machine except in requests to those services.
 
 ## Data
-`%LOCALAPPDATA%\Gamut\data\` holds `library.db`, `config.toml` (API keys) and image caches.
-Put an empty `portable.txt` next to `gamut.exe` to keep data in `.\data\` instead.
+`%LOCALAPPDATA%\Gamut\data\` holds `library.db`, `config.toml` and the image cache.
+Put an empty `portable.txt` next to `gamut.exe` to keep everything in a `data\` folder beside the exe instead.
 
-## CLI
-`gamut-cli [--data DIR] scan | list | fetch [N] | add NAME EXE | remove ID | launch ID | seed N` (seed = stress-test data).
+## Development
+```powershell
+cargo test
+cargo run -p gamut                      # debug build of the UI
+cargo run -p gamut-core --bin gamut-cli -- scan
+```
+`gamut-cli [--data DIR] scan | list | fetch [N] | add NAME EXE | remove ID | launch ID | seed N` runs the core
+without the UI (`seed` creates stress-test entries).
 
-## Layout
-- `core/` – library: `steam.rs` (VDF/ACF + Web API), `scrape.rs` (Steam store, SteamGridDB), `sync.rs` (per-game
-  fetch steps), `db.rs`, `images.rs`, `launch.rs`, `vdf.rs`.
+If the project lives in a very long path, the MSVC linker can fail with `LNK1104`; set `CARGO_TARGET_DIR` to a short
+path.
+
+### Layout
+- `core/` – library: `steam.rs` (VDF/ACF parsing + Web API), `scrape.rs` (Steam store, SteamGridDB), `sync.rs`
+  (per-game fetch steps), `db.rs`, `images.rs`, `launch.rs`, `vdf.rs`.
 - `app/` – egui UI: `ui.rs` (panels, dialogs), `thumbs.rs` (texture loader/cache), `workers.rs` (background jobs).
+
+See [TODO.md](TODO.md) for the roadmap.
+
+## Disclaimer
+Not affiliated with Valve, Steam, SteamGridDB or Playnite. Game names and artwork shown in the app are fetched at
+runtime and belong to their respective owners; none are included in this repository.
+
+## License
+[MIT](LICENSE)
