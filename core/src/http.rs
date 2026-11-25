@@ -13,11 +13,45 @@ pub fn agent() -> &'static ureq::Agent {
     })
 }
 
+/// Minimum gap between requests to each host, so we stay well inside public rate limits.
+fn min_gap(host: &str) -> Duration {
+    match host {
+        // Undocumented ~200 req / 5 min limit on the store API.
+        "store.steampowered.com" => Duration::from_millis(1600),
+        "api.steampowered.com" => Duration::from_millis(1000),
+        "www.steamgriddb.com" => Duration::from_millis(300),
+        // CDNs (Steam images, SteamGridDB image hosting).
+        _ => Duration::from_millis(100),
+    }
+}
+
+/// Blocks until `url`'s host may be contacted again; shared by all threads.
+pub fn throttle(url: &str) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static NEXT: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+    let host = url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("").to_string();
+    let wait = {
+        let mut guard = NEXT.lock().unwrap();
+        let map = guard.get_or_insert_with(HashMap::new);
+        let now = Instant::now();
+        let slot = map.get(&host).copied().filter(|t| *t > now).unwrap_or(now);
+        map.insert(host.clone(), slot + min_gap(&host));
+        slot - now
+    };
+    if !wait.is_zero() {
+        std::thread::sleep(wait);
+    }
+}
+
 pub fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> anyhow::Result<T> {
+    throttle(url);
     Ok(agent().get(url).call()?.body_mut().read_json()?)
 }
 
 pub fn get_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+    throttle(url);
     Ok(agent()
         .get(url)
         .call()?

@@ -119,20 +119,10 @@ struct SgdbGame {
 }
 
 fn sgdb_get<T: serde::de::DeserializeOwned>(key: &str, path: &str) -> Result<T> {
-    // Keep >= 250 ms between SteamGridDB calls across all threads.
-    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-    {
-        let mut last = LAST.lock().unwrap();
-        if let Some(t) = *last {
-            let gap = std::time::Duration::from_millis(250);
-            if t.elapsed() < gap {
-                std::thread::sleep(gap - t.elapsed());
-            }
-        }
-        *last = Some(std::time::Instant::now());
-    }
+    let url = format!("{SGDB}{path}");
+    crate::http::throttle(&url);
     let resp = agent()
-        .get(&format!("{SGDB}{path}"))
+        .get(&url)
         .header("Authorization", &format!("Bearer {key}"))
         .call();
     match resp {

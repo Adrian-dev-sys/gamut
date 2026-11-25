@@ -77,7 +77,7 @@ impl GamutApp {
     pub fn new(cc: &eframe::CreationContext, paths: Paths) -> anyhow::Result<Self> {
         theme::apply(&cc.egui_ctx);
         let cfg = Arc::new(RwLock::new(Config::load(&paths.config)));
-        let lib = Library::open(&paths.db)?;
+        let (lib, repair_notice) = Library::open_checked(&paths.db)?;
         let games = lib.all()?;
         let workers = Workers::start(&cc.egui_ctx, paths.clone(), cfg.clone());
         workers.rescan();
@@ -101,7 +101,7 @@ impl GamutApp {
             editor: None,
             settings: None,
             confirm_remove: None,
-            error: None,
+            error: repair_notice,
             focus_search: false,
         })
     }
@@ -256,7 +256,9 @@ impl GamutApp {
                     ] {
                         ui.selectable_value(&mut self.filter, f, l);
                     }
-                });
+                })
+                .response
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
             egui::ComboBox::from_id_salt("sort")
                 .selected_text(match self.sort {
                     Sort::Name => "Name",
@@ -269,7 +271,9 @@ impl GamutApp {
                     ui.selectable_value(&mut self.sort, Sort::LastPlayed, "Last played");
                     ui.selectable_value(&mut self.sort, Sort::Playtime, "Playtime");
                     ui.selectable_value(&mut self.sort, Sort::Added, "Recently added");
-                });
+                })
+                .response
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
             let mut w = self.cfg.read().unwrap().card_width;
             if ui
                 .add(egui::Slider::new(&mut w, 110.0..=280.0).show_value(false))
@@ -280,14 +284,14 @@ impl GamutApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("⚙ Settings").clicked() {
+                if ui.button("Settings").clicked() {
                     self.settings = Some(self.cfg.read().unwrap().clone());
                 }
                 let scanning = self.workers.scanning.load(Ordering::Relaxed);
-                if ui.add_enabled(!scanning, egui::Button::new("⟳ Refresh")).clicked() {
+                if ui.add_enabled(!scanning, egui::Button::new("Refresh")).clicked() {
                     self.workers.rescan();
                 }
-                if ui.button("+ Add game").clicked() {
+                if ui.button("Add game").clicked() {
                     self.editor = Some(Editor {
                         id: 0,
                         source: Source::Custom,
@@ -366,6 +370,9 @@ impl GamutApp {
                     let full = Rect::from_min_size(cover.min, vec2(card_w, row_h));
                     let resp = ui.interact(full, ui.scope_id().with(("card", g.id)), Sense::click());
                     let hovered = resp.hovered();
+                    if hovered {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
                     let is_sel = *selected == Some(g.id);
                     let painter = ui.painter();
                     let r = CornerRadius::same(6);
@@ -387,9 +394,6 @@ impl GamutApp {
                             let p = cover.center() - galley.size() / 2.0;
                             painter.galley(p, galley, Color32::WHITE);
                         }
-                    }
-                    if !g.installed {
-                        painter.rect_filled(cover, r, Color32::from_black_alpha(110));
                     }
                     if g.favorite {
                         let c = cover.right_top() + vec2(-16.0, 16.0);
@@ -462,12 +466,26 @@ impl GamutApp {
                 ui.painter().rect_filled(banner, CornerRadius::same(8), CARD);
             }
         }
+        let close = Rect::from_center_size(banner.right_top() + vec2(-20.0, 20.0), vec2(28.0, 28.0));
+        let cr = ui.interact(close, ui.scope_id().with("close_details"), Sense::click()).on_hover_text("Close");
+        let bg = if cr.hovered() { Color32::from_black_alpha(220) } else { Color32::from_black_alpha(150) };
+        ui.painter().circle_filled(close.center(), 14.0, bg);
+        let (c, d) = (close.center(), 5.0);
+        let st = Stroke::new(2.0, Color32::WHITE);
+        ui.painter().line_segment([c + vec2(-d, -d), c + vec2(d, d)], st);
+        ui.painter().line_segment([c + vec2(-d, d), c + vec2(d, -d)], st);
+        if cr.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if cr.clicked() {
+            self.selected = None;
+        }
 
         ui.add_space(8.0);
         ui.label(RichText::new(&g.name).heading().strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let label = if g.source == Source::Steam && !g.installed { "⬇  Install" } else { "▶  Play" };
+            let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
             let play = egui::Button::new(RichText::new(label).size(16.0).strong().color(Color32::WHITE))
                 .fill(ACCENT)
                 .min_size(vec2(130.0, 36.0));
@@ -480,10 +498,10 @@ impl GamutApp {
             {
                 actions.push(Action::ToggleFav(id));
             }
-            if ui.add(egui::Button::new("✏ Edit").min_size(vec2(0.0, 36.0))).clicked() {
+            if ui.add(egui::Button::new("Edit").min_size(vec2(0.0, 36.0))).clicked() {
                 actions.push(Action::Edit(id));
             }
-            ui.menu_button(RichText::new("⋯").size(18.0), |ui| context_menu(ui, &g, actions));
+            ui.menu_button("More", |ui| context_menu(ui, &g, actions)).response.on_hover_cursor(egui::CursorIcon::PointingHand);
         });
         ui.add_space(8.0);
 
@@ -738,7 +756,7 @@ impl GamutApp {
     fn error_window(&mut self, ctx: &egui::Context) {
         let Some(e) = self.error.clone() else { return };
         let mut open = true;
-        egui::Window::new("Error")
+        egui::Window::new("Gamut")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -833,17 +851,33 @@ impl eframe::App for GamutApp {
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(12, 5)))
             .show(ui, |ui| self.status_bar(ui));
-        if let Some(id) = self.selected {
-            egui::Panel::right("details")
-                .resizable(true)
-                .default_size(400.0)
-                .size_range(320.0..=640.0)
-                .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::same(14)))
-                .show(ui, |ui| self.details(ui, id, &mut actions));
-        }
-        egui::CentralPanel::no_frame()
+        let central = egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
-            .show(ui, |ui| self.grid(ui, &mut actions));
+            .show(ui, |ui| self.grid(ui, &mut actions))
+            .response
+            .rect;
+
+        // Details float over the grid's right edge so the grid never reflows.
+        if let Some(id) = self.selected {
+            let w = 420.0_f32.min(central.width() * 0.9);
+            let margin = 16.0;
+            let frame = egui::Frame::new()
+                .fill(theme::PANEL)
+                .inner_margin(egui::Margin::same(margin as i8))
+                .shadow(ctx.global_style().visuals.window_shadow)
+                .stroke(Stroke::new(1.0, Color32::from_gray(45)));
+            egui::Area::new(egui::Id::unique("details_overlay"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(pos2(central.right() - w, central.top()))
+                .show(&ctx, |ui| {
+                    frame.show(ui, |ui| {
+                        let size = vec2(w - 2.0 * margin, central.height() - 2.0 * margin);
+                        ui.set_min_size(size);
+                        ui.set_max_size(size);
+                        self.details(ui, id, &mut actions);
+                    });
+                });
+        }
 
         self.editor_window(&ctx);
         self.settings_window(&ctx);

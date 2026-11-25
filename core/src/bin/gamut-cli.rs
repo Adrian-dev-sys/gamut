@@ -12,7 +12,10 @@ fn main() -> anyhow::Result<()> {
         None => Paths::resolve()?,
     };
     let cfg = Config::load(&paths.config);
-    let mut lib = Library::open(&paths.db)?;
+    let (mut lib, notice) = Library::open_checked(&paths.db)?;
+    if let Some(n) = notice {
+        eprintln!("{n}");
+    }
 
     match args.first().map(String::as_str) {
         Some("scan") => {
@@ -52,7 +55,6 @@ fn main() -> anyhow::Result<()> {
             for g in lib.needing_meta()?.into_iter().take(n) {
                 let r = sync::fetch_meta(&lib, &g);
                 println!("meta  {:<40} {r:?}", g.name);
-                std::thread::sleep(std::time::Duration::from_millis(1500));
             }
         }
         Some("seed") => {

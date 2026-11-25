@@ -53,6 +53,96 @@ impl Library {
         Ok(Library { conn })
     }
 
+    /// Opens the library; if SQLite finds damage, rebuilds it from every readable row.
+    /// Returns a user-facing notice when a repair happened.
+    pub fn open_checked(path: &Path) -> Result<(Self, Option<String>)> {
+        if let Ok(lib) = Self::open(path) {
+            let ok = lib.conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0));
+            if matches!(ok.as_deref(), Ok("ok")) {
+                return Ok((lib, None));
+            }
+        }
+        let notice = Self::salvage(path)?;
+        Ok((Self::open(path)?, Some(notice)))
+    }
+
+    fn salvage(path: &Path) -> Result<String> {
+        use std::collections::HashSet;
+        let file = |suffix: &str| std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+        let tmp = file(".rebuild");
+        for sfx in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(file(&format!(".rebuild{sfx}")));
+        }
+        let (mut saved, mut lost) = (0usize, 0usize);
+        {
+            let new = Self::open(&tmp)?;
+            let old = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let mut seen = HashSet::new();
+            // Sequential scan until the first unreadable row...
+            if let Ok(mut st) = old.prepare(&format!("SELECT {COLS} FROM games")) {
+                if let Ok(mut rows) = st.query([]) {
+                    while let Ok(Some(r)) = rows.next() {
+                        if let Ok(g) = Self::row(r) {
+                            if seen.insert(g.id) {
+                                new.insert_full(&g)?;
+                            }
+                        }
+                    }
+                }
+            }
+            // ...then look up every other id individually.
+            let max_seen = seen.iter().copied().max().unwrap_or(0);
+            let max = old
+                .query_row("SELECT max(id) FROM games", [], |r| r.get::<_, Option<i64>>(0))
+                .ok()
+                .flatten()
+                .unwrap_or(0)
+                .max(max_seen + 2000);
+            let sql = format!("SELECT {COLS} FROM games WHERE id = ?1");
+            for id in 1..=max {
+                if seen.contains(&id) {
+                    continue;
+                }
+                match old.query_row(&sql, [id], Self::row) {
+                    Ok(g) => {
+                        new.insert_full(&g)?;
+                        seen.insert(id);
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                    Err(_) => lost += 1,
+                }
+            }
+            saved = seen.len();
+        }
+        let backup = format!(".damaged-{}", crate::now());
+        for sfx in ["", "-wal", "-shm"] {
+            let _ = std::fs::rename(file(sfx), file(&format!("{backup}{sfx}")));
+        }
+        std::fs::rename(&tmp, path)?;
+        Ok(format!(
+            "The library database was damaged and has been rebuilt: {saved} games recovered, {lost} unreadable (Steam games come back on the next scan). The damaged copy was kept as {}{backup}.",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ))
+    }
+
+    /// Inserts a complete row, keeping its id (used when rebuilding).
+    fn insert_full(&self, g: &Game) -> Result<()> {
+        self.conn.execute(
+            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)"),
+            params![
+                g.id, g.source.as_str(), g.source_id, g.name, g.installed, g.install_dir, g.exe, g.args, g.work_dir,
+                g.playtime_min, g.last_played, g.description, g.developer, g.publisher, g.release_date, g.genres,
+                g.has_cover, g.has_hero, g.cover_state, g.meta_state, g.favorite, g.hidden, g.added
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// SQLite's integrity check; "ok" when healthy.
+    pub fn integrity_check(&self) -> Result<String> {
+        Ok(self.conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?)
+    }
+
     fn row(r: &Row) -> rusqlite::Result<Game> {
         Ok(Game {
             id: r.get(0)?,

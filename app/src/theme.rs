@@ -19,7 +19,10 @@ pub fn apply(ctx: &Context) {
     for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = CornerRadius::same(5);
     }
+    v.interact_cursor = Some(egui::CursorIcon::PointingHand);
     ctx.set_visuals(v);
+    // One wheel notch scrolls ~100 px (egui's default of 40 feels sluggish for a cover grid).
+    ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
     ctx.all_styles_mut(|s| {
         s.spacing.button_padding = egui::vec2(10.0, 5.0);
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);

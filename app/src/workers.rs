@@ -56,11 +56,17 @@ impl Workers {
                 Ok(l) => l,
                 Err(e) => return log::error!("scraper db: {e}"),
             };
+            // Games that keep failing are skipped until the next app start.
+            let mut failures: std::collections::HashMap<i64, u32> = Default::default();
             loop {
                 let list = if meta { lib.needing_meta() } else { lib.needing_cover() }.unwrap_or_default();
                 pending.store(list.len(), Ordering::Relaxed);
                 let mut ok = 0;
                 for g in list {
+                    if failures.get(&g.id).copied().unwrap_or(0) >= 3 {
+                        pending.fetch_sub(1, Ordering::Relaxed);
+                        continue;
+                    }
                     let c = cfg.read().unwrap().clone();
                     let r = if meta { sync::fetch_meta(&lib, &g) } else { sync::fetch_cover(&lib, &paths, &c, &g) };
                     match r {
@@ -74,6 +80,7 @@ impl Workers {
                             break;
                         }
                         Err(e) => {
+                            *failures.entry(g.id).or_default() += 1;
                             log::warn!("{} {}: {e:#}", if meta { "meta" } else { "cover" }, g.name);
                             // Steam store rate limit: back off.
                             let wait = if e.to_string().contains("429") { 60 } else { 2 };
@@ -82,9 +89,6 @@ impl Workers {
                     }
                     pending.fetch_sub(1, Ordering::Relaxed);
                     ctx.request_repaint();
-                    if meta {
-                        std::thread::sleep(Duration::from_millis(1500));
-                    }
                 }
                 pending.store(0, Ordering::Relaxed);
                 ctx.request_repaint();

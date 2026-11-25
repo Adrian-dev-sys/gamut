@@ -1,5 +1,8 @@
 # Gamut
 
+> **Early alpha – personal hobby project.** Built for my own use and shared as-is. Expect missing features, rough
+> edges and breaking changes. No support or roadmap promises; issues and PRs may go unanswered.
+
 A small, fast, native game library for Windows — a lightweight alternative to launchers like Playnite.
 Written in Rust with [egui](https://github.com/emilk/egui) (OpenGL) and SQLite. No Electron, no web stack:
 one ~14 MB executable that opens in under half a second.
