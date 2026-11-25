@@ -1,0 +1,24 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod theme;
+mod thumbs;
+mod ui;
+mod util;
+mod workers;
+
+fn main() -> eframe::Result {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let paths = gamut_core::Paths::resolve().expect("cannot create data folder");
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Gamut")
+            .with_inner_size([1440.0, 880.0])
+            .with_min_inner_size([720.0, 480.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Gamut",
+        options,
+        Box::new(move |cc| Ok(Box::new(ui::GamutApp::new(cc, paths)?))),
+    )
+}
