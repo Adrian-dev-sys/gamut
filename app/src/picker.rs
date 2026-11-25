@@ -1,4 +1,4 @@
-//! Cover/banner picker: browse SteamGridDB images for a game, or use a local file.
+//! Cover/banner picker: SteamGridDB, VNDB and official Steam art for a game, or a local file.
 use crate::theme::{self, ACCENT, CARD, TEXT_DIM};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{vec2, Color32, ColorImage, CornerRadius, RichText, Sense, Stroke, TextureHandle, TextureOptions};
@@ -15,6 +15,7 @@ pub enum ArtKind {
 
 enum Msg {
     Games(u64, Result<Vec<SgdbMatch>, String>),
+    Vndb(u64, Result<Vec<SgdbMatch>, String>),
     Arts(u64, Result<Vec<SgdbArt>, String>),
     Thumb(u64, usize, Option<ColorImage>),
     Applied(Result<(), String>),
@@ -55,6 +56,13 @@ pub struct Picker {
     matches: Vec<SgdbMatch>,
     /// Matches that survive a new name search (official Steam art, the Steam id on SteamGridDB).
     pinned: Vec<SgdbMatch>,
+    /// Name search results per source; `matches` = pinned + sgdb + vndb.
+    sgdb: Vec<SgdbMatch>,
+    vndb: Vec<SgdbMatch>,
+    sgdb_done: bool,
+    vndb_done: bool,
+    /// Tagged as a visual novel: VNDB results come first.
+    vn: bool,
     chosen: Option<usize>,
     tiles: Vec<Tile>,
     busy: bool,
@@ -92,6 +100,11 @@ impl Picker {
             query: g.name.clone(),
             matches: Vec::new(),
             pinned: Vec::new(),
+            sgdb: Vec::new(),
+            vndb: Vec::new(),
+            sgdb_done: false,
+            vndb_done: false,
+            vn: tags.contains("visual novel"),
             chosen: None,
             tiles: Vec::new(),
             busy: false,
@@ -124,26 +137,74 @@ impl Picker {
                 Err(e) => log::warn!("art picker: Steam store search for {name:?}: {e:#}"),
             });
         }
+        p.search(ctx);
         if p.key.is_empty() {
             p.note = Some("Add a SteamGridDB API key in Settings to get community art too.".into());
-        } else {
-            p.search(ctx);
         }
         p
     }
 
+    /// Name search on SteamGridDB (with a key) and VNDB, in parallel.
     fn search(&mut self, ctx: &egui::Context) {
         let round = self.search_round.fetch_add(1, Ordering::SeqCst) + 1;
-        log::info!("art picker: searching SteamGridDB for {:?}", self.query.trim());
-        let (key, q, tx, ctx) = (self.key.clone(), self.query.trim().to_string(), self.tx.clone(), ctx.clone());
+        log::info!("art picker: searching for {:?}", self.query.trim());
+        (self.sgdb, self.vndb) = (Vec::new(), Vec::new());
+        (self.sgdb_done, self.vndb_done) = (self.key.is_empty(), false);
         if self.chosen.is_none() {
             self.busy = true;
         }
+        if !self.key.is_empty() {
+            let (key, q, tx, ctx) = (self.key.clone(), self.query.trim().to_string(), self.tx.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let r = scrape::sgdb_search(&key, &q).map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Msg::Games(round, r));
+                ctx.request_repaint();
+            });
+        }
+        let (q, vn, tx, ctx) = (self.query.trim().to_string(), self.vn, self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let r = scrape::sgdb_search(&key, &q).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Msg::Games(round, r));
+            let r = gamut_core::vndb::search(&q).map_err(|e| format!("{e:#}")).map(|hits| {
+                // VNDB's search is fuzzy: outside visual novels, keep only titles that really match.
+                let want = scrape::normalize(&q);
+                let related = |t: &str| {
+                    let t = scrape::normalize(t);
+                    !t.is_empty() && (t.starts_with(&want) || want.starts_with(&t))
+                };
+                hits.into_iter()
+                    .filter(|h| vn || related(&h.title) || h.alttitle.as_deref().is_some_and(related))
+                    .take(5)
+                    .map(|h| SgdbMatch { path: format!("vndb/{}", h.id), year: h.year(), name: format!("{} · VNDB", h.title) })
+                    .collect()
+            });
+            let _ = tx.send(Msg::Vndb(round, r));
             ctx.request_repaint();
         });
+    }
+
+    /// Recomputes the match list; picks one once enough results are in.
+    fn rebuild(&mut self, ctx: &egui::Context) {
+        self.matches = self.pinned.iter().chain(&self.sgdb).chain(&self.vndb).cloned().collect();
+        if self.chosen.is_some() {
+            return;
+        }
+        let (p, s) = (self.pinned.len(), self.sgdb.len());
+        let first_sgdb = (s > 0).then_some(p);
+        let first_vndb = (!self.vndb.is_empty()).then_some(p + s);
+        // Don't jump ahead while the preferred source is still searching.
+        let pick = if self.vn {
+            first_vndb.or(if self.vndb_done { first_sgdb } else { None })
+        } else {
+            first_sgdb.or(if self.sgdb_done { first_vndb } else { None })
+        };
+        let all_done = self.sgdb_done && self.vndb_done;
+        match pick.or(if all_done && !self.matches.is_empty() { Some(0) } else { None }) {
+            Some(i) => self.choose(ctx, i),
+            None if all_done => {
+                self.busy = false;
+                self.note = Some(format!("Nothing found for \"{}\". Try a shorter or different name.", self.query.trim()));
+            }
+            None => {}
+        }
     }
 
     fn choose(&mut self, ctx: &egui::Context, i: usize) {
@@ -156,9 +217,18 @@ impl Picker {
         let (key, path, hero, nsfw) = (self.key.clone(), self.matches[i].path.clone(), self.kind == ArtKind::Banner, self.nsfw);
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let r = match path.strip_prefix("official/").and_then(|a| a.parse().ok()) {
-                Some(appid) => Ok(scrape::steam_official_art(appid, hero)),
-                None => scrape::sgdb_list(&key, &path, hero, nsfw).map_err(|e| format!("{e:#}")),
+            let r = if let Some(appid) = path.strip_prefix("official/").and_then(|a| a.parse().ok()) {
+                Ok(scrape::steam_official_art(appid, hero))
+            } else if let Some(id) = path.strip_prefix("vndb/") {
+                gamut_core::vndb::images(id, nsfw).map_err(|e| format!("{e:#}")).map(|mut v| {
+                    // Closest to the wanted shape first (portrait covers, wide banners).
+                    let want: f32 = if hero { 3.1 } else { 2.0 / 3.0 };
+                    let off = |a: &SgdbArt| ((a.width.max(1) as f32 / a.height.max(1) as f32) / want).ln().abs();
+                    v.sort_by(|a, b| off(a).total_cmp(&off(b)));
+                    v
+                })
+            } else {
+                scrape::sgdb_list(&key, &path, hero, nsfw).map_err(|e| format!("{e:#}"))
             };
             let _ = tx.send(Msg::Arts(round, r));
             ctx.request_repaint();
@@ -220,32 +290,24 @@ impl Picker {
     fn handle(&mut self, ctx: &egui::Context) -> Option<Outcome> {
         while let Ok(m) = self.rx.try_recv() {
             match m {
-                Msg::Games(g, r) => {
-                    if g != self.search_round.load(Ordering::SeqCst) {
-                        continue;
-                    }
-                    match r {
-                        Ok(list) => {
-                            self.matches = self.pinned.iter().cloned().chain(list).collect();
-                            if self.chosen.is_none() {
-                                if self.matches.is_empty() {
-                                    self.busy = false;
-                                    self.note = Some(format!("No game called \"{}\" on SteamGridDB.", self.query.trim()));
-                                } else {
-                                    // Land on the first search hit, not the pinned Steam entries.
-                                    let first = if self.matches.len() > self.pinned.len() { self.pinned.len() } else { 0 };
-                                    self.choose(ctx, first);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("art picker: search failed: {e}");
-                            if self.chosen.is_none() {
-                                self.busy = false;
-                                self.note = Some(format!("Search failed: {e}"));
-                            }
-                        }
-                    }
+                Msg::Games(g, r) | Msg::Vndb(g, r) if g != self.search_round.load(Ordering::SeqCst) => {
+                    let _ = r;
+                }
+                Msg::Games(_, r) => {
+                    self.sgdb_done = true;
+                    self.sgdb = r.unwrap_or_else(|e| {
+                        log::warn!("art picker: SteamGridDB search failed: {e}");
+                        Vec::new()
+                    });
+                    self.rebuild(ctx);
+                }
+                Msg::Vndb(_, r) => {
+                    self.vndb_done = true;
+                    self.vndb = r.unwrap_or_else(|e| {
+                        log::warn!("art picker: VNDB search failed: {e}");
+                        Vec::new()
+                    });
+                    self.rebuild(ctx);
                 }
                 Msg::Arts(g, r) => {
                     if g != self.art_round.load(Ordering::SeqCst) {
@@ -263,9 +325,11 @@ impl Picker {
                             }
                             if arts.is_empty() {
                                 let what = if self.kind == ArtKind::Cover { "cover" } else { "banner" };
-                                let from_steam = self.chosen.is_some_and(|c| self.matches[c].path.starts_with("official/"));
-                                self.note = Some(if from_steam {
+                                let path = self.chosen.map_or("", |c| self.matches[c].path.as_str());
+                                self.note = Some(if path.starts_with("official/") {
                                     format!("Steam has no official {what} for this game.")
+                                } else if path.starts_with("vndb/") {
+                                    format!("VNDB has no suitable images for this entry.")
                                 } else {
                                     format!("SteamGridDB has no {what}s for this game. Try another match or search.")
                                 });
@@ -290,11 +354,8 @@ impl Picker {
                 }
                 Msg::Official(appid) => {
                     self.pinned.insert(0, official(appid));
-                    self.matches.insert(0, official(appid));
                     self.chosen = self.chosen.map(|c| c + 1);
-                    if self.chosen.is_none() && self.key.is_empty() {
-                        self.choose(ctx, 0);
-                    }
+                    self.rebuild(ctx);
                 }
                 Msg::Applied(Ok(())) => return Some(Outcome::Changed(self.id, self.kind)),
                 Msg::Applied(Err(e)) => {
@@ -333,9 +394,9 @@ impl Picker {
                 });
             });
             ui.add_space(4.0);
-            if !self.key.is_empty() {
+            {
                 ui.horizontal(|ui| {
-                    let r = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search SteamGridDB").desired_width(320.0));
+                    let r = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search by name").desired_width(320.0));
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui.button("Search").clicked() || enter) && !self.query.trim().is_empty() {
                         self.chosen = None;

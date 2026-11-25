@@ -10,6 +10,7 @@ pub mod scrape;
 pub mod steam;
 pub mod sync;
 pub mod vdf;
+pub mod vndb;
 
 pub use config::Config;
 pub use db::Library;

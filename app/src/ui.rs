@@ -806,18 +806,18 @@ impl GamutApp {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_width(480.0)
+            .default_width(540.0)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 dialog_header(ui, title, &mut open);
                 egui::Grid::new("ed").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
                     ui.label("Name");
-                    ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(340.0));
+                    ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(400.0));
                     ui.end_row();
                     if ed.source == Source::Custom {
                         ui.label("Executable");
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut ed.exe).desired_width(260.0).hint_text("exe, shortcut or URL"));
+                            ui.add(egui::TextEdit::singleline(&mut ed.exe).desired_width(320.0).hint_text("exe, shortcut or URL"));
                             if ui.button("Browse…").clicked() {
                                 if let Some(p) = rfd::FileDialog::new()
                                     .add_filter("Programs", &["exe", "bat", "cmd", "lnk", "url"])
@@ -835,12 +835,12 @@ impl GamutApp {
                         });
                         ui.end_row();
                         ui.label("Arguments");
-                        ui.add(egui::TextEdit::singleline(&mut ed.args).desired_width(340.0));
+                        ui.add(egui::TextEdit::singleline(&mut ed.args).desired_width(400.0));
                         ui.end_row();
                         ui.label("Working dir");
                         ui.add(
                             egui::TextEdit::singleline(&mut ed.work_dir)
-                                .desired_width(340.0)
+                                .desired_width(400.0)
                                 .hint_text("defaults to the exe's folder"),
                         );
                         ui.end_row();
@@ -860,7 +860,10 @@ impl GamutApp {
                     });
                     ui.end_row();
                     ui.label("Description");
-                    ui.add(egui::TextEdit::multiline(&mut ed.description).desired_width(340.0).desired_rows(5));
+                    // Fixed-height box: long store descriptions scroll instead of stretching the dialog.
+                    egui::ScrollArea::vertical().id_salt("ed_desc").max_height(240.0).show(ui, |ui| {
+                        ui.add(egui::TextEdit::multiline(&mut ed.description).desired_width(400.0).desired_rows(10));
+                    });
                     ui.end_row();
                 });
                 ui.add_space(6.0);
