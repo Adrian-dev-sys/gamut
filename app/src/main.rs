@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod logging;
+mod notify;
 mod picker;
 mod startup;
 mod theme;
@@ -9,7 +11,6 @@ mod util;
 mod workers;
 
 fn main() -> eframe::Result {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let paths = gamut_core::Paths::resolve().expect("cannot create data folder");
     // One instance at a time: two would fight over the library and settings.
     let Some(_lock) = paths.lock() else {
@@ -19,6 +20,8 @@ fn main() -> eframe::Result {
             .show();
         return Ok(());
     };
+    // After the lock, so a second instance doesn't rotate the running one's log.
+    logging::init(&paths.root);
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Gamut")
         .with_inner_size([1440.0, 880.0])

@@ -41,8 +41,11 @@ pub struct Picker {
     busy: bool,
     applying: bool,
     note: Option<String>,
-    /// Bumped on every new search/match so late results from old ones are dropped.
-    round: Arc<AtomicU64>,
+    /// Bumped per name search / per image listing so late results from older ones are dropped.
+    search_round: Arc<AtomicU64>,
+    art_round: Arc<AtomicU64>,
+    /// The current match was picked automatically, so an empty result may fall through to the next.
+    auto: bool,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 }
@@ -74,7 +77,9 @@ impl Picker {
             busy: false,
             applying: false,
             note: None,
-            round: Default::default(),
+            search_round: Default::default(),
+            art_round: Default::default(),
+            auto: true,
             tx,
             rx,
         };
@@ -92,7 +97,8 @@ impl Picker {
     }
 
     fn search(&mut self, ctx: &egui::Context) {
-        let round = self.round.fetch_add(1, Ordering::SeqCst) + 1;
+        let round = self.search_round.fetch_add(1, Ordering::SeqCst) + 1;
+        log::info!("art picker: searching SteamGridDB for {:?}", self.query.trim());
         let (key, q, tx, ctx) = (self.key.clone(), self.query.trim().to_string(), self.tx.clone(), ctx.clone());
         if self.chosen.is_none() {
             self.busy = true;
@@ -105,7 +111,8 @@ impl Picker {
     }
 
     fn choose(&mut self, ctx: &egui::Context, i: usize) {
-        let round = self.round.fetch_add(1, Ordering::SeqCst) + 1;
+        let round = self.art_round.fetch_add(1, Ordering::SeqCst) + 1;
+        log::info!("art picker: listing {:?} for {}", self.kind, self.matches[i].path);
         self.chosen = Some(i);
         self.tiles.clear();
         self.busy = true;
@@ -124,13 +131,14 @@ impl Picker {
         let queue: Arc<Mutex<Vec<(usize, String)>>> =
             Arc::new(Mutex::new(self.tiles.iter().enumerate().rev().map(|(i, t)| (i, t.art.thumb.clone())).collect()));
         for _ in 0..4 {
-            let (queue, tx, ctx, cur) = (queue.clone(), self.tx.clone(), ctx.clone(), self.round.clone());
+            let (queue, tx, ctx, cur) = (queue.clone(), self.tx.clone(), ctx.clone(), self.art_round.clone());
             std::thread::spawn(move || {
                 while cur.load(Ordering::SeqCst) == round {
                     let Some((i, url)) = queue.lock().unwrap().pop() else { break };
                     let img = gamut_core::http::get_bytes(&url)
+                        .and_then(|b| images::decode_bytes(&b, 400))
+                        .inspect_err(|e| log::warn!("art picker: preview {url}: {e:#}"))
                         .ok()
-                        .and_then(|b| images::decode_bytes(&b, 400).ok())
                         .map(|r| ColorImage::from_rgba_unmultiplied([r.width as usize, r.height as usize], &r.pixels));
                     if tx.send(Msg::Thumb(round, i, img)).is_err() {
                         break;
@@ -171,11 +179,10 @@ impl Picker {
     }
 
     fn handle(&mut self, ctx: &egui::Context) -> Option<Outcome> {
-        let cur = self.round.load(Ordering::SeqCst);
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Games(g, r) => {
-                    if g != cur {
+                    if g != self.search_round.load(Ordering::SeqCst) {
                         continue;
                     }
                     match r {
@@ -192,18 +199,28 @@ impl Picker {
                             }
                         }
                         Err(e) => {
-                            self.busy = false;
-                            self.note = Some(e);
+                            log::warn!("art picker: search failed: {e}");
+                            if self.chosen.is_none() {
+                                self.busy = false;
+                                self.note = Some(format!("Search failed: {e}"));
+                            }
                         }
                     }
                 }
                 Msg::Arts(g, r) => {
-                    if g != cur {
+                    if g != self.art_round.load(Ordering::SeqCst) {
                         continue;
                     }
                     self.busy = false;
                     match r {
                         Ok(arts) => {
+                            let next = self.chosen.map_or(0, |c| c + 1);
+                            if arts.is_empty() && self.auto && next < self.matches.len() {
+                                // e.g. no art filed under the Steam id: try the best name match instead.
+                                log::info!("art picker: nothing for {}, trying the next match", self.matches[self.chosen.unwrap_or(0)].path);
+                                self.choose(ctx, next);
+                                continue;
+                            }
                             if arts.is_empty() {
                                 let what = if self.kind == ArtKind::Cover { "covers" } else { "banners" };
                                 self.note = Some(format!("SteamGridDB has no {what} for this game. Try another match or search."));
@@ -211,16 +228,21 @@ impl Picker {
                             self.tiles = arts.into_iter().map(|art| Tile { art, tex: None }).collect();
                             self.load_thumbs(ctx, g);
                         }
-                        Err(e) => self.note = Some(e),
+                        Err(e) => {
+                            log::warn!("art picker: listing failed: {e}");
+                            self.note = Some(format!("Couldn't load images: {e}"));
+                        }
                     }
                 }
                 Msg::Thumb(g, i, img) => {
+                    let cur = self.art_round.load(Ordering::SeqCst);
                     if let (true, Some(img), Some(t)) = (g == cur, img, self.tiles.get_mut(i)) {
                         t.tex = Some(ctx.load_texture(format!("pick{g}-{i}"), img, TextureOptions::LINEAR));
                     }
                 }
                 Msg::Applied(Ok(())) => return Some(Outcome::Changed(self.id, self.kind)),
                 Msg::Applied(Err(e)) => {
+                    log::warn!("art picker: {e}");
                     self.applying = false;
                     self.note = Some(e);
                 }
@@ -261,6 +283,7 @@ impl Picker {
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui.button("Search").clicked() || enter) && !self.query.trim().is_empty() {
                         self.chosen = None;
+                        self.auto = true;
                         self.tiles.clear();
                         self.matches.clear();
                         self.search(ctx);
@@ -284,6 +307,7 @@ impl Picker {
                             }
                         }
                         if let Some(i) = pick {
+                            self.auto = false;
                             self.choose(ctx, i);
                         }
                     });
@@ -331,7 +355,8 @@ impl Picker {
                 });
                 if self.tiles.is_empty() && self.busy {
                     ui.add_space(20.0);
-                    ui.label(RichText::new("Searching…").color(TEXT_DIM));
+                    let what = if self.chosen.is_some() { "Loading images from SteamGridDB…" } else { "Searching SteamGridDB…" };
+                    ui.label(RichText::new(what).color(TEXT_DIM));
                 }
             });
             if let Some(i) = picked {
@@ -340,7 +365,8 @@ impl Picker {
             }
         });
         if close || resp.should_close() {
-            self.round.fetch_add(1, Ordering::SeqCst);
+            self.search_round.fetch_add(1, Ordering::SeqCst);
+            self.art_round.fetch_add(1, Ordering::SeqCst);
             Outcome::Closed
         } else {
             Outcome::Open

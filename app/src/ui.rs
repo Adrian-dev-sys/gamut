@@ -1,3 +1,4 @@
+use crate::notify::Toasts;
 use crate::picker::{ArtKind, Outcome, Picker};
 use crate::theme::{self, ACCENT, CARD, CARD_HI, GOOD, TEXT_DIM};
 use crate::thumbs::{self, ThumbCache};
@@ -100,7 +101,7 @@ pub struct GamutApp {
     confirm_remove: Option<i64>,
     picker: Option<Picker>,
     ctx_handle: egui::Context,
-    error: Option<String>,
+    toasts: Toasts,
     /// Playnite folder + preview report awaiting confirmation.
     playnite: Option<(std::path::PathBuf, gamut_core::playnite::Summary)>,
     focus_search: bool,
@@ -154,7 +155,7 @@ impl GamutApp {
             confirm_remove: None,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
-            error: repair_notice,
+            toasts: Toasts::with(repair_notice),
             playnite: None,
             focus_search: false,
             opened_at: 0.0,
@@ -181,7 +182,7 @@ impl GamutApp {
     fn reload_all(&mut self) {
         match self.lib.all() {
             Ok(g) => self.games = g,
-            Err(e) => self.error = Some(format!("{e:#}")),
+            Err(e) => self.toasts.error(format!("{e:#}")),
         }
         (self.platforms, self.tags) = facets(&self.games);
         self.view_key = None;
@@ -207,14 +208,18 @@ impl GamutApp {
             match ev {
                 Event::LibraryChanged => self.reload_all(),
                 Event::GameUpdated(id) => self.reload_one(id),
-                Event::Error(e) => self.error = Some(e),
+                Event::Error(e) => self.toasts.error(e),
+                Event::Info(m) => self.toasts.info(m),
                 Event::PlaynitePreview(Ok(p)) => self.playnite = Some(p),
-                Event::PlaynitePreview(Err(e)) => self.error = Some(e),
+                Event::PlaynitePreview(Err(e)) => self.toasts.error(e),
                 Event::PlayniteImported(r) => {
                     // Covers were replaced in bulk.
                     self.thumbs.clear();
                     self.hero = None;
-                    self.error = Some(r.unwrap_or_else(|e| e));
+                    match r {
+                        Ok(m) => self.toasts.success(m),
+                        Err(e) => self.toasts.error(e),
+                    }
                 }
             }
         }
@@ -307,7 +312,7 @@ impl GamutApp {
             Ok(())
         })();
         if let Err(e) = r {
-            self.error = Some(format!("{e:#}"));
+            self.toasts.error(format!("{e:#}"));
         }
     }
 
@@ -860,7 +865,7 @@ impl GamutApp {
             });
         if save {
             if let Err(e) = self.save_editor() {
-                self.error = Some(format!("{e:#}"));
+                self.toasts.error(format!("{e:#}"));
             }
             self.editor = None;
         } else if !open {
@@ -958,6 +963,14 @@ impl GamutApp {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.label(theme::hint(&format!("Data folder: {}", self.paths.root.display())));
+                ui.horizontal(|ui| {
+                    if ui.button("Open log").on_hover_text("What Gamut did this run, including errors").clicked() {
+                        let _ = open::that(crate::logging::path(&self.paths.root));
+                    }
+                    if ui.button("Open data folder").clicked() {
+                        let _ = open::that(&self.paths.root);
+                    }
+                });
                 ui.add_space(8.0);
                 if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
                     save = true;
@@ -971,7 +984,7 @@ impl GamutApp {
             let old = self.cfg.read().unwrap().clone();
             *self.cfg.write().unwrap() = new.clone();
             if let Err(e) = new.save(&self.paths.config) {
-                self.error = Some(format!("Saving settings failed: {e:#}"));
+                self.toasts.error(format!("Saving settings failed: {e:#}"));
             }
             if new.steamgriddb_key != old.steamgriddb_key {
                 let _ = self.lib.retry_missing_covers();
@@ -995,7 +1008,7 @@ impl GamutApp {
                 ui.horizontal(|ui| {
                     if ui.button("Remove").clicked() {
                         if let Err(e) = self.lib.delete(id) {
-                            self.error = Some(format!("{e:#}"));
+                            self.toasts.error(format!("{e:#}"));
                         }
                         for p in [self.paths.cover(id), self.paths.thumb(id), self.paths.hero(id)] {
                             let _ = std::fs::remove_file(p);
@@ -1077,27 +1090,6 @@ impl GamutApp {
             self.settings = None;
         } else if cancel || !open {
             self.playnite = None;
-        }
-    }
-
-    fn error_window(&mut self, ctx: &egui::Context) {
-        let Some(e) = self.error.clone() else { return };
-        let (mut open, mut ok) = (true, false);
-        egui::Window::new("Gamut")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.set_max_width(440.0);
-                ui.add(egui::Label::new(e).wrap());
-                ui.add_space(8.0);
-                if ui.button("OK").clicked() {
-                    ok = true;
-                }
-            });
-        if !open || ok {
-            self.error = None;
         }
     }
 }
@@ -1430,7 +1422,6 @@ impl eframe::App for GamutApp {
             self.editor.is_some()
             || self.settings.is_some()
             || self.confirm_remove.is_some()
-            || self.error.is_some()
             || self.playnite.is_some();
         if let (Some(id), false) = (self.selected, dialog_open) {
             let screen = ctx.content_rect();
@@ -1467,6 +1458,9 @@ impl eframe::App for GamutApp {
                 Outcome::Closed => self.picker = None,
                 Outcome::Changed(id, kind) => {
                     self.picker = None;
+                    let what = if kind == ArtKind::Cover { "Cover" } else { "Banner" };
+                    let name = self.game(id).map(|g| g.name.clone()).unwrap_or_default();
+                    self.toasts.success(format!("{what} updated for {name}."));
                     if kind == ArtKind::Banner || self.game(id).is_some_and(|g| !g.has_hero) {
                         self.hero = None;
                     }
@@ -1478,7 +1472,7 @@ impl eframe::App for GamutApp {
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
         self.playnite_window(&ctx);
-        self.error_window(&ctx);
+        self.toasts.show(&ctx);
 
         for a in actions {
             self.apply(a);

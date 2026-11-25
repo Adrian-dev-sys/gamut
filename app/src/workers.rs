@@ -11,6 +11,7 @@ pub enum Event {
     LibraryChanged,
     GameUpdated(i64),
     Error(String),
+    Info(String),
     /// Playnite folder + dry-run report, or why it couldn't be read.
     PlaynitePreview(Result<(std::path::PathBuf, gamut_core::playnite::Summary), String>),
     /// Finished import summary (or error); covers changed for these ids.
@@ -201,7 +202,7 @@ impl Workers {
                 Ok(warn) => {
                     let _ = tx.send(Event::LibraryChanged);
                     if let Some(w) = warn {
-                        let _ = tx.send(Event::Error(format!("Steam library import: {w}")));
+                        let _ = tx.send(Event::Info(format!("Steam library import: {w}")));
                     }
                 }
                 Err(e) => {

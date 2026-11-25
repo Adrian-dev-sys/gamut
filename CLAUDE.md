@@ -14,6 +14,7 @@ Native Windows game library (Playnite alternative). Rust workspace: `core/` (lib
 
 ## Test
 `cargo test`; `gamut-cli --data <tmp> scan|fetch|list|seed N` exercises core against the real Steam install.
+Debugging: the app logs to `<data>\gamut.log` (last run in `gamut.old.log`; `RUST_LOG=debug` for more). Use `log::` in code and `Toasts` (`app/src/notify.rs`) for user-facing success/error messages.
 Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a short path.
 
 ## Docs
