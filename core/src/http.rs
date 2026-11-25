@@ -37,3 +37,17 @@ pub fn encode(s: &str) -> String {
     }
     out
 }
+
+/// True for HTTP 403/404, i.e. "this resource doesn't exist" rather than a transient failure.
+pub fn is_missing(e: &anyhow::Error) -> bool {
+    matches!(e.downcast_ref::<ureq::Error>(), Some(ureq::Error::StatusCode(403 | 404)))
+}
+
+/// Like `get_bytes`, but a missing resource is `Ok(None)`; network errors stay errors.
+pub fn get_bytes_opt(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    match get_bytes(url) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if is_missing(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}

@@ -18,11 +18,11 @@ cargo test
 If the project path is very long, MSVC's linker can fail with `LNK1104`; set `CARGO_TARGET_DIR` to a short path.
 
 ## Data
-`%LOCALAPPDATA%\Gamut\` holds `library.db`, `config.toml` (API keys) and image caches.
+`%LOCALAPPDATA%\Gamut\data\` holds `library.db`, `config.toml` (API keys) and image caches.
 Put an empty `portable.txt` next to `gamut.exe` to keep data in `.\data\` instead.
 
 ## CLI
-`gamut-cli [--data DIR] scan | list | fetch [N] | add NAME EXE | seed N` (seed = stress-test data).
+`gamut-cli [--data DIR] scan | list | fetch [N] | add NAME EXE | remove ID | launch ID | seed N` (seed = stress-test data).
 
 ## Layout
 - `core/` – library: `steam.rs` (VDF/ACF + Web API), `scrape.rs` (Steam store, SteamGridDB), `sync.rs` (per-game

@@ -68,6 +68,11 @@ impl Workers {
                             ok += 1;
                             let _ = tx.send(Event::GameUpdated(g.id));
                         }
+                        Err(e) if e.to_string().contains("(401)") => {
+                            // Bad key: tell the user and stop until settings change.
+                            let _ = tx.send(Event::Error(format!("{e:#}")));
+                            break;
+                        }
                         Err(e) => {
                             log::warn!("{} {}: {e:#}", if meta { "meta" } else { "cover" }, g.name);
                             // Steam store rate limit: back off.
@@ -108,10 +113,16 @@ impl Workers {
         let (kc, km) = (self.kick_cover.clone(), self.kick_meta.clone());
         std::thread::spawn(move || {
             let c = cfg.read().unwrap().clone();
-            let r = steam::scan(&c).and_then(|entries| Library::open(&paths.db)?.sync_steam(&entries));
+            let r = steam::scan(&c).and_then(|(entries, warn)| {
+                Library::open(&paths.db)?.sync_steam(&entries)?;
+                Ok(warn)
+            });
             match r {
-                Ok(_) => {
+                Ok(warn) => {
                     let _ = tx.send(Event::LibraryChanged);
+                    if let Some(w) = warn {
+                        let _ = tx.send(Event::Error(format!("Steam library import: {w}")));
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("Steam scan failed: {e:#}")));

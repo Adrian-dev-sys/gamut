@@ -199,13 +199,12 @@ impl GamutApp {
                     }
                 }
                 Action::ToggleFav(id) | Action::ToggleHidden(id) => {
-                    let Some(mut g) = self.game(id).cloned() else { return Ok(()) };
+                    let Some(g) = self.game(id) else { return Ok(()) };
                     if matches!(a, Action::ToggleFav(_)) {
-                        g.favorite = !g.favorite;
+                        self.lib.set_favorite(id, !g.favorite)?;
                     } else {
-                        g.hidden = !g.hidden;
+                        self.lib.set_hidden(id, !g.hidden)?;
                     }
-                    self.lib.update_user_fields(&g)?;
                     self.reload_one(id);
                 }
                 Action::Refresh(id) => {
@@ -393,13 +392,9 @@ impl GamutApp {
                         painter.rect_filled(cover, r, Color32::from_black_alpha(110));
                     }
                     if g.favorite {
-                        painter.text(
-                            cover.right_top() + vec2(-8.0, 6.0),
-                            egui::Align2::RIGHT_TOP,
-                            "⭐",
-                            FontId::proportional(18.0),
-                            Color32::from_rgb(255, 205, 80),
-                        );
+                        let c = cover.right_top() + vec2(-16.0, 16.0);
+                        painter.circle_filled(c, 13.0, Color32::from_black_alpha(140));
+                        paint_star(painter, c, 9.0, true);
                     }
                     if is_sel || hovered {
                         let s = if is_sel { Stroke::new(2.5, ACCENT) } else { Stroke::new(1.5, Color32::from_gray(200)) };
@@ -479,10 +474,9 @@ impl GamutApp {
             if ui.add(play).clicked() {
                 actions.push(Action::Play(id));
             }
-            let star_col = if g.favorite { Color32::from_rgb(255, 205, 80) } else { TEXT_DIM };
-            if ui.add(egui::Button::new(RichText::new("⭐").size(18.0).color(star_col)).min_size(vec2(36.0, 36.0)))
-                .on_hover_text("Favorite")
-                .clicked()
+            let fav = ui.add(egui::Button::new("").min_size(vec2(36.0, 36.0))).on_hover_text("Favorite");
+            paint_star(ui.painter(), fav.rect.center(), 9.0, g.favorite);
+            if fav.clicked()
             {
                 actions.push(Action::ToggleFav(id));
             }
@@ -774,6 +768,26 @@ fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
     if g.source == Source::Custom {
         ui.separator();
         item(ui, "Remove…", Action::Remove(id));
+    }
+}
+
+/// Five-point star: gold fill when on, dim outline when off (emoji fonts ignore tint).
+fn paint_star(p: &egui::Painter, c: egui::Pos2, r: f32, on: bool) {
+    let pts: Vec<egui::Pos2> = (0..10)
+        .map(|i| {
+            let a = std::f32::consts::PI * (i as f32 / 5.0) - std::f32::consts::FRAC_PI_2;
+            let rad = if i % 2 == 0 { r } else { r * 0.45 };
+            c + vec2(a.cos(), a.sin()) * rad
+        })
+        .collect();
+    if on {
+        // Fill as triangles from the centre so the concave shape renders correctly.
+        let gold = Color32::from_rgb(255, 205, 80);
+        for i in 0..10 {
+            p.add(egui::Shape::convex_polygon(vec![c, pts[i], pts[(i + 1) % 10]], gold, Stroke::NONE));
+        }
+    } else {
+        p.add(egui::Shape::closed_line(pts, Stroke::new(1.5, TEXT_DIM)));
     }
 }
 

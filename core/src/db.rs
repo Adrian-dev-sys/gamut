@@ -197,6 +197,11 @@ impl Library {
         Ok(())
     }
 
+    pub fn set_favorite(&self, id: i64, fav: bool) -> Result<()> {
+        self.conn.execute("UPDATE games SET favorite = ?2 WHERE id = ?1", params![id, fav])?;
+        Ok(())
+    }
+
     pub fn set_hidden(&self, id: i64, hidden: bool) -> Result<()> {
         self.conn.execute("UPDATE games SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
         Ok(())

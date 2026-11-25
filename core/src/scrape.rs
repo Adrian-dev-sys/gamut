@@ -1,4 +1,4 @@
-use crate::http::{agent, encode, get_bytes, get_json};
+use crate::http::{agent, encode, get_bytes, get_bytes_opt, get_json, is_missing};
 use crate::model::Metadata;
 use anyhow::Result;
 use serde::Deserialize;
@@ -89,13 +89,15 @@ pub fn steam_search(name: &str) -> Result<Option<u32>> {
 const CDN: &str = "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps";
 
 /// Portrait cover (600x900) from Steam's CDN.
-pub fn steam_cdn_cover(appid: u32) -> Result<Vec<u8>> {
-    get_bytes(&format!("{CDN}/{appid}/library_600x900_2x.jpg"))
-        .or_else(|_| get_bytes(&format!("{CDN}/{appid}/library_600x900.jpg")))
+pub fn steam_cdn_cover(appid: u32) -> Result<Option<Vec<u8>>> {
+    match get_bytes_opt(&format!("{CDN}/{appid}/library_600x900_2x.jpg"))? {
+        Some(b) => Ok(Some(b)),
+        None => get_bytes_opt(&format!("{CDN}/{appid}/library_600x900.jpg")),
+    }
 }
 
-pub fn steam_cdn_hero(appid: u32) -> Result<Vec<u8>> {
-    get_bytes(&format!("{CDN}/{appid}/library_hero.jpg"))
+pub fn steam_cdn_hero(appid: u32) -> Result<Option<Vec<u8>>> {
+    get_bytes_opt(&format!("{CDN}/{appid}/library_hero.jpg"))
 }
 
 // ---------- SteamGridDB ----------
@@ -117,12 +119,27 @@ struct SgdbGame {
 }
 
 fn sgdb_get<T: serde::de::DeserializeOwned>(key: &str, path: &str) -> Result<T> {
-    Ok(agent()
+    // Keep >= 250 ms between SteamGridDB calls across all threads.
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap();
+        if let Some(t) = *last {
+            let gap = std::time::Duration::from_millis(250);
+            if t.elapsed() < gap {
+                std::thread::sleep(gap - t.elapsed());
+            }
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let resp = agent()
         .get(&format!("{SGDB}{path}"))
         .header("Authorization", &format!("Bearer {key}"))
-        .call()?
-        .body_mut()
-        .read_json()?)
+        .call();
+    match resp {
+        Ok(mut r) => Ok(r.body_mut().read_json()?),
+        Err(ureq::Error::StatusCode(401)) => anyhow::bail!("SteamGridDB rejected the API key (401)"),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Which game a SteamGridDB lookup refers to.
@@ -145,7 +162,7 @@ fn sgdb_first(key: &str, kind: &str, game: &str, query: &str) -> Result<Option<V
     // Unknown steam ids come back as 404; treat as "nothing found".
     let l: SgdbList<SgdbImage> = match sgdb_get(key, &format!("/{kind}/{game}?{query}")) {
         Ok(l) => l,
-        Err(e) if e.to_string().contains("404") => return Ok(None),
+        Err(e) if is_missing(&e) => return Ok(None),
         Err(e) => return Err(e),
     };
     match l.data.first() {
@@ -154,11 +171,11 @@ fn sgdb_first(key: &str, kind: &str, game: &str, query: &str) -> Result<Option<V
     }
 }
 
-/// Portrait cover + hero from SteamGridDB.
-pub fn sgdb_art(key: &str, r: SgdbRef) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+/// Portrait cover and/or hero from SteamGridDB (only the ones asked for).
+pub fn sgdb_art(key: &str, r: SgdbRef, cover: bool, hero: bool) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>)> {
     let Some(game) = sgdb_game_path(key, &r)? else { return Ok((None, None)) };
-    let cover = sgdb_first(key, "grids", &game, "dimensions=600x900&types=static")?;
-    let hero = sgdb_first(key, "heroes", &game, "types=static").unwrap_or(None);
+    let cover = if cover { sgdb_first(key, "grids", &game, "dimensions=600x900&types=static")? } else { None };
+    let hero = if hero { sgdb_first(key, "heroes", &game, "types=static").unwrap_or(None) } else { None };
     Ok((cover, hero))
 }
 

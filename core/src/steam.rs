@@ -141,7 +141,8 @@ pub fn owned(api_key: &str, steam_id: &str) -> Result<Vec<SteamEntry>> {
 }
 
 /// Full scan: owned library (when configured) merged with installed manifests.
-pub fn scan(cfg: &crate::Config) -> Result<Vec<SteamEntry>> {
+/// The second value is a user-facing warning (e.g. the Web API call failed).
+pub fn scan(cfg: &crate::Config) -> Result<(Vec<SteamEntry>, Option<String>)> {
     let steam = steam_path();
     let local = steam.as_deref().map(installed).unwrap_or_default();
     let steam_id = if cfg.steam_id.trim().is_empty() {
@@ -151,10 +152,18 @@ pub fn scan(cfg: &crate::Config) -> Result<Vec<SteamEntry>> {
     };
 
     let mut map: HashMap<u32, SteamEntry> = HashMap::new();
-    if !cfg.steam_api_key.trim().is_empty() && !steam_id.is_empty() {
-        match owned(cfg.steam_api_key.trim(), &steam_id) {
-            Ok(list) => map.extend(list.into_iter().map(|e| (e.appid, e))),
-            Err(e) => log::warn!("owned games: {e:#}"),
+    let mut warning = None;
+    if !cfg.steam_api_key.trim().is_empty() {
+        if steam_id.is_empty() {
+            warning = Some("No SteamID found — enter your SteamID64 in Settings.".to_string());
+        } else {
+            match owned(cfg.steam_api_key.trim(), &steam_id) {
+                Ok(list) if list.is_empty() => {
+                    warning = Some("Steam returned no owned games — is your profile's game list public?".into())
+                }
+                Ok(list) => map.extend(list.into_iter().map(|e| (e.appid, e))),
+                Err(e) => warning = Some(format!("{e:#}")),
+            }
         }
     }
     for l in local {
@@ -169,7 +178,7 @@ pub fn scan(cfg: &crate::Config) -> Result<Vec<SteamEntry>> {
             }
         }
     }
-    Ok(map.into_values().collect())
+    Ok((map.into_values().collect(), warning))
 }
 
 /// Locally cached library art (Steam client cache), if present.

@@ -18,10 +18,14 @@ pub fn fetch_cover(lib: &Library, paths: &Paths, cfg: &Config, g: &Game) -> Resu
             hero = steam::local_art(id, "library_hero.jpg").and_then(|p| std::fs::read(p).ok());
         }
         if cover.is_none() {
-            cover = scrape::steam_cdn_cover(id).ok();
+            cover = scrape::steam_cdn_cover(id)?;
         }
         if hero.is_none() {
-            hero = scrape::steam_cdn_hero(id).ok();
+            // A missing banner shouldn't hold up the cover.
+            hero = scrape::steam_cdn_hero(id).unwrap_or_else(|e| {
+                log::warn!("hero {}: {e:#}", g.name);
+                None
+            });
         }
     }
     if (cover.is_none() || hero.is_none()) && !key.is_empty() {
@@ -29,9 +33,15 @@ pub fn fetch_cover(lib: &Library, paths: &Paths, cfg: &Config, g: &Game) -> Resu
             Some(id) => SgdbRef::Steam(id),
             None => SgdbRef::Name(&g.name),
         };
-        let (c, h) = scrape::sgdb_art(key, r)?;
-        cover = cover.or(c);
-        hero = hero.or(h);
+        match scrape::sgdb_art(key, r, cover.is_none(), hero.is_none()) {
+            Ok((c, h)) => {
+                cover = cover.or(c);
+                hero = hero.or(h);
+            }
+            // Fatal only if SteamGridDB was our last chance at a cover.
+            Err(e) if cover.is_none() => return Err(e),
+            Err(e) => log::warn!("sgdb {}: {e:#}", g.name),
+        }
     }
 
     let has_hero = match hero {
