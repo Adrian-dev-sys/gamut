@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|import-playnite [DIR] [--dry-run] [--verbose]>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -43,10 +43,8 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     // Writing commands must not run alongside the app.
-    let _lock = match args.first().map(String::as_str) {
-        Some("list") | None => None,
-        _ => Some(paths.lock().ok_or_else(|| anyhow::anyhow!("Gamut is running; close it first"))?),
-    };
+    // Every command, even read-only ones, stays out while the app has the library open.
+    let _lock = paths.lock().ok_or_else(|| anyhow::anyhow!("Gamut is running; close it first"))?;
     let (mut lib, notice) = Library::open_checked(&paths.db)?;
     if let Some(n) = notice {
         eprintln!("{n}");
@@ -62,6 +60,12 @@ fn main() -> anyhow::Result<()> {
             let installed = entries.iter().filter(|e| e.installed).count();
             lib.sync_steam(&entries)?;
             println!("steam: {} games ({installed} installed) in {:?}", entries.len(), t.elapsed());
+        }
+        Some("find") if args.len() >= 2 => {
+            let q = args[1].to_lowercase();
+            for g in lib.all()?.into_iter().filter(|g| g.name.to_lowercase().contains(&q)) {
+                println!("{g:#?}");
+            }
         }
         Some("list") => {
             let mut games = lib.all()?;

@@ -3,7 +3,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::Path;
 
-/// SQLite-backed game library. Each thread opens its own handle (WAL mode).
+/// SQLite-backed game library. Each thread opens its own handle (rollback journal).
 pub struct Library {
     conn: Connection,
 }
@@ -41,13 +41,14 @@ impl Library {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
-        // Switching to WAL needs an exclusive lock, so only do it once.
+        // Rollback journal, not WAL: WAL's shared-memory index is what two processes corrupted twice.
+        // Leaving WAL needs exclusive access, so the first handle (app start, before workers) converts.
         let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
-        if !mode.eq_ignore_ascii_case("wal") {
-            conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+        if !mode.eq_ignore_ascii_case("delete") {
+            let _ = conn.query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()));
         }
         conn.execute_batch(
-            "PRAGMA synchronous=NORMAL;
+            "PRAGMA synchronous=FULL;
              CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
                 source TEXT NOT NULL,
@@ -98,11 +99,19 @@ impl Library {
     /// Opens the library; if SQLite finds damage, rebuilds it from every readable row.
     /// Returns a user-facing notice when a repair happened.
     pub fn open_checked(path: &Path) -> Result<(Self, Option<String>)> {
-        if let Ok(lib) = Self::open(path) {
-            let ok = lib.conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0));
-            if matches!(ok.as_deref(), Ok("ok")) {
-                return Ok((lib, None));
-            }
+        // Only real damage triggers a rebuild; a busy or missing file is an error, not corruption.
+        let corrupt = |e: &rusqlite::Error| {
+            matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase))
+        };
+        match Self::open(path) {
+            Ok(lib) => match lib.conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)) {
+                Ok(r) if r == "ok" => return Ok((lib, None)),
+                Ok(_) => {}
+                Err(e) if corrupt(&e) => {}
+                Err(e) => return Err(e.into()),
+            },
+            Err(e) if e.downcast_ref::<rusqlite::Error>().is_some_and(corrupt) => {}
+            Err(e) => return Err(e),
         }
         let notice = Self::salvage(path)?;
         Ok((Self::open(path)?, Some(notice)))
