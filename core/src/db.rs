@@ -73,7 +73,8 @@ impl Library {
         for sfx in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(file(&format!(".rebuild{sfx}")));
         }
-        let (mut saved, mut lost) = (0usize, 0usize);
+        let saved;
+        let mut lost = 0usize;
         {
             let new = Self::open(&tmp)?;
             let old = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
