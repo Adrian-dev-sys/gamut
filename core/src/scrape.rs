@@ -294,6 +294,7 @@ pub const BOLD: &str = "**";
 
 pub fn strip_html(html: &str) -> String {
     let src_re = regex::Regex::new(r#"(?i)\bsrc\s*=\s*["']([^"']+)["']"#).unwrap();
+    let poster_re = regex::Regex::new(r#"(?i)\bposter\s*=\s*["']([^"']+)["']"#).unwrap();
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
     let mut tag = String::new();
@@ -308,8 +309,10 @@ pub fn strip_html(html: &str) -> String {
                 let close = tag.starts_with('/');
                 let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("").to_ascii_lowercase();
                 match name.as_str() {
-                    "img" => {
-                        if let Some(c) = src_re.captures(&tag).filter(|c| c[1].starts_with("http")) {
+                    // Steam clips are <video poster=...>; the poster URL leads the player to the webm/mp4.
+                    "img" | "video" if !close => {
+                        let re = if name == "img" { &src_re } else { &poster_re };
+                        if let Some(c) = re.captures(&tag).filter(|c| c[1].starts_with("http")) {
                             out.push_str(&format!("\n\n{IMG_MARKER}{}\n\n", &c[1]));
                         }
                     }
@@ -337,15 +340,23 @@ pub fn strip_html(html: &str) -> String {
         .replace("&nbsp;", " ");
     // Tidy each line, drop empty markup, and keep at most one blank line between blocks.
     let mut res = String::new();
-    let (mut blank, mut prev_bullet) = (0, false);
+    let (mut blank, mut prev_bullet, mut pending_bullet) = (0, false, false);
     for line in out.split('\n') {
         let mut l = line.split_whitespace().collect::<Vec<_>>().join(" ").replace("****", "");
-        if l == BOLD || l == HEADING.trim() || l == BULLET.trim() {
+        // <li><p>text</p></li> leaves the marker alone on its line; it belongs to the next text.
+        if l == BULLET.trim() {
+            pending_bullet = true;
+            continue;
+        }
+        if l == BOLD || l == HEADING.trim() {
             l.clear();
         }
         if l.is_empty() {
             blank += 1;
             continue;
+        }
+        if std::mem::take(&mut pending_bullet) && !l.starts_with(BULLET) && !l.starts_with(IMG_MARKER) {
+            l.insert_str(0, BULLET);
         }
         // List items stay on adjacent lines even when a <br> ends the previous one.
         let bullet = l.starts_with(BULLET);
@@ -367,6 +378,14 @@ mod tests {
         assert_eq!(strip_html("<h2>Hi</h2>A &amp; B<br>C"), "## Hi\n\nA & B\nC");
         assert_eq!(strip_html("A<img src=\"https://x/y.gif?t=1\" width=5>B"), "A\n\n[img]https://x/y.gif?t=1\n\nB");
         // Playnite: source newlines are whitespace, <br><br> is a paragraph.
+        assert_eq!(
+            strip_html(r#"<video class="bb_img" poster="https://x/a.poster.avif?t=1"><source src="https://x/a.webm?t=1"></video>Hi"#),
+            "[img]https://x/a.poster.avif?t=1\n\nHi"
+        );
+        assert_eq!(
+            strip_html("Feat:<ul><li><p>One</p></li></ul><ul><li><p>Two</p></li><li><p>Three</p></li></ul>End"),
+            "Feat:\n\n• One\n• Two\n• Three\n\nEnd"
+        );
         assert_eq!(strip_html("One.<br />\r\nTwo.<br><br>Three."), "One.\nTwo.\n\nThree.");
         assert_eq!(
             strip_html("Intro.<h2 class=\"bb_tag\">Key Features</h2> <ul class=\"bb_ul\"><li><strong>Horror</strong> \u{2013} text <br></li><li><b>Co-op</b> - more</li></ul>End"),
