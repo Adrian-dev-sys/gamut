@@ -1763,11 +1763,17 @@ fn description(ui: &mut Ui, d: &str) {
             Some(url) if url.starts_with("http") => {
                 flush(ui, &mut text);
                 let w = ui.available_width().min(900.0);
-                let img = egui::Image::new(url.to_string()).max_width(w).corner_radius(6).show_loading_spinner(true);
-                // Unsupported/broken images (e.g. videos) are skipped rather than shown as a warning icon.
-                if img.load_for_size(ui.ctx(), egui::vec2(w, w)).is_ok() {
+                let img = egui::Image::new(url.to_string()).corner_radius(6).show_loading_spinner(true);
+                // Exact size from the image itself: in a scroll area egui would otherwise fit it to the
+                // visible space left, which is zero below the fold. Broken/unsupported images are skipped.
+                let size = match img.load_for_size(ui.ctx(), egui::vec2(w, w)) {
+                    Ok(egui::load::TexturePoll::Ready { texture }) => Some(texture.size * (w / texture.size.x).min(1.0)),
+                    Ok(egui::load::TexturePoll::Pending { .. }) => Some(egui::vec2(w.min(640.0), w.min(640.0) * 9.0 / 16.0)),
+                    Err(_) => None,
+                };
+                if let Some(size) = size {
                     ui.add_space(6.0);
-                    ui.add(img);
+                    ui.add(img.fit_to_exact_size(size));
                     ui.add_space(6.0);
                 }
             }
