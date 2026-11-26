@@ -45,5 +45,10 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
 - Picking any result opens a preview first (`editor::preview`: every field, "N of 9 fields", description
   word/image count); "Fill form" applies it, "Back to results" returns. Source tabs in the panel re-run the
   same query, so one game can be compared across sources.
+- "Compare all…" (`app/src/lookup.rs`): searches all four sources at once, auto-picks each one's likeliest
+  entry (IGDB's strict match, else exact title preferring games over bundles, else first; a dropdown switches
+  it), and shows a field × source grid. ★ = most fields (longer description breaks ties); cells start on the
+  ★ source where it has the field, else the first source that does. Clicking cells mixes sources; "Fill N
+  fields" applies only selected cells. Taking any field from IGDB stores that entry as the match.
 - `gamut-cli vndb|gog|steam NAME` prints results and the first one's details.
 - `gamut-cli igdb NAME [PLATFORM]` prints search results and marks the automatic pick; `gamut-cli status` checks keys.

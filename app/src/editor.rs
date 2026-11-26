@@ -4,9 +4,9 @@ use crate::theme::{self, ACCENT, CARD, CARD_HI, TEXT, TEXT_DIM};
 use crate::util::{self, opt};
 use egui::{vec2, Color32, CornerRadius, RichText, Stroke, Ui};
 use crossbeam_channel::{unbounded, Receiver};
-use gamut_core::igdb::{self, IgdbGame};
-use gamut_core::gog::{self, GogGame};
-use gamut_core::vndb::{self, Vn, VnDetails};
+use crate::lookup::{self, Compare, CompareOut, Hit, Src};
+use gamut_core::igdb;
+use gamut_core::vndb::VnDetails;
 use gamut_core::{scrape, Config, Game, Source};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -51,34 +51,8 @@ pub struct Editor {
     /// IGDB entry picked with "Fill from IGDB", saved as the game's match.
     pub igdb_pick: Option<i64>,
     lookup: Option<Lookup>,
+    compare: Option<Compare>,
     filled: Option<String>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Src {
-    Steam,
-    Gog,
-    Igdb,
-    Vndb,
-}
-
-impl Src {
-    fn name(self) -> &'static str {
-        match self {
-            Src::Steam => "Steam",
-            Src::Gog => "GOG",
-            Src::Igdb => "IGDB",
-            Src::Vndb => "VNDB",
-        }
-    }
-}
-
-#[derive(Clone)]
-enum Hit {
-    Steam(u32, String),
-    Gog(GogGame),
-    Igdb(IgdbGame),
-    Vndb(Vn),
 }
 
 enum Msg {
@@ -183,23 +157,6 @@ fn preview(ui: &mut Ui, d: &VnDetails, src: &str) -> Option<bool> {
     out
 }
 
-/// Full details of a picked entry (IGDB hits already carry theirs).
-fn fetch_details(h: Hit) -> anyhow::Result<VnDetails> {
-    match h {
-        Hit::Vndb(v) => vndb::details(&v.id),
-        Hit::Steam(id, title) => {
-            let d = scrape::steam_details(id)?.ok_or_else(|| anyhow::anyhow!("Steam has no store page for {title}"))?;
-            Ok(VnDetails { title, meta: d.meta, tags: Vec::new() })
-        }
-        Hit::Gog(g) => {
-            let mut meta = g.meta;
-            meta.description = gog::description(&g.id)?;
-            Ok(VnDetails { title: g.title, meta, tags: g.tags })
-        }
-        Hit::Igdb(g) => Ok(VnDetails { title: g.name, meta: g.meta, tags: Vec::new() }),
-    }
-}
-
 impl Editor {
     pub fn new_custom() -> Self {
         Self::from_game(&Game::new_custom(String::new(), None))
@@ -238,6 +195,7 @@ impl Editor {
             cover_file: None,
             igdb_pick: None,
             lookup: None,
+            compare: None,
             filled: None,
         }
     }
@@ -360,6 +318,22 @@ impl Editor {
 
     /// "Fill from Steam/GOG/IGDB/VNDB…": search by name, preview an entry, then fill the form with it.
     fn lookup_panel(&mut self, ui: &mut Ui, cfg: Option<&Config>) {
+        if let Some(c) = self.compare.as_mut() {
+            let mut out = None;
+            egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                out = c.show(ui, cfg);
+            });
+            match out {
+                Some(CompareOut::Apply(p)) => {
+                    self.apply_picked(p);
+                    self.compare = None;
+                }
+                Some(CompareOut::Close) => self.compare = None,
+                None => {}
+            }
+            ui.add_space(8.0);
+            return;
+        }
         if let Some(s) = self.lookup.as_mut() {
             if let Some(m) = s.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
                 s.busy = false;
@@ -375,13 +349,8 @@ impl Editor {
         let mut search = false;
         let mut fetch = None;
         let mut fill = None;
-        let srcs = [Src::Steam, Src::Gog, Src::Igdb, Src::Vndb];
-        let hint = |src: Src| match src {
-            Src::Steam => "Steam store page (works for games you don't own there)",
-            Src::Gog => "GOG store page",
-            Src::Igdb => "IGDB, the broadest database incl. consoles",
-            Src::Vndb => "VNDB, for visual novels",
-        };
+        let srcs = Src::ALL;
+        let hint = Src::hint;
         match self.lookup.as_mut() {
             None => {
                 ui.horizontal(|ui| {
@@ -397,6 +366,12 @@ impl Editor {
                             self.lookup = Some(Lookup { src, query, results: Vec::new(), busy: false, error: None, rx: None, preview: None });
                             search = true;
                         }
+                    }
+                    ui.separator();
+                    let all = egui::Button::new(RichText::new("Compare all…").color(Color32::WHITE)).fill(ACCENT);
+                    if ui.add(all).on_hover_text("Search every source at once, side by side, and mix fields between them").clicked() {
+                        let year = util::release_input(&self.release).get(..4).and_then(|y| y.parse().ok());
+                        self.compare = Some(Compare::new(ui.ctx(), cfg, &self.name, &self.platform, year));
                     }
                     if let Some(f) = &self.filled {
                         ui.label(RichText::new(f).color(TEXT_DIM));
@@ -446,15 +421,7 @@ impl Editor {
                     let mut picked = None;
                     egui::ScrollArea::vertical().id_salt("ed_lookup").max_height(220.0).show(ui, |ui| {
                         for (i, h) in s.results.iter().enumerate() {
-                            let (name, year, plat) = match h {
-                                Hit::Steam(_, n) => (n.as_str(), None, String::new()),
-                                Hit::Gog(g) => (g.title.as_str(), g.year, if g.kind == "pack" { "Edition/bundle".into() } else { String::new() }),
-                                Hit::Igdb(g) => (g.name.as_str(), g.year, g.platforms.join(", ")),
-                                Hit::Vndb(v) => (v.title.as_str(), v.year(), v.platforms.join(", ").to_uppercase()),
-                            };
-                            let year = year.map(|y| format!(" ({y})")).unwrap_or_default();
-                            let text = format!("{name}{year}{}{plat}", if plat.is_empty() { "" } else { " · " });
-                            let r = ui.add_enabled(!s.busy, egui::Button::selectable(false, text));
+                            let r = ui.add_enabled(!s.busy, egui::Button::selectable(false, h.label()));
                             if r.on_hover_text("Preview this entry").clicked() {
                                 picked = Some(i);
                             }
@@ -488,17 +455,9 @@ impl Editor {
             (s.busy, s.error, s.rx) = (true, None, Some(rx));
             std::thread::spawn(move || {
                 let err = |e: anyhow::Error| format!("{e:#}");
-                let msg = match (fetch, src) {
-                    (Some(h), _) => Msg::Details(fetch_details(h).map_err(err)),
-                    (None, Src::Steam) => {
-                        Msg::Results(scrape::steam_find(&q).map_err(err).map(|v| v.into_iter().map(|(id, n)| Hit::Steam(id, n)).collect()))
-                    }
-                    (None, Src::Gog) => Msg::Results(gog::search(&q).map_err(err).map(|v| v.into_iter().map(Hit::Gog).collect())),
-                    (None, Src::Vndb) => Msg::Results(vndb::search(&q).map_err(err).map(|v| v.into_iter().map(Hit::Vndb).collect())),
-                    (None, Src::Igdb) => Msg::Results(match &cfg {
-                        Some(c) => igdb::search(c, &q).map_err(err).map(|v| v.into_iter().map(Hit::Igdb).collect()),
-                        None => Err("IGDB isn't set up".into()),
-                    }),
+                let msg = match fetch {
+                    Some(h) => Msg::Details(lookup::fetch_details(h).map_err(err)),
+                    None => Msg::Results(lookup::search(src, cfg.as_ref(), &q).map_err(err)),
                 };
                 let _ = tx.send(msg);
                 ctx.request_repaint();
@@ -513,12 +472,25 @@ impl Editor {
             self.name = d.title.clone();
         }
         self.fill_meta(&d.meta);
-        for t in &d.tags {
+        self.add_tags(&d.tags);
+        self.filled = Some(format!("Filled from {src}: {}. Review and Save.", d.title));
+    }
+
+    fn apply_picked(&mut self, p: lookup::Picked) {
+        self.fill_meta(&p.meta);
+        self.add_tags(&p.tags);
+        if p.igdb_id.is_some() {
+            self.igdb_pick = p.igdb_id;
+        }
+        self.filled = Some(format!("Filled from {}. Review and Save.", p.label));
+    }
+
+    fn add_tags(&mut self, tags: &[String]) {
+        for t in tags {
             if !self.tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
                 self.tags.push(t.clone());
             }
         }
-        self.filled = Some(format!("Filled from {src}: {}. Review and Save.", d.title));
     }
 
     fn fill_meta(&mut self, m: &gamut_core::model::Metadata) {

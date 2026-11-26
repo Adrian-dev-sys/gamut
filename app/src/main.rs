@@ -7,6 +7,7 @@ mod editor;
 mod keycheck;
 mod sessions_view;
 mod logging;
+mod lookup;
 mod notify;
 mod picker;
 mod startup;
