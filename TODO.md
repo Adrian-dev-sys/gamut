@@ -17,23 +17,24 @@
 - [ ] List view and a compact/details view alongside the grid
 - [ ] Tags/categories and user collections
 - [ ] Multi-select + bulk edit (hide, favorite, refresh metadata)
-- [ ] Choose between several covers/banners per game (SteamGridDB alternatives)
+- [x] Choose between several covers/banners per game (SteamGridDB, IGDB, VNDB, Steam alternatives)
 - [x] Remember window size/position and last selected filter/sort
 - [ ] Library briefly flashes behind open popups. Gamut's own frames were verified correct (pixel readback), so likely G-Sync/VRR with uneven frame pacing; try Fixed Refresh for gamut.exe, then steady repaints while a popup is open
 
 ## Metadata
-- [ ] IGDB as an additional metadata source (richer data for non-Steam games)
-- [ ] Manual "search and match" when automatic name matching fails
+- [x] IGDB as an additional metadata source (richer data for non-Steam games)
+- [x] Manual "search and match" when automatic name matching fails (Fill from Steam/GOG/IGDB/VNDB, Compare all)
 
 ## Playtime & stats
 - [x] Playtime for custom games (tracked while the launched process runs)
-- [ ] Track the real game process when a custom entry starts a launcher that exits immediately (follow child processes / watch the install folder)
-- [ ] **Statistics** – total/recent playtime, most played, per-platform and per-genre breakdowns, completion status
+- [x] Per-game play sessions tab; play count; editable playtime/play count
+- [x] Track the real game process when a custom entry starts a launcher that exits immediately (follow child processes / watch the install folder)
+- [x] **Statistics** – total/recent playtime, most played, per-platform and per-genre breakdowns, completion status
 
 ## Integrations (later, once the core UI and basics are solid)
 - [x] **Special K** – optionally inject Special K automatically when launching a game (like Playnite's Special K Helper), with per-game on/off
-- [ ] **RetroAchievements** – show achievement progress for emulated games
-- [ ] **Achievements (Success Story-style)** – Steam and other platforms' achievements in the details view
+- [x] **RetroAchievements** – show achievement progress for emulated games
+- [x] **Achievements (Success Story-style)** – Steam and other platforms' achievements in the details view
 - [ ] **HowLongToBeat** – main/extra/completionist times in the details view
 
 ## Extras
