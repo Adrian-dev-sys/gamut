@@ -46,6 +46,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // Loaders for images in game descriptions (http URLs).
             avif::register();
+            std::thread::spawn(video::remove_old_cache);
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(ui::GamutApp::new(cc, paths)?))
         }),

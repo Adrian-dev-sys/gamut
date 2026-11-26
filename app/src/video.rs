@@ -2,14 +2,13 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::*;
 
-/// Frame-by-frame RGBA reader for a local video file (video stream only).
+/// Frame-by-frame RGBA reader for an in-memory video (video stream only).
 pub struct Reader {
     r: IMFSourceReader,
     pub w: u32,
@@ -21,7 +20,8 @@ pub struct Reader {
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
 impl Reader {
-    pub fn open(path: &Path) -> Result<Self> {
+    /// `mime` (e.g. "video/webm") tells Media Foundation the container, since there's no file name.
+    pub fn open(bytes: &[u8], mime: &str) -> Result<Self> {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             MFStartup(MF_VERSION, MFSTARTUP_LITE).context("MFStartup")?;
@@ -30,8 +30,11 @@ impl Reader {
             let attrs = attrs.context("no attributes")?;
             // Lets the reader convert decoder output (NV12 etc.) to RGB32 for us.
             attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)?;
-            let r = MFCreateSourceReaderFromURL(&windows::core::HSTRING::from(path.as_os_str()), &attrs)
-                .with_context(|| format!("opening {}", path.display()))?;
+            let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(bytes)).context("SHCreateMemStream")?;
+            let bs = MFCreateMFByteStreamOnStream(&stream)?;
+            let bs_attrs: IMFAttributes = windows::core::Interface::cast(&bs)?;
+            bs_attrs.SetString(&MF_BYTESTREAM_CONTENT_TYPE, &windows::core::HSTRING::from(mime))?;
+            let r = MFCreateSourceReaderFromByteStream(&bs, &attrs).with_context(|| format!("opening {mime}"))?;
             r.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
             r.SetStreamSelection(VIDEO, true)?;
             let t = MFCreateMediaType()?;
@@ -165,14 +168,16 @@ fn play(c: &Clip, poster: &str, ctx: &egui::Context) -> Result<()> {
     let idle = || c.seen.lock().unwrap().is_none_or(|t| t.elapsed() > IDLE);
     let mut errors = Vec::new();
     for url in clip_urls(poster) {
-        let file = match cached(&url) {
-            Ok(f) => f,
+        let mime = if url.split('?').next().is_some_and(|p| p.ends_with(".webm")) { "video/webm" } else { "video/mp4" };
+        // Streamed into memory only while the clip plays; nothing is kept on disk.
+        let bytes = match gamut_core::http::get_bytes(&url) {
+            Ok(b) => b,
             Err(e) => {
                 errors.push(format!("{e:#}"));
                 continue;
             }
         };
-        let mut r = match Reader::open(&file) {
+        let mut r = match Reader::open(&bytes, mime) {
             Ok(r) => r,
             Err(e) => {
                 errors.push(format!("{e:#}"));
@@ -195,28 +200,15 @@ fn play(c: &Clip, poster: &str, ctx: &egui::Context) -> Result<()> {
                 frames += 1;
             }
             anyhow::ensure!(frames > 0, "no frames decoded");
-            r = Reader::open(&file)?;
+            r = Reader::open(&bytes, mime)?;
         }
     }
     anyhow::bail!("{}", errors.join("; "))
 }
 
-/// Local copy of a clip in the temp folder, downloaded once.
-fn cached(url: &str) -> Result<std::path::PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    url.hash(&mut h);
-    let ext = url.split('?').next().and_then(|p| p.rsplit('.').next()).unwrap_or("bin");
-    let dir = std::env::temp_dir().join("gamut-clips");
-    let path = dir.join(format!("{:016x}.{ext}", h.finish()));
-    if !path.is_file() {
-        let bytes = gamut_core::http::get_bytes(url)?;
-        std::fs::create_dir_all(&dir)?;
-        let tmp = path.with_extension("part");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &path)?;
-    }
-    Ok(path)
+/// Older builds cached clips in %TEMP%\gamut-clips; clips are streamed now, so drop that folder.
+pub fn remove_old_cache() {
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join("gamut-clips"));
 }
 
 #[cfg(test)]
@@ -232,7 +224,8 @@ mod tests {
     #[ignore]
     fn reads_frames() {
         let path = std::path::PathBuf::from(std::env::var("GAMUT_VIDEO").unwrap());
-        let mut r = super::Reader::open(&path).unwrap();
+        let mime = if path.extension().is_some_and(|e| e == "webm") { "video/webm" } else { "video/mp4" };
+        let mut r = super::Reader::open(&std::fs::read(&path).unwrap(), mime).unwrap();
         let (mut n, mut last) = (0, 0.0);
         let t = std::time::Instant::now();
         while let Some((ts, px)) = r.next().unwrap() {

@@ -632,219 +632,222 @@ impl GamutApp {
             }
         }
 
-        let pad = 28.0;
-        let w = ui.available_width();
-        let banner_h = (w * 0.30).clamp(200.0, 380.0);
-        let banner = Rect::from_min_size(ui.cursor().min, vec2(w, banner_h));
-        ui.allocate_rect(banner, Sense::hover());
-        let top_r = CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 };
-        match self.hero.as_ref().and_then(|(_, t)| t.as_ref()) {
-            Some(t) => {
-                let [iw, ih] = t.size();
-                egui::Image::from_texture(t)
-                    .uv(cover_uv(iw as f32 / ih as f32, banner.aspect_ratio()))
-                    .corner_radius(top_r)
-                    .paint_at(ui, banner);
+        // One scroll for the whole page, so long descriptions and clips get the full height.
+        ScrollArea::vertical().id_salt(("details", id)).auto_shrink([false, false]).show(ui, |ui| {
+            let pad = 28.0;
+            let w = ui.available_width();
+            let banner_h = (w * 0.30).clamp(200.0, 380.0);
+            let banner = Rect::from_min_size(ui.cursor().min, vec2(w, banner_h));
+            ui.allocate_rect(banner, Sense::hover());
+            let top_r = CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 };
+            match self.hero.as_ref().and_then(|(_, t)| t.as_ref()) {
+                Some(t) => {
+                    let [iw, ih] = t.size();
+                    egui::Image::from_texture(t)
+                        .uv(cover_uv(iw as f32 / ih as f32, banner.aspect_ratio()))
+                        .corner_radius(top_r)
+                        .paint_at(ui, banner);
+                }
+                None => {
+                    ui.painter().rect_filled(banner, top_r, CARD);
+                }
             }
-            None => {
-                ui.painter().rect_filled(banner, top_r, CARD);
-            }
-        }
-        // Fade the banner's lower part into the panel so the title stays readable.
-        let fade = Rect::from_min_max(pos2(banner.left(), banner.bottom() - banner_h * 0.6), banner.right_bottom());
-        paint_vgradient(ui.painter(), fade, Color32::TRANSPARENT, theme::PANEL);
-        close_button(ui, banner.right_top() + vec2(-24.0, 24.0), &mut self.selected);
+            // Fade the banner's lower part into the panel so the title stays readable.
+            let fade = Rect::from_min_max(pos2(banner.left(), banner.bottom() - banner_h * 0.6), banner.right_bottom());
+            paint_vgradient(ui.painter(), fade, Color32::TRANSPARENT, theme::PANEL);
+            close_button(ui, banner.right_top() + vec2(-24.0, 24.0), &mut self.selected);
 
-        // Cover overlaps the banner's bottom edge.
-        let cover_w = 190.0;
-        let cover = Rect::from_min_size(
-            pos2(banner.left() + pad, banner.bottom() - cover_w * 1.5 * 0.55),
-            vec2(cover_w, cover_w * 1.5),
-        );
-        let shadow = egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(170) };
-        ui.painter().add(shadow.as_shape(cover, CornerRadius::same(8)));
-        match self.thumbs.get(id, g.has_cover) {
-            Some(t) => {
-                egui::Image::from_texture(t).corner_radius(CornerRadius::same(8)).paint_at(ui, cover);
+            // Cover overlaps the banner's bottom edge.
+            let cover_w = 190.0;
+            let cover = Rect::from_min_size(
+                pos2(banner.left() + pad, banner.bottom() - cover_w * 1.5 * 0.55),
+                vec2(cover_w, cover_w * 1.5),
+            );
+            let shadow = egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(170) };
+            ui.painter().add(shadow.as_shape(cover, CornerRadius::same(8)));
+            match self.thumbs.get(id, g.has_cover) {
+                Some(t) => {
+                    egui::Image::from_texture(t).corner_radius(CornerRadius::same(8)).paint_at(ui, cover);
+                }
+                None => {
+                    ui.painter().rect_filled(cover, CornerRadius::same(8), CARD);
+                }
             }
-            None => {
-                ui.painter().rect_filled(cover, CornerRadius::same(8), CARD);
+            // Art pickers appear on hover: one for the cover, one for the banner.
+            if ui.rect_contains_pointer(cover) {
+                if art_pill(ui, pos2(cover.center().x, cover.bottom() - 26.0), "Change cover", "pick_cover") {
+                    actions.push(Action::PickArt(id, ArtKind::Cover));
+                }
+            } else if ui.rect_contains_pointer(banner) {
+                if art_pill(ui, banner.right_top() + vec2(-112.0, 24.0), "Change banner", "pick_banner") {
+                    actions.push(Action::PickArt(id, ArtKind::Banner));
+                }
             }
-        }
-        // Art pickers appear on hover: one for the cover, one for the banner.
-        if ui.rect_contains_pointer(cover) {
-            if art_pill(ui, pos2(cover.center().x, cover.bottom() - 26.0), "Change cover", "pick_cover") {
-                actions.push(Action::PickArt(id, ArtKind::Cover));
-            }
-        } else if ui.rect_contains_pointer(banner) {
-            if art_pill(ui, banner.right_top() + vec2(-112.0, 24.0), "Change banner", "pick_banner") {
-                actions.push(Action::PickArt(id, ArtKind::Banner));
-            }
-        }
 
-        // Title sits on the faded banner, right of the cover.
-        let text_x = cover.right() + 24.0;
-        let title_w = banner.right() - pad - text_x;
-        let mut job = egui::text::LayoutJob::simple(g.name.clone(), FontId::proportional(30.0), Color32::WHITE, title_w);
-        job.wrap.max_rows = 2;
-        let galley = ui.painter().layout_job(job);
-        let tpos = pos2(text_x, banner.bottom() - galley.size().y - 14.0);
-        ui.painter().galley_with_override_text_color(tpos + vec2(0.0, 2.0), galley.clone(), Color32::from_black_alpha(200));
-        ui.painter().galley(tpos, galley, Color32::WHITE);
+            // Title sits on the faded banner, right of the cover.
+            let text_x = cover.right() + 24.0;
+            let title_w = banner.right() - pad - text_x;
+            let mut job = egui::text::LayoutJob::simple(g.name.clone(), FontId::proportional(30.0), Color32::WHITE, title_w);
+            job.wrap.max_rows = 2;
+            let galley = ui.painter().layout_job(job);
+            let tpos = pos2(text_x, banner.bottom() - galley.size().y - 14.0);
+            ui.painter().galley_with_override_text_color(tpos + vec2(0.0, 2.0), galley.clone(), Color32::from_black_alpha(200));
+            ui.painter().galley(tpos, galley, Color32::WHITE);
 
-        // Right of the cover: actions, stat tiles, links.
-        let header_bottom = cover.bottom() + 20.0;
-        ui.horizontal(|ui| {
-            ui.add_space(text_x - banner.left());
-            ui.vertical(|ui| {
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if is_running {
-                        let b = egui::Button::new(RichText::new("Running").size(17.0).strong().color(Color32::WHITE))
-                            .fill(GOOD)
-                            .min_size(vec2(150.0, 38.0));
-                        if ui.add(b).on_hover_text("This game is running. Click to close it.").clicked() {
-                            actions.push(Action::Stop(id));
-                        }
-                    } else {
-                        let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
-                        let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
-                            .fill(ACCENT)
-                            .min_size(vec2(150.0, 38.0));
-                        let can_play = g.source == Source::Steam || g.exe.is_some();
-                        let r = ui.add_enabled(can_play, play).on_disabled_hover_text("No way to start this game on this PC");
-                        if r.clicked() {
-                            actions.push(Action::Play(id));
-                        }
-                    }
-                    let fav = ui
-                        .add(egui::Button::new("").min_size(vec2(38.0, 38.0)))
-                        .on_hover_text(if g.favorite { "Unfavorite" } else { "Favorite" });
-                    paint_star(ui.painter(), fav.rect.center(), 10.0, g.favorite);
-                    if fav.clicked() {
-                        actions.push(Action::ToggleFav(id));
-                    }
-                    if ui.add(egui::Button::new("Edit").min_size(vec2(0.0, 38.0))).clicked() {
-                        actions.push(Action::Edit(id));
-                    }
-                    ui.menu_button("More", |ui| context_menu(ui, &g, actions))
-                        .response
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                });
-                ui.add_space(14.0);
-                ui.horizontal(|ui| {
-                    let status = match (g.source, g.installed) {
-                        (Source::Steam, true) => "Installed",
-                        (Source::Steam, false) => "Not installed",
-                        (Source::Custom, true) => "Ready",
-                        (Source::Custom, false) => "Not installed",
-                    };
-                    let status = if is_running { "Running" } else { status };
-                    stat(ui, "LAST PLAYED", &util::date(g.last_played));
-                    stat(ui, "TIME PLAYED", &util::playtime(g.playtime_min));
-                    stat(ui, "ADDED", &util::date(g.added));
-                    stat(ui, "STATUS", status);
-                    if let Some(c) = &g.completion {
-                        stat(ui, "COMPLETION", c);
-                    }
-                    if g.play_count > 0 {
-                        stat(ui, "PLAY COUNT", &g.play_count.to_string());
-                    }
-                });
-                ui.add_space(12.0);
-                ui.horizontal_wrapped(|ui| {
-                    for (label, url) in links(&g) {
-                        let b = egui::Button::new(RichText::new(label).size(12.5)).corner_radius(CornerRadius::same(12));
-                        if ui.add(b).on_hover_text(&url).clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                        }
-                    }
-                });
-            });
-        });
-        let y = ui.cursor().min.y;
-        if y < header_bottom {
-            ui.add_space(header_bottom - y);
-        }
-        ui.add_space(20.0);
-
-        // Lower area: details on the left, description on the right.
-        let rest = (ui.available_height() - pad).max(80.0);
-        ui.horizontal_top(|ui| {
-            ui.add_space(pad);
-            let left_w = cover_w + 40.0;
-            ui.allocate_ui_with_layout(vec2(left_w, rest), Layout::top_down(Align::Min), |ui| {
-                ui.set_width(left_w);
-                ScrollArea::vertical().id_salt("facts").auto_shrink([false, true]).show(ui, |ui| {
-                    theme::section(ui, "Details");
-                    let source = match (g.source, &g.store) {
-                        (Source::Steam, _) => "Steam",
-                        (_, Some(s)) => s.as_str(),
-                        _ => "Custom",
-                    };
-                    fact(ui, "Source", source);
-                    let scores = match (g.critic_score, g.community_score) {
-                        (Some(c), Some(u)) => Some(format!("Critics {c} · Users {u}")),
-                        (Some(c), None) => Some(format!("Critics {c}")),
-                        (None, Some(u)) => Some(format!("Users {u}")),
-                        _ => None,
-                    };
-                    let released = g.release_date.as_deref().map(util::release);
-                    for (k, v) in [
-                        ("Platform", &g.platform),
-                        ("Developer", &g.developer),
-                        ("Publisher", &g.publisher),
-                        ("Released", &released),
-                        ("Genres", &g.genres),
-                        ("Series", &g.series),
-                        ("Score", &scores),
-                    ] {
-                        if let Some(v) = v {
-                            fact(ui, k, v);
-                        }
-                    }
-                    if let Some(a) = g.steam_appid() {
-                        fact(ui, "Steam ID", &a.to_string());
-                    }
-                    if let Some(d) = g.install_dir.as_deref().or(g.exe.as_deref()) {
-                        ui.label(theme::caption("Location"));
-                        ui.add(egui::Label::new(d).truncate()).on_hover_text(d);
-                        ui.add_space(6.0);
-                    }
-                    if g.tags.is_some() {
-                        ui.label(theme::caption("Tags"));
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                            for t in split_list(&g.tags) {
-                                let b = egui::Button::new(RichText::new(t).size(12.5))
-                                    .fill(CARD)
-                                    .corner_radius(CornerRadius::same(10));
-                                if ui.add(b).on_hover_text("Show games with this tag").clicked() {
-                                    pick_tag = Some(t.to_string());
-                                }
+            // Right of the cover: actions, stat tiles, links.
+            let header_bottom = cover.bottom() + 20.0;
+            ui.horizontal(|ui| {
+                ui.add_space(text_x - banner.left());
+                ui.vertical(|ui| {
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if is_running {
+                            let b = egui::Button::new(RichText::new("Running").size(17.0).strong().color(Color32::WHITE))
+                                .fill(GOOD)
+                                .min_size(vec2(150.0, 38.0));
+                            if ui.add(b).on_hover_text("This game is running. Click to close it.").clicked() {
+                                actions.push(Action::Stop(id));
                             }
-                        });
-                    }
+                        } else {
+                            let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
+                            let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
+                                .fill(ACCENT)
+                                .min_size(vec2(150.0, 38.0));
+                            let can_play = g.source == Source::Steam || g.exe.is_some();
+                            let r = ui.add_enabled(can_play, play).on_disabled_hover_text("No way to start this game on this PC");
+                            if r.clicked() {
+                                actions.push(Action::Play(id));
+                            }
+                        }
+                        let fav = ui
+                            .add(egui::Button::new("").min_size(vec2(38.0, 38.0)))
+                            .on_hover_text(if g.favorite { "Unfavorite" } else { "Favorite" });
+                        paint_star(ui.painter(), fav.rect.center(), 10.0, g.favorite);
+                        if fav.clicked() {
+                            actions.push(Action::ToggleFav(id));
+                        }
+                        if ui.add(egui::Button::new("Edit").min_size(vec2(0.0, 38.0))).clicked() {
+                            actions.push(Action::Edit(id));
+                        }
+                        ui.menu_button("More", |ui| context_menu(ui, &g, actions))
+                            .response
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    });
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        let status = match (g.source, g.installed) {
+                            (Source::Steam, true) => "Installed",
+                            (Source::Steam, false) => "Not installed",
+                            (Source::Custom, true) => "Ready",
+                            (Source::Custom, false) => "Not installed",
+                        };
+                        let status = if is_running { "Running" } else { status };
+                        stat(ui, "LAST PLAYED", &util::date(g.last_played));
+                        stat(ui, "TIME PLAYED", &util::playtime(g.playtime_min));
+                        stat(ui, "ADDED", &util::date(g.added));
+                        stat(ui, "STATUS", status);
+                        if let Some(c) = &g.completion {
+                            stat(ui, "COMPLETION", c);
+                        }
+                        if g.play_count > 0 {
+                            stat(ui, "PLAY COUNT", &g.play_count.to_string());
+                        }
+                    });
+                    ui.add_space(12.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for (label, url) in links(&g) {
+                            let b = egui::Button::new(RichText::new(label).size(12.5)).corner_radius(CornerRadius::same(12));
+                            if ui.add(b).on_hover_text(&url).clicked() {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                            }
+                        }
+                    });
                 });
             });
-            ui.add_space(32.0);
-            let right_w = ui.available_width() - pad;
-            ui.allocate_ui_with_layout(vec2(right_w, rest), Layout::top_down(Align::Min), |ui| {
-                ui.set_width(right_w);
-                theme::section(ui, "Description");
-                ScrollArea::vertical().id_salt("desc").auto_shrink([false, true]).show(ui, |ui| {
-                    match &g.description {
-                        Some(d) => {
-                            description(ui, d);
-                            ui.response()
+            let y = ui.cursor().min.y;
+            if y < header_bottom {
+                ui.add_space(header_bottom - y);
+            }
+            ui.add_space(20.0);
+
+            // Lower area: details on the left, description on the right; the whole page scrolls.
+            ui.horizontal_top(|ui| {
+                ui.add_space(pad);
+                let left_w = cover_w + 40.0;
+                ui.allocate_ui_with_layout(vec2(left_w, 0.0), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(left_w);
+                    ui.vertical(|ui| {
+                        theme::section(ui, "Details");
+                        let source = match (g.source, &g.store) {
+                            (Source::Steam, _) => "Steam",
+                            (_, Some(s)) => s.as_str(),
+                            _ => "Custom",
+                        };
+                        fact(ui, "Source", source);
+                        let scores = match (g.critic_score, g.community_score) {
+                            (Some(c), Some(u)) => Some(format!("Critics {c} · Users {u}")),
+                            (Some(c), None) => Some(format!("Critics {c}")),
+                            (None, Some(u)) => Some(format!("Users {u}")),
+                            _ => None,
+                        };
+                        let released = g.release_date.as_deref().map(util::release);
+                        for (k, v) in [
+                            ("Platform", &g.platform),
+                            ("Developer", &g.developer),
+                            ("Publisher", &g.publisher),
+                            ("Released", &released),
+                            ("Genres", &g.genres),
+                            ("Series", &g.series),
+                            ("Score", &scores),
+                        ] {
+                            if let Some(v) = v {
+                                fact(ui, k, v);
+                            }
                         }
-                        None if g.meta_state == state::PENDING => {
-                            ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
+                        if let Some(a) = g.steam_appid() {
+                            fact(ui, "Steam ID", &a.to_string());
                         }
-                        None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
-                    };
+                        if let Some(d) = g.install_dir.as_deref().or(g.exe.as_deref()) {
+                            ui.label(theme::caption("Location"));
+                            ui.add(egui::Label::new(d).truncate()).on_hover_text(d);
+                            ui.add_space(6.0);
+                        }
+                        if g.tags.is_some() {
+                            ui.label(theme::caption("Tags"));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                                for t in split_list(&g.tags) {
+                                    let b = egui::Button::new(RichText::new(t).size(12.5))
+                                        .fill(CARD)
+                                        .corner_radius(CornerRadius::same(10));
+                                    if ui.add(b).on_hover_text("Show games with this tag").clicked() {
+                                        pick_tag = Some(t.to_string());
+                                    }
+                                }
+                            });
+                        }
+                    });
+                });
+                ui.add_space(32.0);
+                let right_w = ui.available_width() - pad;
+                ui.allocate_ui_with_layout(vec2(right_w, 0.0), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(right_w);
+                    theme::section(ui, "Description");
+                    ui.vertical(|ui| {
+                        match &g.description {
+                            Some(d) => {
+                                description(ui, d);
+                                ui.response()
+                            }
+                            None if g.meta_state == state::PENDING => {
+                                ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
+                            }
+                            None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
+                        };
+                    });
                 });
             });
+            ui.add_space(28.0);
         });
         if let Some(t) = pick_tag {
             self.tag = t;
