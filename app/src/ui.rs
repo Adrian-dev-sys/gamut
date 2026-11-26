@@ -131,6 +131,7 @@ pub struct GamutApp {
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     picker: Option<Picker>,
+    trace: crate::diag::FrameTrace,
     ctx_handle: egui::Context,
     toasts: Toasts,
     /// Playnite folder + preview report awaiting confirmation.
@@ -190,6 +191,7 @@ impl GamutApp {
             settings: None,
             confirm_remove: None,
             picker: None,
+            trace: Default::default(),
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice),
             playnite: None,
@@ -1426,6 +1428,7 @@ pub(crate) fn cover_uv(img: f32, rect: f32) -> Rect {
 impl eframe::App for GamutApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.trace.begin(&ctx);
         self.handle_events();
         self.update_view();
         self.thumbs.begin_frame(&ctx);
@@ -1480,6 +1483,21 @@ impl eframe::App for GamutApp {
             || self.settings.is_some()
             || self.confirm_remove.is_some()
             || self.playnite.is_some();
+        // What this frame should show, for the frame trace (diag.rs).
+        let mut shown: Vec<&'static str> = Vec::new();
+        for (on, name) in [
+            (self.selected.is_some() && !dialog_open, "details_modal"),
+            (self.picker.is_some(), "art_picker"),
+            (self.editor.is_some(), "editor"),
+            (self.settings.is_some(), "Settings"),
+            (self.confirm_remove.is_some(), "Remove game"),
+            (self.playnite.is_some(), "Import from Playnite"),
+        ] {
+            if on {
+                shown.push(name);
+            }
+        }
+        self.trace.end(shown);
         if let (Some(id), false) = (self.selected, dialog_open) {
             let screen = ctx.content_rect();
             let size = vec2((screen.width() * 0.86).min(1320.0), (screen.height() * 0.88).min(940.0));
