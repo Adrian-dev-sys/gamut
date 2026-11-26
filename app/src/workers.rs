@@ -309,6 +309,11 @@ impl Workers {
                 };
                 let Ok(Some(g)) = lib.get(id) else { continue };
                 let steam_app = g.steam_appid().filter(|_| g.source == gamut_core::Source::Steam);
+                if g.source == gamut_core::Source::Steam && steam_app.is_none() {
+                    // Recorded so the sweep doesn't pick it again right away.
+                    let _ = lib.save_achievement_error(id, "no Steam app id");
+                    continue;
+                }
                 if !(steam_app.is_some() && steam_ok || g.source == gamut_core::Source::Custom && ra_ok) {
                     continue;
                 }
@@ -332,9 +337,9 @@ impl Workers {
                     }
                     Err(e) => {
                         log::warn!("Achievements for {} failed: {e:#}", g.name);
-                        if asked {
-                            let _ = lib.save_achievement_error(id, &format!("{e:#}"));
-                        } else {
+                        // Saved either way so one failing game can't hold up the sweep; opening it retries.
+                        let _ = lib.save_achievement_error(id, &format!("{e:#}"));
+                        if !asked {
                             sweep_at = Instant::now() + Duration::from_secs(600);
                         }
                     }
@@ -514,7 +519,8 @@ fn fetch_retro_achievements(
             Some(c) => retro::find(&g.name, &retro::games(key, c, cache)?).unwrap_or(retro::NOT_FOUND),
         };
         lib.set_ra_id(g.id, found)?;
-        if ra != Some(found) {
+        // The first sweep looks up hundreds of games; only reload ones the page shows or that matched.
+        if asked || ra != Some(found) && found > 0 {
             let _ = tx.send(Event::GameUpdated(g.id));
         }
         ra = Some(found);

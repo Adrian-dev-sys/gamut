@@ -967,6 +967,8 @@ impl GamutApp {
         }
         self.reload_one(id);
         self.workers.kick();
+        // A new platform or name may mean another RetroAchievements game.
+        self.ach = None;
         Ok(())
     }
 
@@ -1839,6 +1841,10 @@ impl eframe::App for GamutApp {
                     self.reload_one(id);
                 }
             }
+        }
+        // Reopening a game rereads (and if needed refreshes) its achievements.
+        if self.selected.is_none() {
+            self.ach = None;
         }
         if let Some(p) = self.ra_pick.as_mut() {
             use crate::achievements::PickOutcome;

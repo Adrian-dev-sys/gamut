@@ -22,9 +22,9 @@ impl GameAch {
         }
     }
 
-    /// Never fetched, or last fetched over 6 hours ago.
+    /// Never fetched, last fetch failed, or it's over 6 hours old.
     pub fn stale(&self) -> bool {
-        self.state.as_ref().is_none_or(|s| s.fetched < gamut_core::now() - 6 * 3600)
+        self.state.as_ref().is_none_or(|s| s.error.is_some() || s.fetched < gamut_core::now() - 6 * 3600)
     }
 
     pub fn unlocked(&self) -> usize {
@@ -101,15 +101,18 @@ pub fn section(ui: &mut Ui, a: &mut GameAch, src: Source, busy: bool) -> Option<
     }
     if a.list.is_empty() {
         let err = a.state.as_ref().and_then(|s| s.error.as_deref());
+        let lookup = "Looking this game up on RetroAchievements…";
         match (src, err) {
             (Source::Steam { has_key: false }, _) => note(ui, "Add a Steam Web API key in Settings to see achievements."),
-            (Source::Retro { ra_id: None }, _) => spinner(ui, "Looking this game up on RetroAchievements…"),
-            _ if busy || a.state.is_none() => spinner(ui, "Loading achievements…"),
+            (Source::Retro { ra_id: None }, _) if busy => spinner(ui, lookup),
+            _ if busy => spinner(ui, "Loading achievements…"),
             (_, Some(PRIVATE)) => note(
                 ui,
                 "Steam didn't share achievements for this game. Either this account doesn't own it, or your profile's Game details aren't Public.",
             ),
             (_, Some(e)) => note(ui, &format!("Couldn't load achievements: {e}")),
+            (Source::Retro { ra_id: None }, _) => spinner(ui, lookup),
+            _ if a.state.is_none() => spinner(ui, "Loading achievements…"),
             _ => note(ui, "This game has no achievements."),
         }
         return ask;
@@ -250,7 +253,7 @@ impl RetroPick {
             self.list = Some(r);
         }
         let (mut open, mut picked) = (true, None);
-        theme::dialog(ctx, "Pick RetroAchievements game", false, |ui| {
+        theme::dialog(ctx, "Pick RetroAchievements game", true, |ui| {
             ui.set_width(560.0);
             crate::ui::dialog_header(ui, "Pick RetroAchievements game", &mut open);
             ui.label(RichText::new(format!("Which RetroAchievements game is \"{}\"?", self.name)).color(TEXT_DIM));

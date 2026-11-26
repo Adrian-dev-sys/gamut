@@ -445,7 +445,8 @@ impl Library {
     /// i.e. a full fetch is needed.
     pub fn save_achievements(&mut self, id: i64, f: &Fetched) -> Result<bool> {
         let now = crate::now();
-        let tx = self.conn.transaction()?;
+        // Immediate: the unlock-only path reads then writes, which a deferred lock can't upgrade under contention.
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let schema_at = match f {
             Fetched::None => {
                 tx.execute("DELETE FROM achievements WHERE game_id = ?1", [id])?;
