@@ -16,4 +16,5 @@ log = "0.4.35"
 open = "5.4.5"
 raw-window-handle = "0.6.2"
 rfd = "0.18.0"
+windows = { version = "0.62", features = ["Win32_Graphics_Imaging", "Win32_System_Com"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_SystemInformation"] }

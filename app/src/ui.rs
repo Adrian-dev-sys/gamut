@@ -1762,10 +1762,14 @@ fn description(ui: &mut Ui, d: &str) {
         match line.trim().strip_prefix(gamut_core::scrape::IMG_MARKER) {
             Some(url) if url.starts_with("http") => {
                 flush(ui, &mut text);
-                ui.add_space(6.0);
                 let w = ui.available_width().min(900.0);
-                ui.add(egui::Image::new(url.to_string()).max_width(w).corner_radius(6).show_loading_spinner(true));
-                ui.add_space(6.0);
+                let img = egui::Image::new(url.to_string()).max_width(w).corner_radius(6).show_loading_spinner(true);
+                // Unsupported/broken images (e.g. videos) are skipped rather than shown as a warning icon.
+                if img.load_for_size(ui.ctx(), egui::vec2(w, w)).is_ok() {
+                    ui.add_space(6.0);
+                    ui.add(img);
+                    ui.add_space(6.0);
+                }
             }
             _ => {
                 text.push_str(line);

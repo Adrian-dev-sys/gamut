@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod avif;
 mod editor;
 mod logging;
 mod notify;
@@ -43,6 +44,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             // Loaders for images in game descriptions (http URLs).
+            avif::register();
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(ui::GamutApp::new(cc, paths)?))
         }),

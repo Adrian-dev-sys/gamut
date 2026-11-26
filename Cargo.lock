@@ -1336,6 +1336,7 @@ dependencies = [
  "open",
  "raw-window-handle",
  "rfd",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
