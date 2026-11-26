@@ -12,13 +12,15 @@ pub struct Config {
     pub steamgriddb_key: String,
     /// Grid card width in logical pixels.
     pub card_width: f32,
-    /// Last grid sort ("name", "last_played", "playtime", "added").
+    /// Last grid sort (see `SORTS` in app/src/ui.rs).
     pub sort: String,
     /// Last grid filter ("all", "installed", "favorites", "steam", "custom", "hidden").
     pub filter: String,
     /// Platform / tag the grid was narrowed to ("" = any).
     pub platform: String,
     pub tag: String,
+    /// Completion status filter ("" = any).
+    pub completion: String,
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
 }
@@ -61,6 +63,7 @@ impl Config {
         on_disk.filter = self.filter.clone();
         on_disk.platform = self.platform.clone();
         on_disk.tag = self.tag.clone();
+        on_disk.completion = self.completion.clone();
         on_disk.window = self.window;
         on_disk.save(path)
     }

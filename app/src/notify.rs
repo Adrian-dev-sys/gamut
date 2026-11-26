@@ -93,7 +93,7 @@ impl Toasts {
                                 };
                                 ui.label(RichText::new(label).strong().color(color));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("✕").clicked() {
+                                    if theme::x_button(ui, 20.0).on_hover_text("Dismiss").clicked() {
                                         dismiss = Some(i);
                                     }
                                     if t.level == Level::Error && ui.small_button("Copy").clicked() {

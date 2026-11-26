@@ -1,6 +1,6 @@
 //! Add/Edit game dialog: tabs for details, launch settings and art.
 use crate::picker::ArtKind;
-use crate::theme::{self, ACCENT, CARD, CARD_HI, TEXT_DIM};
+use crate::theme::{self, ACCENT, CARD, CARD_HI, TEXT, TEXT_DIM};
 use crate::util::{self, opt};
 use egui::{vec2, Color32, CornerRadius, RichText, Stroke, Ui};
 use gamut_core::{Game, Source};
@@ -121,13 +121,9 @@ impl Editor {
         let mut open = true;
         let mut out = EditorOutcome::Open;
         let title = if self.id == 0 { "Add game" } else { "Edit game" };
-        egui::Window::new(title)
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(size)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        theme::dialog(ctx, "editor", |ui| {
+                ui.set_min_size(size);
+                ui.set_max_size(size);
                 crate::ui::dialog_header(ui, title, &mut open);
                 ui.horizontal(|ui| {
                     for (t, label) in [(Tab::General, "General"), (Tab::Launch, "Launch"), (Tab::Media, "Media")] {
@@ -329,6 +325,23 @@ fn completion(ui: &mut Ui, v: &mut String, known: &[(String, usize)], w: f32) {
         });
 }
 
+/// One removable chip; long text is cut with "…" (full text on hover). True when ✕ was clicked.
+fn chip(ui: &mut Ui, text: &str, id: egui::Id) -> bool {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.into(), egui::FontId::proportional(13.0), TEXT);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(220.0);
+    let galley = ui.painter().layout_job(job);
+    let cut = galley.elided;
+    let (h, x) = (24.0, 18.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(10.0 + galley.size().x + 6.0 + x + 3.0, h), egui::Sense::hover());
+    ui.painter().rect(rect, CornerRadius::same(12), CARD, Stroke::new(1.0, CARD_HI), egui::StrokeKind::Inside);
+    ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, TEXT);
+    if cut {
+        resp.on_hover_text(text);
+    }
+    let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 3.0 - x / 2.0, rect.center().y), vec2(x, x));
+    theme::x_at(ui, xr, id).on_hover_text("Remove").clicked()
+}
+
 /// Removable chips plus an input that adds on Enter/comma, with suggestions from the library.
 fn chips(ui: &mut Ui, id: &str, items: &mut Vec<String>, input: &mut String, known: &[(String, usize)], hint: &str) {
     use egui::containers::{Popup, PopupCloseBehavior, SetOpenCommand};
@@ -337,21 +350,9 @@ fn chips(ui: &mut Ui, id: &str, items: &mut Vec<String>, input: &mut String, kno
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         for (i, t) in items.iter().enumerate() {
-            egui::Frame::new()
-                .fill(CARD)
-                .stroke(Stroke::new(1.0, CARD_HI))
-                .corner_radius(CornerRadius::same(12))
-                .inner_margin(egui::Margin { left: 10, right: 4, top: 2, bottom: 2 })
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        ui.label(t);
-                        let x = ui.add(egui::Button::new(RichText::new("✕").size(11.0).color(TEXT_DIM)).frame(false));
-                        if x.on_hover_text("Remove").clicked() {
-                            remove = Some(i);
-                        }
-                    });
-                });
+            if chip(ui, t, ui.make_persistent_id((id, i))) {
+                remove = Some(i);
+            }
         }
         let r = ui.add(egui::TextEdit::singleline(input).desired_width(170.0).hint_text(hint));
         if input.contains(',') {

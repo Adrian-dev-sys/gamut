@@ -32,6 +32,11 @@ enum Sort {
     LastPlayed,
     Playtime,
     Added,
+    Released,
+    CriticScore,
+    CommunityScore,
+    PlayCount,
+    Completion,
 }
 
 // Stable names used in config.toml.
@@ -43,8 +48,38 @@ const FILTERS: [(Filter, &str); 6] = [
     (Filter::Custom, "custom"),
     (Filter::Hidden, "hidden"),
 ];
-const SORTS: [(Sort, &str); 4] =
-    [(Sort::Name, "name"), (Sort::LastPlayed, "last_played"), (Sort::Playtime, "playtime"), (Sort::Added, "added")];
+const SORTS: [(Sort, &str); 9] = [
+    (Sort::Name, "name"),
+    (Sort::LastPlayed, "last_played"),
+    (Sort::Playtime, "playtime"),
+    (Sort::Added, "added"),
+    (Sort::Released, "released"),
+    (Sort::CriticScore, "critic_score"),
+    (Sort::CommunityScore, "community_score"),
+    (Sort::PlayCount, "play_count"),
+    (Sort::Completion, "completion"),
+];
+
+/// Menu labels, in menu order.
+const SORT_LABELS: [(Sort, &str); 9] = [
+    (Sort::Name, "Name"),
+    (Sort::LastPlayed, "Last played"),
+    (Sort::Playtime, "Playtime"),
+    (Sort::PlayCount, "Most played"),
+    (Sort::Added, "Recently added"),
+    (Sort::Released, "Release date"),
+    (Sort::CriticScore, "Critic score"),
+    (Sort::CommunityScore, "User score"),
+    (Sort::Completion, "Completion status"),
+];
+
+/// Grid order for completion statuses; anything unknown sorts after these.
+const COMPLETION_ORDER: [&str; 8] = ["Playing", "Beaten", "Completed", "Played", "On Hold", "Plan to Play", "Not Played", "Abandoned"];
+
+/// A game's completion status; games without one count as "Not Played".
+fn completion_of(g: &Game) -> &str {
+    g.completion.as_deref().filter(|c| !c.is_empty()).unwrap_or("Not Played")
+}
 
 fn key_of<T: PartialEq + Copy>(table: &[(T, &'static str)], v: T) -> &'static str {
     table.iter().find(|(t, _)| *t == v).map(|(_, k)| *k).unwrap_or("")
@@ -77,6 +112,9 @@ pub struct GamutApp {
     /// Platform / tag narrowing ("" = any), with the values present in the library and their counts.
     platform: String,
     tag: String,
+    completion: String,
+    completions: Vec<(String, usize)>,
+    completion_query: String,
     platforms: Vec<(String, usize)>,
     tags: Vec<(String, usize)>,
     tag_query: String,
@@ -104,7 +142,7 @@ pub struct GamutApp {
     /// Latest un-maximized placement + maximized flag, saved on exit.
     window: Option<gamut_core::config::WindowState>,
     /// Sort/filter as last written to config.
-    saved_view: (Sort, Filter, String, String),
+    saved_view: (Sort, Filter, String, String, String),
 }
 
 impl GamutApp {
@@ -113,11 +151,12 @@ impl GamutApp {
         let loaded = Config::load(&paths.config);
         let (sort, filter) = (from_key(&SORTS, &loaded.sort), from_key(&FILTERS, &loaded.filter));
         let window = loaded.window;
-        let (platform, tag) = (loaded.platform.clone(), loaded.tag.clone());
+        let (platform, tag, completion) = (loaded.platform.clone(), loaded.tag.clone(), loaded.completion.clone());
         let cfg = Arc::new(RwLock::new(loaded));
         let (lib, repair_notice) = Library::open_checked(&paths.db)?;
         let games = lib.all()?;
         let (platforms, tags) = facets(&games);
+        let completions = completion_facets(&games);
         let workers = Workers::start(&cc.egui_ctx, paths.clone(), cfg.clone());
         workers.rescan();
         let (hero_tx, hero_rx) = unbounded();
@@ -134,6 +173,9 @@ impl GamutApp {
             sort,
             platform: platform.clone(),
             tag: tag.clone(),
+            completion: completion.clone(),
+            completions,
+            completion_query: String::new(),
             platforms,
             tags,
             tag_query: String::new(),
@@ -155,7 +197,7 @@ impl GamutApp {
             opened_at: 0.0,
             startup: window.as_ref().filter(|w| w.maximized).and_then(|_| crate::startup::Startup::maximize_hidden(cc)),
             window,
-            saved_view: (sort, filter, platform, tag),
+            saved_view: (sort, filter, platform, tag, completion),
         })
     }
 
@@ -179,6 +221,7 @@ impl GamutApp {
             Err(e) => self.toasts.error(format!("{e:#}")),
         }
         (self.platforms, self.tags) = facets(&self.games);
+        self.completions = completion_facets(&self.games);
         self.view_key = None;
     }
 
@@ -221,7 +264,14 @@ impl GamutApp {
 
     /// Rebuilds the filtered + sorted index list when inputs change.
     fn update_view(&mut self) {
-        let key = (self.search.clone(), self.filter, self.sort, self.games.len(), self.platform.clone(), self.tag.clone());
+        let key = (
+            self.search.clone(),
+            self.filter,
+            self.sort,
+            self.games.len(),
+            self.platform.clone(),
+            format!("{}\u{1}{}", self.tag, self.completion),
+        );
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
@@ -241,6 +291,7 @@ impl GamutApp {
                 pass
                     && (self.platform.is_empty() || platforms_of(g).any(|p| p == self.platform))
                     && (self.tag.is_empty() || split_list(&g.tags).any(|t| t == self.tag))
+                    && (self.completion.is_empty() || completion_of(g) == self.completion)
                     && (q.is_empty() || g.name.to_lowercase().contains(&q))
             })
             .collect();
@@ -250,6 +301,19 @@ impl GamutApp {
             Sort::LastPlayed => v.sort_by_key(|&i| std::cmp::Reverse(gs[i].last_played)),
             Sort::Playtime => v.sort_by_key(|&i| std::cmp::Reverse(gs[i].playtime_min)),
             Sort::Added => v.sort_by_key(|&i| std::cmp::Reverse((gs[i].added, gs[i].id))),
+            // Highest first; games without a value go last, then by name.
+            Sort::Released => v.sort_by_cached_key(|&i| {
+                let d = gs[i].release_date.as_deref().map(sortable_date).unwrap_or_default();
+                (d.is_empty(), std::cmp::Reverse(d), gs[i].name.to_lowercase())
+            }),
+            Sort::CriticScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].critic_score), gs[i].name.to_lowercase())),
+            Sort::CommunityScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].community_score), gs[i].name.to_lowercase())),
+            Sort::PlayCount => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].play_count), std::cmp::Reverse(gs[i].playtime_min))),
+            Sort::Completion => v.sort_by_cached_key(|&i| {
+                let c = completion_of(&gs[i]);
+                let rank = COMPLETION_ORDER.iter().position(|s| *s == c).unwrap_or(COMPLETION_ORDER.len());
+                (rank, c.to_string(), gs[i].name.to_lowercase())
+            }),
         }
         self.view = v;
         self.view_key = Some(key);
@@ -345,18 +409,16 @@ impl GamutApp {
             if let Some(t) = facet_picker(ui, "tag", "All tags", &self.tag, &mut self.tag_query, &self.tags) {
                 self.tag = t;
             }
+            if let Some(c) = facet_picker(ui, "completion", "Any status", &self.completion, &mut self.completion_query, &self.completions) {
+                self.completion = c;
+            }
             egui::ComboBox::from_id_salt("sort")
-                .selected_text(match self.sort {
-                    Sort::Name => "Name",
-                    Sort::LastPlayed => "Last played",
-                    Sort::Playtime => "Playtime",
-                    Sort::Added => "Recently added",
-                })
+                .selected_text(SORT_LABELS.iter().find(|(x, _)| *x == self.sort).map_or("", |(_, l)| *l))
+                .height(400.0)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.sort, Sort::Name, "Name");
-                    ui.selectable_value(&mut self.sort, Sort::LastPlayed, "Last played");
-                    ui.selectable_value(&mut self.sort, Sort::Playtime, "Playtime");
-                    ui.selectable_value(&mut self.sort, Sort::Added, "Recently added");
+                    for (x, l) in SORT_LABELS {
+                        ui.selectable_value(&mut self.sort, x, l);
+                    }
                 })
                 .response
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -810,6 +872,7 @@ impl GamutApp {
         // New tags/platforms should show up in the filters right away.
         self.reload_one(id);
         (self.platforms, self.tags) = facets(&self.games);
+        self.completions = completion_facets(&self.games);
         if let Some(p) = ed.cover_file {
             let bytes = std::fs::read(p)?;
             images::store_cover(&bytes, &self.paths.cover(id), &self.paths.thumb(id))?;
@@ -829,12 +892,7 @@ impl GamutApp {
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
             .unwrap_or_default();
-        egui::Window::new("Settings")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        theme::dialog(ctx, "Settings", |ui| {
                 ui.set_width(460.0);
                 dialog_header(ui, "Settings", &mut open);
                 theme::section(ui, "Steam");
@@ -918,12 +976,8 @@ impl GamutApp {
         let Some(id) = self.confirm_remove else { return };
         let name = self.game(id).map(|g| g.name.clone()).unwrap_or_default();
         let (mut close, mut open) = (false, true);
-        egui::Window::new("Remove game")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        theme::dialog(ctx, "Remove game", |ui| {
+                ui.set_max_width(460.0);
                 dialog_header(ui, "Remove game", &mut open);
                 ui.label(format!("Remove \"{name}\" from the library? The game's files aren't touched."));
                 ui.horizontal(|ui| {
@@ -955,12 +1009,7 @@ impl GamutApp {
         let Some((dir, sum)) = self.playnite.as_ref() else { return };
         let mut open = true;
         let (mut go, mut cancel) = (false, false);
-        egui::Window::new("Import from Playnite")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
+        theme::dialog(ctx, "Import from Playnite", |ui| {
                 ui.set_width(520.0);
                 dialog_header(ui, "Import from Playnite", &mut open);
                 ui.label(theme::hint(&dir.display().to_string()));
@@ -1060,6 +1109,7 @@ impl GamutApp {
         c.filter = key_of(&FILTERS, self.filter).into();
         c.platform = self.platform.clone();
         c.tag = self.tag.clone();
+        c.completion = self.completion.clone();
         c.window = self.window;
         let _ = c.save_ui_prefs(&self.paths.config);
     }
@@ -1125,16 +1175,7 @@ pub(crate) fn dialog_header(ui: &mut Ui, title: &str, open: &mut bool) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).size(17.0).color(Color32::WHITE));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (rect, r) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-            let r = r.on_hover_text("Close (Esc)");
-            let c = rect.center();
-            if r.hovered() {
-                ui.painter().circle_filled(c, 14.0, CARD_HI);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            let st = Stroke::new(1.6, if r.hovered() { Color32::WHITE } else { TEXT_DIM });
-            ui.painter().line_segment([c + vec2(-5.0, -5.0), c + vec2(5.0, 5.0)], st);
-            ui.painter().line_segment([c + vec2(-5.0, 5.0), c + vec2(5.0, -5.0)], st);
+            let r = theme::x_button(ui, 28.0).on_hover_text("Close (Esc)");
             if r.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 *open = false;
             }
@@ -1247,7 +1288,7 @@ fn facet_picker(ui: &mut Ui, id: &str, all: &str, current: &str, query: &mut Str
                 }
             });
         });
-    if !current.is_empty() && !editing && ui.small_button("✕").on_hover_text(format!("Show {}", all.to_lowercase())).clicked() {
+    if !current.is_empty() && !editing && theme::x_button(ui, 22.0).on_hover_text(format!("Show {}", all.to_lowercase())).clicked() {
         pick = Some(String::new());
     }
     if pick.is_some() {
@@ -1312,6 +1353,26 @@ fn facets(games: &[Game]) -> (Vec<(String, usize)>, Vec<(String, usize)>) {
         v
     };
     (sorted(p, true), sorted(t, false))
+}
+
+/// Completion statuses with counts, in grid order.
+fn completion_facets(games: &[Game]) -> Vec<(String, usize)> {
+    let mut m: std::collections::HashMap<&str, usize> = Default::default();
+    for g in games.iter().filter(|g| !g.hidden) {
+        *m.entry(completion_of(g)).or_default() += 1;
+    }
+    let mut v: Vec<(String, usize)> = m.into_iter().map(|(k, n)| (k.to_string(), n)).collect();
+    v.sort_by_key(|(k, _)| (COMPLETION_ORDER.iter().position(|s| s == k).unwrap_or(99), k.to_lowercase()));
+    v
+}
+
+/// "YYYY-MM-DD"-like key from any stored release text, so dates compare chronologically.
+fn sortable_date(s: &str) -> String {
+    let d = util::release(s);
+    match d.split('/').collect::<Vec<_>>().as_slice() {
+        [dd, mm, yyyy] => format!("{yyyy}-{mm}-{dd}"),
+        _ => s.chars().filter(|c| c.is_ascii_digit()).take(4).collect(),
+    }
 }
 
 /// Genre and completion values in the library, for the editor's suggestions.
@@ -1420,7 +1481,7 @@ impl eframe::App for GamutApp {
                 .stroke(Stroke::new(1.0, Color32::from_gray(50)));
             let resp = egui::Modal::new(egui::Id::unique("details_modal"))
                 .frame(frame)
-                .backdrop_color(Color32::from_black_alpha(170))
+                .backdrop_color(theme::BACKDROP)
                 .show(&ctx, |ui| {
                     ui.set_min_size(size);
                     ui.set_max_size(size);
@@ -1466,7 +1527,7 @@ impl eframe::App for GamutApp {
         }
         self.thumbs.end_frame();
         self.track_window(&ctx);
-        let view = (self.sort, self.filter, self.platform.clone(), self.tag.clone());
+        let view = (self.sort, self.filter, self.platform.clone(), self.tag.clone(), self.completion.clone());
         if self.saved_view != view {
             self.saved_view = view;
             self.save_prefs();

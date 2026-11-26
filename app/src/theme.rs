@@ -12,6 +12,8 @@ pub const BORDER: Color32 = Color32::from_rgb(44, 50, 70);
 pub const TEXT: Color32 = Color32::from_rgb(228, 232, 242);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(146, 154, 178);
 pub const GOOD: Color32 = Color32::from_rgb(56, 180, 112);
+/// Dim layer behind every dialog.
+pub const BACKDROP: Color32 = Color32::from_black_alpha(160);
 
 pub fn apply(ctx: &Context) {
     let mut v = egui::Visuals::dark();
@@ -115,4 +117,41 @@ pub fn logo(ui: &mut egui::Ui) {
         );
     }
     ui.label(job);
+}
+
+/// Centered dialog over a dimmed backdrop; every popup uses this so they look and behave alike.
+pub fn dialog<R>(ctx: &Context, id: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
+    let frame = egui::Frame::new()
+        .fill(PANEL)
+        .stroke(Stroke::new(1.0, BORDER))
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(Margin::same(18))
+        .shadow(ctx.global_style().visuals.window_shadow);
+    egui::Modal::new(egui::Id::unique(id)).frame(frame).backdrop_color(BACKDROP).show(ctx, add)
+}
+
+/// Small ✕ drawn as two centered strokes (font glyphs sit off-center); highlights on hover.
+pub fn x_at(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id) -> egui::Response {
+    let r = ui.interact(rect, id, egui::Sense::click());
+    paint_x(ui, &r);
+    r
+}
+
+/// [`x_at`] laid out as a square widget of `size`.
+pub fn x_button(ui: &mut egui::Ui, size: f32) -> egui::Response {
+    let (_, r) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    paint_x(ui, &r);
+    r
+}
+
+fn paint_x(ui: &egui::Ui, r: &egui::Response) {
+    let c = r.rect.center();
+    if r.hovered() {
+        ui.painter().circle_filled(c, r.rect.width() / 2.0, CARD_HI);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let h = (r.rect.width() * 0.18).max(3.0);
+    let st = Stroke::new(1.5, if r.hovered() { Color32::WHITE } else { TEXT_DIM });
+    ui.painter().line_segment([c + egui::vec2(-h, -h), c + egui::vec2(h, h)], st);
+    ui.painter().line_segment([c + egui::vec2(-h, h), c + egui::vec2(h, -h)], st);
 }

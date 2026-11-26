@@ -1,7 +1,7 @@
 //! Cover/banner picker: SteamGridDB, VNDB and official Steam art for a game, or a local file.
 use crate::theme::{self, ACCENT, CARD, TEXT_DIM};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use egui::{vec2, Color32, ColorImage, CornerRadius, RichText, Sense, Stroke, TextureHandle, TextureOptions};
+use egui::{vec2, ColorImage, CornerRadius, RichText, Sense, Stroke, TextureHandle, TextureOptions};
 use gamut_core::scrape::{self, SgdbArt, SgdbMatch};
 use gamut_core::{images, model::state, Game, Library, Paths};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -376,7 +376,7 @@ impl Picker {
         let size = vec2((screen.width() * 0.8).min(1100.0), (screen.height() * 0.88).min(980.0));
         let mut close = false;
         let what = if self.kind == ArtKind::Cover { "cover" } else { "banner" };
-        let resp = egui::Modal::new(egui::Id::unique("art_picker")).backdrop_color(Color32::from_black_alpha(120)).show(ctx, |ui| {
+        let resp = theme::dialog(ctx, "art_picker", |ui| {
             ui.set_width(size.x);
             let top = ui.cursor().top();
             ui.horizontal(|ui| {
