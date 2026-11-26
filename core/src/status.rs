@@ -50,6 +50,11 @@ pub fn retro(user: &str, key: &str) -> Result<String> {
         None => anyhow::anyhow!("Couldn't reach RetroAchievements"),
     })?;
     let name = v.get("User").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("RetroAchievements doesn't know this username"))?;
-    let points = v.get("TotalPoints").and_then(Value::as_i64).unwrap_or(0);
-    Ok(format!("Connected as {name} · {points} points"))
+    // TotalPoints is hardcore only; softcore play lands in TotalSoftcorePoints.
+    let pts = |k: &str| v.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let (soft, hard) = (pts("TotalSoftcorePoints"), pts("TotalPoints"));
+    Ok(match hard {
+        0 => format!("Connected as {name} · {soft} softcore points"),
+        _ => format!("Connected as {name} · {soft} softcore · {hard} hardcore points"),
+    })
 }

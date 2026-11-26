@@ -669,12 +669,17 @@ impl Tracker {
         let Launched::Tracked(handle) = launched else {
             self.running.lock().unwrap().remove(&id);
             release_specialk(sk, name, false);
-            // Steam games are cheap to watch (registry poll); refresh their achievements after.
-            if hdr.is_some() || g.source == gamut_core::Source::Steam {
-                let (g, ach) = (g.clone(), self.ach.clone());
+            // Steam playtime comes from Steam; custom shortcuts/URLs are timed by watching their folder.
+            let custom = g.source == gamut_core::Source::Custom && !gamut_core::procs::game_dirs(g).is_empty();
+            if hdr.is_some() || custom || g.source == gamut_core::Source::Steam {
+                let (g, ach, paths, tx, ctx) =
+                    (g.clone(), self.ach.clone(), self.paths.clone(), self.tx.clone(), self.ctx.clone());
                 std::thread::spawn(move || {
-                    wait_exit(&g);
+                    let played = wait_exit(&g);
                     drop(hdr);
+                    if let (true, Some((start, mins))) = (custom, played) {
+                        record_playtime(&paths, &tx, &ctx, g.id, mins, start);
+                    }
                     std::thread::sleep(Duration::from_secs(15));
                     let _ = ach.send(g.id);
                 });
@@ -690,18 +695,24 @@ impl Tracker {
             release_specialk(sk, name.clone(), false);
             None
         };
+        let dirs = gamut_core::procs::game_dirs(g);
         std::thread::spawn(move || {
-            let r = handle.join();
+            let mut r = handle.join();
+            // A launcher stub that exits within 2 minutes: keep timing while the game folder still runs.
+            if let Ok(Some((mins, start))) = r {
+                if mins <= 2 && !gamut_core::procs::under(&dirs).is_empty() {
+                    while !gamut_core::procs::under(&dirs).is_empty() {
+                        std::thread::sleep(Duration::from_secs(3));
+                    }
+                    r = Ok(Some(((gamut_core::now() - start + 30) / 60, start)));
+                }
+            }
             release_specialk(sk, name, true);
             drop(hdr);
             running.lock().unwrap().remove(&id);
             ctx.request_repaint();
             if let Ok(Some((mins, start))) = r {
-                if let Ok(lib) = Library::open(&paths.db) {
-                    let _ = lib.add_playtime(id, mins, start);
-                    let _ = tx.send(Event::GameUpdated(id));
-                    ctx.request_repaint();
-                }
+                record_playtime(&paths, &tx, &ctx, id, mins, start);
             }
             std::thread::sleep(Duration::from_secs(15));
             let _ = ach.send(id);
@@ -709,8 +720,19 @@ impl Tracker {
     }
 }
 
+fn record_playtime(paths: &Paths, tx: &Sender<Event>, ctx: &Context, id: i64, mins: i64, start: i64) {
+    match Library::open(&paths.db).and_then(|lib| lib.add_playtime(id, mins, start)) {
+        Ok(()) => {
+            let _ = tx.send(Event::GameUpdated(id));
+            ctx.request_repaint();
+        }
+        Err(e) => log::warn!("couldn't save playtime for game {id}: {e:#}"),
+    }
+}
+
 /// Waits until a game Gamut can't track directly (Steam, shortcuts) has started and exited again.
-fn wait_exit(g: &Game) {
+/// Returns (start unix, minutes played), or None if it never seemed to start.
+fn wait_exit(g: &Game) -> Option<(i64, i64)> {
     let running: Box<dyn Fn() -> bool> = match (g.source, g.steam_appid()) {
         (gamut_core::Source::Steam, Some(app)) => Box::new(move || steam::running_appid() == Some(app)),
         _ => {
@@ -722,14 +744,16 @@ fn wait_exit(g: &Game) {
     while !running() {
         if start.elapsed() > Duration::from_secs(600) {
             log::warn!("{} didn't seem to start within 10 minutes", g.name);
-            return;
+            return None;
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+    let (t0, start_unix) = (Instant::now(), gamut_core::now());
     while running() {
         std::thread::sleep(Duration::from_secs(3));
     }
     log::info!("{} exited", g.name);
+    Some((start_unix, (t0.elapsed().as_secs() as i64 + 30) / 60))
 }
 
 /// Deletes art whose game no longer exists, so a reused id never shows another game's cover.

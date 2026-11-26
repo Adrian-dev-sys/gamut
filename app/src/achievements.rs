@@ -165,6 +165,10 @@ pub fn section(ui: &mut Ui, a: &mut GameAch, src: Source, busy: bool) -> Option<
     ask
 }
 
+/// Mipmapped filtering so badges scaled to a non-native size stay smooth.
+pub const ICON_TEX: egui::TextureOptions =
+    egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+
 fn card(ui: &mut Ui, a: &Achievement, w: f32) {
     let open = a.unlocked > 0;
     let veiled = a.hidden && !open;
@@ -176,9 +180,12 @@ fn card(ui: &mut Ui, a: &Achievement, w: f32) {
             ui.set_width(w - 16.0);
             ui.horizontal_top(|ui| {
                 let icon = if open || a.icon_locked.is_empty() { &a.icon } else { &a.icon_locked };
-                let size = vec2(48.0, 48.0);
+                let size = vec2(64.0, 64.0);
                 if icon.starts_with("http") {
-                    let img = egui::Image::new(icon.as_str()).corner_radius(4).fit_to_exact_size(size);
+                    let img = egui::Image::new(icon.as_str())
+                        .corner_radius(6)
+                        .texture_options(ICON_TEX)
+                        .fit_to_exact_size(size);
                     ui.add(if open || !a.icon_locked.is_empty() { img } else { img.tint(Color32::from_gray(90)) });
                 } else {
                     let (r, _) = ui.allocate_exact_size(size, Sense::hover());

@@ -200,16 +200,17 @@ fn tile(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
 /// One unlocked achievement with its game; true when clicked.
 fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 48.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 56.0), Sense::click());
     if !ui.is_rect_visible(rect) {
         return false;
     }
     if resp.hovered() {
         ui.painter().rect_filled(rect, 6.0, CARD);
     }
-    let icon = egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(40.0, 40.0));
+    let icon = egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(48.0, 48.0));
     if a.icon.starts_with("http") {
-        egui::Image::new(a.icon.as_str()).corner_radius(4).paint_at(ui, icon);
+        let img = egui::Image::new(a.icon.as_str()).corner_radius(5);
+        img.texture_options(crate::achievements::ICON_TEX).paint_at(ui, icon);
     } else {
         ui.painter().rect_filled(icon, 4.0, theme::CARD_HI);
     }
@@ -221,8 +222,8 @@ fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
         job.wrap = egui::text::TextWrapping::truncate_at_width(max);
         p.galley(egui::pos2(x, rect.top() + y), p.layout_job(job), color);
     };
-    line(a.name.clone(), 13.5, TEXT, 7.0);
-    line(format!("{game} · {extra}"), 12.0, TEXT_DIM, 26.0);
+    line(a.name.clone(), 14.0, TEXT, 10.0);
+    line(format!("{game} · {extra}"), 12.0, TEXT_DIM, 30.0);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let resp = if a.description.is_empty() { resp } else { resp.on_hover_text(&a.description) };
     resp.clicked()

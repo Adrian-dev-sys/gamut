@@ -38,5 +38,5 @@ CLI: `gamut-cli --data <dir> achievements APPID` prints what Steam returns, with
 
 ## Details page and Settings
 - The game page has About / Achievements tabs (the choice sticks while browsing games); the header tile shows the count.
-- Settings shows a live Status line per key (`app/src/keycheck.rs` + `core/src/status.rs`): checked on open and 1 s after an edit. Steam: GetPlayerSummaries (persona, profile visibility); SteamGridDB: an autocomplete call; RA: API_GetUserProfile. `gamut-cli status` runs the same checks.
+- Settings shows a live Status line per key (`app/src/keycheck.rs` + `core/src/status.rs`): checked on open and 1 s after an edit. Steam: GetPlayerSummaries (persona, profile visibility); SteamGridDB: an autocomplete call; RA: API_GetUserProfile (`TotalSoftcorePoints`; `TotalPoints` is hardcore only). `gamut-cli status` runs the same checks.
 - RA systems with no achievement sets yet (empty game list: Wii U, 3DS, PS3) count as unsupported; a "Version" suffix is optional when matching titles.

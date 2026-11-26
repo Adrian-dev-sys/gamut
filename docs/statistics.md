@@ -5,7 +5,10 @@ reread (at most every 5 s) when the library, a game or achievements change.
 
 ## Data
 - `sessions(game_id, start, minutes, kind)` in the library DB, deleted with the game.
-  - kind 0: games Gamut starts and times (`add_playtime`), exact start and length.
+  - kind 0: games Gamut starts and times (`add_playtime`), exact start and length. Custom .exe games time the
+    process; if it exits within 2 min (launcher stub) while something still runs from the game folder, timing
+    continues until that folder is quiet. Shortcuts/URLs/ROM associations are timed by `wait_exit` watching the
+    game folders (`procs::game_dirs`); without a known folder they aren't timed.
   - kind 1: Steam playtime growth seen by a scan (`sync_steam`). Baseline per game in `steam_seen(game_id, minutes,
     since)`: the last API total and when it was first seen. Growth is a session only if it fits in the time since
     then (+10 min), so first sightings and imports never count, while a session still running during one scan is
