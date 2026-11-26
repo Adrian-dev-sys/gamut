@@ -37,6 +37,9 @@ fn main() -> eframe::Result {
         .with_title("Gamut")
         .with_inner_size([1440.0, 880.0])
         .with_min_inner_size([720.0, 480.0]);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/gamut.png")) {
+        viewport = viewport.with_icon(icon);
+    }
     // Restore last placement; skip obviously bogus values (e.g. a disconnected monitor far away).
     if let Some(w) = gamut_core::Config::load(&paths.config).window {
         if w.width >= 720.0 && w.height >= 480.0 {

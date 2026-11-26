@@ -22,3 +22,6 @@ avif-parse = "2.1.0"
 avif-serialize = "0.8.9"
 gilrs = "0.11.2"
 hidapi = "2"
+
+[build-dependencies]
+winresource = "0.1"
