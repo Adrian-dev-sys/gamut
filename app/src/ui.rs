@@ -1497,7 +1497,7 @@ impl eframe::App for GamutApp {
                 shown.push(name);
             }
         }
-        self.trace.end(shown);
+        self.trace.end(&ctx, shown, any_popup);
         if let (Some(id), false) = (self.selected, dialog_open) {
             let screen = ctx.content_rect();
             let size = vec2((screen.width() * 0.86).min(1320.0), (screen.height() * 0.88).min(940.0));
