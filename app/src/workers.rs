@@ -1,7 +1,7 @@
 //! Background threads: Steam scan, cover + metadata scrapers, playtime tracking.
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Context;
-use gamut_core::{launch::{self, Launched}, specialk, steam, sync, Config, Game, Library, Paths};
+use gamut_core::{achievements, launch::{self, Launched}, specialk, steam, sync, Config, Game, Library, Paths};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -16,6 +16,8 @@ pub enum Event {
     PlaynitePreview(Result<(std::path::PathBuf, gamut_core::playnite::Summary), String>),
     /// Finished import summary (or error); covers changed for these ids.
     PlayniteImported(Result<String, String>),
+    /// Achievement cache changed for this game.
+    Achievements(i64),
 }
 
 pub struct Workers {
@@ -37,6 +39,10 @@ pub struct Workers {
     /// Newer Special K release, when one was found; true while it installs.
     pub sk_update: Arc<Mutex<Option<specialk::update::Update>>>,
     pub sk_installing: Arc<AtomicBool>,
+    /// Achievement fetch requests (game id; 0 = resume the background sweep).
+    ach_tx: Sender<i64>,
+    /// Games whose achievements are being fetched right now.
+    pub ach_busy: Arc<Mutex<HashSet<i64>>>,
     cfg: Arc<RwLock<Config>>,
     paths: Paths,
     ctx: Context,
@@ -47,6 +53,7 @@ impl Workers {
         let (tx, rx) = unbounded();
         let (kick_cover, kc_rx) = unbounded();
         let (kick_meta, km_rx) = unbounded();
+        let (ach_tx, ach_rx) = unbounded();
         let w = Workers {
             rx,
             tx,
@@ -61,6 +68,8 @@ impl Workers {
             steam_starting: Default::default(),
             sk_update: Default::default(),
             sk_installing: Default::default(),
+            ach_tx,
+            ach_busy: Default::default(),
             cfg,
             paths,
             ctx: ctx.clone(),
@@ -70,6 +79,7 @@ impl Workers {
         w.spawn_scraper(kc_rx, w.pending_cover.clone(), false);
         w.spawn_scraper(km_rx, w.pending_meta.clone(), true);
         w.spawn_sk_update_check();
+        w.spawn_achievements(ach_rx);
         let (steam, ctx, starting) = (w.steam_running.clone(), w.ctx.clone(), w.steam_starting.clone());
         std::thread::spawn(move || loop {
             let id = steam::running_appid().unwrap_or(0);
@@ -234,7 +244,7 @@ impl Workers {
         }
         let (paths, cfg, tx, ctx, scanning) =
             (self.paths.clone(), self.cfg.clone(), self.tx.clone(), self.ctx.clone(), self.scanning.clone());
-        let (kc, km) = (self.kick_cover.clone(), self.kick_meta.clone());
+        let (kc, km, ach) = (self.kick_cover.clone(), self.kick_meta.clone(), self.ach_tx.clone());
         std::thread::spawn(move || {
             let c = cfg.read().unwrap().clone();
             let r = steam::scan(&c).and_then(|(entries, warn)| {
@@ -255,7 +265,76 @@ impl Workers {
             scanning.store(false, Ordering::SeqCst);
             let _ = kc.send(());
             let _ = km.send(());
+            let _ = ach.send(0);
             ctx.request_repaint();
+        });
+    }
+
+    /// Queues an achievement refresh for one game (0 = resume the background sweep).
+    pub fn achievements(&self, id: i64) {
+        let _ = self.ach_tx.send(id);
+    }
+
+    /// Fetches requested games first; when idle, works through played games never fetched or played since.
+    fn spawn_achievements(&self, rx: Receiver<i64>) {
+        use crossbeam_channel::RecvTimeoutError;
+        let (paths, cfg, tx, ctx, busy) =
+            (self.paths.clone(), self.cfg.clone(), self.tx.clone(), self.ctx.clone(), self.ach_busy.clone());
+        std::thread::spawn(move || {
+            let Ok(mut lib) = Library::open(&paths.db) else { return };
+            // Let the startup scan and art go first.
+            let mut sweep_at = Instant::now() + Duration::from_secs(30);
+            const LATER: Duration = Duration::from_secs(30 * 60);
+            let mut denied = 0;
+            loop {
+                let (id, asked) = match rx.recv_timeout(sweep_at.saturating_duration_since(Instant::now())) {
+                    Ok(0) => {
+                        sweep_at = sweep_at.min(Instant::now() + Duration::from_secs(5));
+                        continue;
+                    }
+                    Ok(id) => (id, true),
+                    Err(RecvTimeoutError::Disconnected) => return,
+                    Err(RecvTimeoutError::Timeout) => match lib.achievements_due() {
+                        Ok(Some(g)) => (g.id, false),
+                        _ => {
+                            sweep_at = Instant::now() + LATER;
+                            continue;
+                        }
+                    },
+                };
+                let c = cfg.read().unwrap().clone();
+                let (key, sid) = (c.steam_api_key.trim().to_string(), steam::steam_id(&c));
+                let Ok(Some(g)) = lib.get(id) else { continue };
+                let Some(app) = g.steam_appid().filter(|_| g.source == gamut_core::Source::Steam) else { continue };
+                if key.is_empty() || sid.is_empty() {
+                    sweep_at = Instant::now() + LATER;
+                    continue;
+                }
+                busy.lock().unwrap().insert(id);
+                ctx.request_repaint();
+                let r = fetch_steam_achievements(&mut lib, id, app, &key, &sid);
+                busy.lock().unwrap().remove(&id);
+                match r {
+                    Ok(()) => denied = 0,
+                    Err(e) if e.to_string() == achievements::PRIVATE => {
+                        let _ = lib.save_achievement_error(id, achievements::PRIVATE);
+                        // Steam says this for unowned games too; only a run of them means a private profile.
+                        denied += 1;
+                        if denied >= 8 {
+                            log::warn!("Steam refuses achievements; profile game details are probably private");
+                            sweep_at = Instant::now() + Duration::from_secs(86400 * 365);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Achievements for {} failed: {e:#}", g.name);
+                        if !asked {
+                            sweep_at = Instant::now() + Duration::from_secs(600);
+                        }
+                    }
+                }
+                let _ = tx.send(Event::Achievements(id));
+                ctx.request_repaint();
+            }
         });
     }
 
@@ -270,7 +349,13 @@ impl Workers {
                 self.steam_starting.lock().unwrap().insert(app, Instant::now());
             }
         }
-        let t = Tracker { paths: self.paths.clone(), tx: self.tx.clone(), ctx: self.ctx.clone(), running: self.running.clone() };
+        let t = Tracker {
+            paths: self.paths.clone(),
+            tx: self.tx.clone(),
+            ctx: self.ctx.clone(),
+            running: self.running.clone(),
+            ach: self.ach_tx.clone(),
+        };
         let cache = self.reshade_cache();
         // Counts as running while it starts, so a second click doesn't launch twice.
         t.running.lock().unwrap().insert(g.id);
@@ -389,6 +474,17 @@ struct Tracker {
     tx: Sender<Event>,
     ctx: Context,
     running: Arc<Mutex<HashSet<i64>>>,
+    ach: Sender<i64>,
+}
+
+/// Unlocks only, unless names/rarity are a week old or the cached list doesn't match.
+fn fetch_steam_achievements(lib: &mut Library, id: i64, app: u32, key: &str, sid: &str) -> anyhow::Result<()> {
+    let stale = gamut_core::now() - 7 * 86400;
+    let full = lib.achievement_state(id)?.is_none_or(|s| s.schema_at < stale);
+    if !lib.save_achievements(id, &achievements::steam(key, sid, app, full)?)? {
+        lib.save_achievements(id, &achievements::steam(key, sid, app, true)?)?;
+    }
+    Ok(())
 }
 
 /// SK's service handle plus how to release it; None when SK isn't used for this launch.
@@ -469,16 +565,20 @@ impl Tracker {
         let Launched::Tracked(handle) = launched else {
             self.running.lock().unwrap().remove(&id);
             release_specialk(sk, name, false);
-            if let Some(h) = hdr {
-                let g = g.clone();
+            // Steam games are cheap to watch (registry poll); refresh their achievements after.
+            if hdr.is_some() || g.source == gamut_core::Source::Steam {
+                let (g, ach) = (g.clone(), self.ach.clone());
                 std::thread::spawn(move || {
                     wait_exit(&g);
-                    drop(h);
+                    drop(hdr);
+                    std::thread::sleep(Duration::from_secs(15));
+                    let _ = ach.send(g.id);
                 });
             }
             return;
         };
         let (paths, tx, ctx, running) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.running.clone());
+        let ach = self.ach.clone();
         running.lock().unwrap().insert(id);
         let sk = if exit_stop {
             sk
@@ -499,6 +599,8 @@ impl Tracker {
                     ctx.request_repaint();
                 }
             }
+            std::thread::sleep(Duration::from_secs(15));
+            let _ = ach.send(id);
         });
     }
 }

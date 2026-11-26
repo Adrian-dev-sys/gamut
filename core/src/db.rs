@@ -1,3 +1,4 @@
+use crate::achievements::{Achievement, Fetched, State as AchState};
 use crate::model::{state, Game, Metadata, Source};
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -70,7 +71,19 @@ impl Library {
                 hidden INTEGER NOT NULL DEFAULT 0,
                 added INTEGER NOT NULL DEFAULT 0
              );
-             CREATE UNIQUE INDEX IF NOT EXISTS games_steam ON games(source_id) WHERE source = 'steam';",
+             CREATE UNIQUE INDEX IF NOT EXISTS games_steam ON games(source_id) WHERE source = 'steam';
+             CREATE TABLE IF NOT EXISTS achievements (
+                game_id INTEGER NOT NULL, key TEXT NOT NULL, ord INTEGER NOT NULL DEFAULT 0,
+                name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                icon TEXT NOT NULL DEFAULT '', icon_locked TEXT NOT NULL DEFAULT '',
+                hidden INTEGER NOT NULL DEFAULT 0, unlocked INTEGER NOT NULL DEFAULT 0,
+                percent REAL, points INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (game_id, key)
+             );
+             CREATE TABLE IF NOT EXISTS achievement_state (
+                game_id INTEGER PRIMARY KEY, fetched INTEGER NOT NULL DEFAULT 0, schema_at INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0, unlocked INTEGER NOT NULL DEFAULT 0, error TEXT
+             );",
         )?;
         let mut lib = Library { conn };
         lib.migrate()?;
@@ -364,7 +377,111 @@ impl Library {
 
     pub fn delete(&self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM games WHERE id = ?1", [id])?;
+        // Ids get reused; a new game must not inherit these.
+        self.conn.execute("DELETE FROM achievements WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM achievement_state WHERE game_id = ?1", [id])?;
         Ok(())
+    }
+
+    /// Cached achievements for a game, in the source's order.
+    pub fn achievements(&self, id: i64) -> Result<Vec<Achievement>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT key, name, description, icon, icon_locked, hidden, unlocked, percent, points
+             FROM achievements WHERE game_id = ?1 ORDER BY ord",
+        )?;
+        let rows = st.query_map([id], |r| {
+            Ok(Achievement {
+                key: r.get(0)?,
+                name: r.get(1)?,
+                description: r.get(2)?,
+                icon: r.get(3)?,
+                icon_locked: r.get(4)?,
+                hidden: r.get(5)?,
+                unlocked: r.get(6)?,
+                percent: r.get(7)?,
+                points: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn achievement_state(&self, id: i64) -> Result<Option<AchState>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT fetched, schema_at, total, unlocked, error FROM achievement_state WHERE game_id = ?1",
+                [id],
+                |r| Ok(AchState { fetched: r.get(0)?, schema_at: r.get(1)?, total: r.get(2)?, unlocked: r.get(3)?, error: r.get(4)? }),
+            )
+            .optional()?)
+    }
+
+    /// Stores a fetch. Returns false when a partial (unlocks-only) result doesn't match the cache,
+    /// i.e. a full fetch is needed.
+    pub fn save_achievements(&mut self, id: i64, f: &Fetched) -> Result<bool> {
+        let now = crate::now();
+        let tx = self.conn.transaction()?;
+        let schema_at = match f {
+            Fetched::None => {
+                tx.execute("DELETE FROM achievements WHERE game_id = ?1", [id])?;
+                now
+            }
+            Fetched::List { items, full: true } => {
+                tx.execute("DELETE FROM achievements WHERE game_id = ?1", [id])?;
+                for (i, a) in items.iter().enumerate() {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO achievements (game_id, key, ord, name, description, icon, icon_locked, hidden, unlocked, percent, points)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        params![id, a.key, i as i64, a.name, a.description, a.icon, a.icon_locked, a.hidden, a.unlocked, a.percent, a.points],
+                    )?;
+                }
+                now
+            }
+            Fetched::List { items, full: false } => {
+                let cached: i64 = tx.query_row("SELECT COUNT(*) FROM achievements WHERE game_id = ?1", [id], |r| r.get(0))?;
+                let mut hit = 0;
+                for a in items {
+                    hit += tx.execute(
+                        "UPDATE achievements SET unlocked = ?3 WHERE game_id = ?1 AND key = ?2",
+                        params![id, a.key, a.unlocked],
+                    )?;
+                }
+                if hit != items.len() || cached != items.len() as i64 {
+                    return Ok(false);
+                }
+                tx.query_row("SELECT schema_at FROM achievement_state WHERE game_id = ?1", [id], |r| r.get(0))
+                    .optional()?
+                    .unwrap_or(0)
+            }
+        };
+        tx.execute(
+            "INSERT OR REPLACE INTO achievement_state (game_id, fetched, schema_at, total, unlocked, error)
+             SELECT ?1, ?2, ?3, COUNT(*), COALESCE(SUM(unlocked > 0), 0), NULL FROM achievements WHERE game_id = ?1",
+            params![id, now, schema_at],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Records a fetch that got nothing usable (e.g. private profile), keeping any cached list.
+    pub fn save_achievement_error(&self, id: i64, error: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO achievement_state (game_id, fetched, error) VALUES (?1, ?2, ?3)
+             ON CONFLICT(game_id) DO UPDATE SET fetched = excluded.fetched, error = excluded.error",
+            params![id, crate::now(), error],
+        )?;
+        Ok(())
+    }
+
+    /// Next Steam game whose achievements were never fetched or that was played since.
+    pub fn achievements_due(&self) -> Result<Option<Game>> {
+        let sql = format!(
+            "SELECT {COLS} FROM games g LEFT JOIN achievement_state s ON s.game_id = g.id
+             WHERE g.source = 'steam' AND (g.playtime_min > 0 OR g.last_played > 0)
+               AND (s.game_id IS NULL OR g.last_played > s.fetched)
+             ORDER BY g.last_played DESC LIMIT 1"
+        );
+        Ok(self.conn.query_row(&sql, [], Self::row).optional()?)
     }
 
     /// Fills metadata fields only where they are still empty, so user edits win.
@@ -680,6 +797,38 @@ world"));
         let id = lib.add_custom(&Game::new_custom("Mine".into(), None)).unwrap();
         lib.add_playtime(id, 30, 100).unwrap();
         assert_eq!(lib.get(id).unwrap().unwrap().playtime_min, 30);
+        drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn achievements_cache_round_trip() {
+        use crate::achievements::{Achievement, Fetched};
+        let dir = std::env::temp_dir().join(format!("gamut-ach-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lib = Library::open(&dir.join("t.db")).unwrap();
+        let entry = SteamEntry { appid: 9, name: "G".into(), installed: true, install_dir: None, playtime_min: Some(5), last_played: 100 };
+        lib.sync_steam(&[entry]).unwrap();
+        let id = lib.all().unwrap()[0].id;
+        assert_eq!(lib.achievements_due().unwrap().map(|g| g.id), Some(id));
+
+        let a = |k: &str, u| Achievement { key: k.into(), name: k.into(), unlocked: u, percent: Some(1.5), ..Default::default() };
+        assert!(lib.save_achievements(id, &Fetched::List { items: vec![a("x", 0), a("y", 50)], full: true }).unwrap());
+        let st = lib.achievement_state(id).unwrap().unwrap();
+        assert_eq!((st.total, st.unlocked), (2, 1));
+        assert!(lib.achievements_due().unwrap().is_none(), "fetched after last play");
+
+        // Unlock-only refresh keeps names/rarity; an unknown key asks for a full fetch.
+        assert!(lib.save_achievements(id, &Fetched::List { items: vec![a("x", 70), a("y", 50)], full: false }).unwrap());
+        let got = lib.achievements(id).unwrap();
+        assert_eq!((got[0].unlocked, got[0].percent), (70, Some(1.5)));
+        assert_eq!(lib.achievement_state(id).unwrap().unwrap().unlocked, 2);
+        assert!(!lib.save_achievements(id, &Fetched::List { items: vec![a("z", 1)], full: false }).unwrap());
+        assert_eq!(lib.achievements(id).unwrap()[0].unlocked, 70, "rejected refresh rolled back");
+
+        lib.save_achievement_error(id, "private").unwrap();
+        assert_eq!(lib.achievements(id).unwrap().len(), 2);
+        lib.delete(id).unwrap();
+        assert!(lib.achievements(id).unwrap().is_empty() && lib.achievement_state(id).unwrap().is_none());
         drop(lib);
         let _ = std::fs::remove_dir_all(&dir);
     }

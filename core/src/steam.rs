@@ -153,16 +153,20 @@ pub fn owned(api_key: &str, steam_id: &str) -> Result<Vec<SteamEntry>> {
         .collect())
 }
 
+/// SteamID64 from Settings, else the most recent local login ("" if neither).
+pub fn steam_id(cfg: &crate::Config) -> String {
+    match cfg.steam_id.trim() {
+        "" => steam_path().as_deref().and_then(detect_steam_id).unwrap_or_default(),
+        id => id.to_string(),
+    }
+}
+
 /// Full scan: owned library (when configured) merged with installed manifests.
 /// The second value is a user-facing warning (e.g. the Web API call failed).
 pub fn scan(cfg: &crate::Config) -> Result<(Vec<SteamEntry>, Option<String>)> {
     let steam = steam_path();
     let local = steam.as_deref().map(installed).unwrap_or_default();
-    let steam_id = if cfg.steam_id.trim().is_empty() {
-        steam.as_deref().and_then(detect_steam_id).unwrap_or_default()
-    } else {
-        cfg.steam_id.trim().to_string()
-    };
+    let steam_id = steam_id(cfg);
 
     let mut map: HashMap<u32, SteamEntry> = HashMap::new();
     let mut warning = None;

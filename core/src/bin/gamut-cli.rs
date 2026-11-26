@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|import-playnite [DIR] [--dry-run] [--verbose]>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -83,6 +83,21 @@ fn main() -> anyhow::Result<()> {
                     g.meta_state,
                     g.name
                 );
+            }
+        }
+        Some("achievements") if args.len() >= 2 => {
+            use gamut_core::achievements::{steam, Fetched};
+            let app: u32 = args[1].parse()?;
+            let sid = gamut_core::steam::steam_id(&cfg);
+            match steam(cfg.steam_api_key.trim(), &sid, app, true)? {
+                Fetched::None => println!("no achievements"),
+                Fetched::List { items, .. } => {
+                    let done = items.iter().filter(|a| a.unlocked > 0).count();
+                    println!("{done} / {} unlocked", items.len());
+                    for a in items.iter().take(8) {
+                        println!("  {:<40} unlocked={:<11} {:?}% hidden={} icon={}", a.name, a.unlocked, a.percent, a.hidden, !a.icon.is_empty());
+                    }
+                }
             }
         }
         Some("fetch") => {

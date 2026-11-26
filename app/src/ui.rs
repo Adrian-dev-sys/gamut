@@ -151,6 +151,8 @@ pub struct GamutApp {
     window: Option<gamut_core::config::WindowState>,
     /// Sort/filter as last written to config.
     saved_view: (Sort, Filter, String, String, String),
+    /// Achievements of the game on the details page.
+    ach: Option<crate::achievements::GameAch>,
 }
 
 impl GamutApp {
@@ -209,6 +211,7 @@ impl GamutApp {
             startup: window.as_ref().filter(|w| w.maximized).and_then(|_| crate::startup::Startup::maximize_hidden(cc)),
             window,
             saved_view: (sort, filter, platform, tag, completion),
+            ach: None,
         })
     }
 
@@ -263,6 +266,13 @@ impl GamutApp {
                 Event::GameUpdated(id) => self.reload_one(id),
                 Event::Error(e) => self.toasts.error(e),
                 Event::Info(m) => self.toasts.info(m),
+                Event::Achievements(id) => {
+                    if let Some(a) = self.ach.as_mut().filter(|a| a.id == id) {
+                        let show_all = a.show_all;
+                        *a = crate::achievements::GameAch::load(&self.lib, id);
+                        a.show_all = show_all;
+                    }
+                }
                 Event::PlaynitePreview(Ok(p)) => self.playnite = Some(p),
                 Event::PlaynitePreview(Err(e)) => self.toasts.error(e),
                 Event::PlayniteImported(r) => {
@@ -627,6 +637,15 @@ impl GamutApp {
                 ctx.request_repaint();
             });
         }
+        // Achievements: from the cache now, refreshed in the background when stale.
+        let steam_ach = g.source == Source::Steam && g.steam_appid().is_some();
+        if steam_ach && self.ach.as_ref().map(|a| a.id) != Some(id) {
+            let a = crate::achievements::GameAch::load(&self.lib, id);
+            if a.stale() {
+                self.workers.achievements(id);
+            }
+            self.ach = Some(a);
+        }
         for (hid, img) in self.hero_rx.try_iter() {
             if let (Some((cur, slot)), Some(img)) = (self.hero.as_mut(), img) {
                 if *cur == hid {
@@ -755,6 +774,9 @@ impl GamutApp {
                         if g.play_count > 0 {
                             stat(ui, "PLAY COUNT", &g.play_count.to_string());
                         }
+                        if let Some(t) = self.ach.as_ref().filter(|a| steam_ach && a.id == id).and_then(crate::achievements::tile) {
+                            stat(ui, "ACHIEVEMENTS", &t);
+                        }
                     });
                     ui.add_space(12.0);
                     ui.horizontal_wrapped(|ui| {
@@ -848,6 +870,12 @@ impl GamutApp {
                             None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
                         };
                     });
+                    if let Some(a) = self.ach.as_mut().filter(|a| steam_ach && a.id == id) {
+                        ui.add_space(28.0);
+                        let busy = self.workers.ach_busy.lock().unwrap().contains(&id);
+                        let has_key = !self.cfg.read().unwrap().steam_api_key.trim().is_empty();
+                        crate::achievements::section(ui, a, busy, has_key);
+                    }
                 });
             });
             ui.add_space(28.0);
