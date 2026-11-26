@@ -46,3 +46,6 @@ series`) are added by `Library::migrate` on open. `user_version` 2 requeued game
 ## Preview
 `playnite::summarize` returns a `Summary` (counts plus playable / unplayable / reason groups). The app renders it as
 tables, and `playnite::report` formats it as text for the CLI.
+
+## Confirmation
+The import dialog asks twice: **Import** shows what will be overwritten (metadata including Gamut edits, covers, backgrounds, launch settings of non-Steam games), and **Yes, overwrite** runs it. "Update descriptions only" is separate and keeps edited descriptions.

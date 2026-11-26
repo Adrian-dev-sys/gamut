@@ -141,6 +141,8 @@ pub struct GamutApp {
     toasts: Toasts,
     /// Playnite folder + preview report awaiting confirmation.
     playnite: Option<(std::path::PathBuf, gamut_core::playnite::Summary)>,
+    /// Import was clicked once; the dialog now asks to confirm the overwrite.
+    playnite_sure: bool,
     focus_search: bool,
     /// When the details popup was opened by a click; a quick second click there means Play.
     opened_at: f64,
@@ -201,6 +203,7 @@ impl GamutApp {
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice),
             playnite: None,
+            playnite_sure: false,
             focus_search: false,
             opened_at: 0.0,
             startup: window.as_ref().filter(|w| w.maximized).and_then(|_| crate::startup::Startup::maximize_hidden(cc)),
@@ -1193,7 +1196,8 @@ impl GamutApp {
     fn playnite_window(&mut self, ctx: &egui::Context) {
         let Some((dir, sum)) = self.playnite.as_ref() else { return };
         let mut open = true;
-        let (mut go, mut cancel) = (false, false);
+        let (mut go, mut cancel, mut ask, mut back) = (false, false, false, false);
+        let sure = self.playnite_sure;
         theme::dialog(ctx, "Import from Playnite", false, |ui| {
                 ui.set_width(520.0);
                 dialog_header(ui, "Import from Playnite", &mut open);
@@ -1231,22 +1235,49 @@ impl GamutApp {
                      Importing again later updates the same games instead of duplicating them.",
                 ));
                 ui.add_space(10.0);
+                if sure {
+                    ui.label(
+                        RichText::new(
+                            "Are you sure? For every matching game, Playnite's description, tags, genres, developer, \
+                             publisher, release date, series, scores and completion replace Gamut's, including \
+                             anything you edited here. Covers and backgrounds are replaced too, and so are launch \
+                             settings for non-Steam games. This can't be undone.",
+                        )
+                        .color(theme::DANGER),
+                    );
+                    ui.add_space(8.0);
+                }
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("Import").color(Color32::WHITE)).fill(ACCENT)).clicked() {
-                        go = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
+                    if sure {
+                        if ui.add(egui::Button::new(RichText::new("Yes, overwrite").color(Color32::WHITE)).fill(theme::DANGER)).clicked() {
+                            go = true;
+                        }
+                        if ui.button("Back").clicked() {
+                            back = true;
+                        }
+                    } else {
+                        if ui.add(egui::Button::new(RichText::new("Import").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                            ask = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
                     }
                 });
             });
-        if go {
+        if ask {
+            self.playnite_sure = true;
+        } else if back {
+            self.playnite_sure = false;
+        } else if go {
             let dir = dir.clone();
             self.workers.playnite_import(dir);
             self.playnite = None;
+            self.playnite_sure = false;
             self.settings = None;
         } else if cancel || !open {
             self.playnite = None;
+            self.playnite_sure = false;
         }
     }
 }
