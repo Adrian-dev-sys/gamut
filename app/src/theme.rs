@@ -127,7 +127,13 @@ pub fn dialog<R>(ctx: &Context, id: &str, add: impl FnOnce(&mut egui::Ui) -> R) 
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::same(18))
         .shadow(ctx.global_style().visuals.window_shadow);
-    egui::Modal::new(egui::Id::unique(id)).frame(frame).backdrop_color(BACKDROP).show(ctx, add)
+    let id = egui::Id::unique(id);
+    egui::Modal::new(id).area(no_fade(id)).frame(frame).backdrop_color(BACKDROP).show(ctx, add)
+}
+
+/// Modal area without egui's fade-in: switching dialogs (details -> edit) would blink the backdrop.
+pub fn no_fade(id: egui::Id) -> egui::Area {
+    egui::Modal::default_area(id).fade_in(false)
 }
 
 /// Small ✕ drawn as two centered strokes (font glyphs sit off-center); highlights on hover.

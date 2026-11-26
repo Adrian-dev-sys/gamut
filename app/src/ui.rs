@@ -1480,6 +1480,7 @@ impl eframe::App for GamutApp {
                 .shadow(ctx.global_style().visuals.window_shadow)
                 .stroke(Stroke::new(1.0, Color32::from_gray(50)));
             let resp = egui::Modal::new(egui::Id::unique("details_modal"))
+                .area(theme::no_fade(egui::Id::unique("details_modal")))
                 .frame(frame)
                 .backdrop_color(theme::BACKDROP)
                 .show(&ctx, |ui| {
