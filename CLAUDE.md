@@ -10,7 +10,8 @@ Native Windows game library (Playnite alternative). Rust workspace: `core/` (lib
 - Verify egui/eframe APIs against the crate source in `~/.cargo/registry` — they change between releases.
 - Keep comments to 1–2 lines.
 - Claude's tools run MSIX-sandboxed: new files they create under `%LOCALAPPDATA%` go to `Packages\Claude_*\LocalCache\Local\` and the real Gamut never sees them. Never import/fetch/copy into the real data dir from tools; ask the user to run it in their own terminal.
-- Never drive the user's desktop (mouse, keyboard, screenshots, closing their Gamut) without asking first; verify with tests/CLI/logs.
+- Never drive the user's desktop (mouse, keyboard, screenshots) without asking first; verify with tests/CLI/logs.
+- Closing a running Gamut to install a new build is allowed (`taskkill /IM gamut.exe`), then reinstall.
 
 ## Test
 `cargo test`; `gamut-cli --data <tmp> scan|fetch|list|seed N` exercises core against the real Steam install.
