@@ -73,6 +73,15 @@ pub fn apply(ctx: &Context) {
 }
 
 /// Small uppercase label for section titles and field names.
+/// Buttons/combos inside a CARD-filled panel: lighter fill and a visible border so they don't blend in.
+pub fn raised_widgets(ui: &mut egui::Ui) {
+    let w = &mut ui.visuals_mut().widgets;
+    let edge = Color32::from_rgb(70, 80, 108);
+    (w.inactive.bg_fill, w.inactive.weak_bg_fill, w.inactive.bg_stroke) = (CARD_HI, CARD_HI, Stroke::new(1.0, edge));
+    (w.hovered.bg_fill, w.hovered.weak_bg_fill) = (Color32::from_rgb(52, 60, 84), Color32::from_rgb(52, 60, 84));
+    w.open.bg_stroke = Stroke::new(1.0, edge);
+}
+
 pub fn caption(t: &str) -> RichText {
     RichText::new(t.to_uppercase()).size(11.0).color(TEXT_DIM).extra_letter_spacing(0.8)
 }

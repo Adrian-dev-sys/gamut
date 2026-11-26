@@ -295,7 +295,7 @@ impl Compare {
             });
         });
         ui.label(
-            RichText::new("Each source's closest match is shown. Click a cell to take that field from that source; ★ marks the most complete one.")
+            RichText::new("Each source's closest match is shown. Click a cell to take that field from that source; \"Suggested\" marks the most complete one.")
                 .color(TEXT_DIM),
         );
         ui.add_space(6.0);
@@ -311,17 +311,27 @@ impl Compare {
             for (i, c) in self.cols.iter_mut().enumerate() {
                 ui.vertical(|ui| {
                     ui.set_width(col_w);
-                    let star = if best == Some(i) { "★ " } else { "" };
                     let head = match &c.details {
-                        Some(d) => format!("{star}{}  ·  {} of 9", c.src.name(), count(d)),
+                        Some(d) => format!("{}  ·  {} of 9", c.src.name(), count(d)),
                         None => c.src.name().to_string(),
                     };
-                    ui.label(RichText::new(head).strong().color(if best == Some(i) { ACCENT } else { TEXT }))
-                        .on_hover_text(if best == Some(i) { "Suggested: the most complete entry" } else { c.src.hint() });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(head).strong()).on_hover_text(c.src.hint());
+                        if best == Some(i) {
+                            egui::Frame::new()
+                                .fill(ACCENT.gamma_multiply(0.25))
+                                .stroke(Stroke::new(1.0, ACCENT))
+                                .corner_radius(CornerRadius::same(4))
+                                .inner_margin(egui::Margin::symmetric(6, 1))
+                                .show(ui, |ui| ui.label(RichText::new("Suggested").size(12.0).color(TEXT)))
+                                .response
+                                .on_hover_text("The most complete entry; its fields are selected by default");
+                        }
+                    });
                     if !c.hits.is_empty() {
                         let before = c.pick;
                         let text: String = c.hits[c.pick].label().chars().take(40).collect();
-                        egui::ComboBox::from_id_salt(("cmp_pick", i)).width(col_w - 8.0).selected_text(text).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt(("cmp_pick", i)).width(col_w - 8.0).truncate().selected_text(text).show_ui(ui, |ui| {
                             for (j, h) in c.hits.iter().enumerate() {
                                 ui.selectable_value(&mut c.pick, j, h.label());
                             }
@@ -336,7 +346,7 @@ impl Compare {
                         ui.label(RichText::new(e).color(theme::DANGER).size(12.0));
                     } else if c.hits.is_empty() {
                         ui.label(RichText::new("Nothing found").color(TEXT_DIM).size(12.0));
-                    } else if c.details.is_some() && ui.small_button("Use all from here").clicked() {
+                    } else if c.details.is_some() && ui.button("Use all from here").clicked() {
                         take_all = Some(i);
                     }
                 });

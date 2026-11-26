@@ -321,6 +321,7 @@ impl Editor {
         if let Some(c) = self.compare.as_mut() {
             let mut out = None;
             egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                theme::raised_widgets(ui);
                 out = c.show(ui, cfg);
             });
             match out {
@@ -381,6 +382,7 @@ impl Editor {
             Some(s) => {
                 let mut close = false;
                 egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                    theme::raised_widgets(ui);
                     ui.horizontal(|ui| {
                         // Switching source keeps the query, so the same game can be compared across sources.
                         for src in srcs {
