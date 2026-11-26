@@ -1,9 +1,9 @@
-//! Cover/banner picker: SteamGridDB, VNDB and official Steam art for a game, or a local file.
+//! Cover/banner picker: SteamGridDB, IGDB, VNDB and official Steam art for a game, or a local file.
 use crate::theme::{self, ACCENT, CARD, TEXT_DIM};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{vec2, ColorImage, CornerRadius, RichText, Sense, Stroke, TextureHandle, TextureOptions};
 use gamut_core::scrape::{self, SgdbArt, SgdbMatch};
-use gamut_core::{images, model::state, Game, Library, Paths};
+use gamut_core::{igdb, images, model::state, Config, Game, Library, Paths};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +16,7 @@ pub enum ArtKind {
 enum Msg {
     Games(u64, Result<Vec<SgdbMatch>, String>),
     Vndb(u64, Result<Vec<SgdbMatch>, String>),
+    Igdb(u64, Result<Vec<SgdbMatch>, String>),
     Arts(u64, Result<Vec<SgdbArt>, String>),
     Thumb(u64, usize, Option<ColorImage>),
     Applied(Result<(), String>),
@@ -39,6 +40,31 @@ fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
     }
 }
 
+/// "Name · IGDB · PS2, Wii" (at most three platforms).
+fn igdb_label(g: &igdb::IgdbGame) -> String {
+    let mut p: Vec<&str> = g.platforms.iter().map(String::as_str).take(3).collect();
+    if g.platforms.len() > 3 {
+        p.push("…");
+    }
+    if p.is_empty() { format!("{} · IGDB", g.name) } else { format!("{} · IGDB · {}", g.name, p.join(", ")) }
+}
+
+/// An IGDB entry's cover, or its artworks then screenshots as banners.
+fn igdb_art(g: &igdb::IgdbGame, hero: bool) -> Vec<SgdbArt> {
+    let art = |id: &String, cover: bool| SgdbArt {
+        url: if cover { igdb::cover_url(id) } else { igdb::hero_url(id) },
+        thumb: igdb::thumb_url(id, cover),
+        width: if cover { 528 } else { 1920 },
+        height: if cover { 748 } else { 1080 },
+        source: Some(if cover { "IGDB cover" } else { "IGDB artwork" }),
+    };
+    if hero {
+        g.artworks.iter().chain(&g.screenshots).map(|i| art(i, false)).collect()
+    } else {
+        g.cover.iter().map(|i| art(i, true)).collect()
+    }
+}
+
 fn official(appid: u32) -> SgdbMatch {
     SgdbMatch { path: format!("official/{appid}"), name: "Official Steam art".into(), year: None }
 }
@@ -56,11 +82,15 @@ pub struct Picker {
     matches: Vec<SgdbMatch>,
     /// Matches that survive a new name search (official Steam art, the Steam id on SteamGridDB).
     pinned: Vec<SgdbMatch>,
-    /// Name search results per source; `matches` = pinned + sgdb + vndb.
+    /// Name search results per source; `matches` = pinned + sgdb + igdb + vndb.
     sgdb: Vec<SgdbMatch>,
+    igdb: Vec<SgdbMatch>,
     vndb: Vec<SgdbMatch>,
     sgdb_done: bool,
+    igdb_done: bool,
     vndb_done: bool,
+    /// Set when IGDB credentials are configured.
+    igdb_cfg: Option<Config>,
     /// Tagged as a visual novel: VNDB results come first.
     vn: bool,
     chosen: Option<usize>,
@@ -85,7 +115,8 @@ pub enum Outcome {
 }
 
 impl Picker {
-    pub fn open(ctx: &egui::Context, g: &Game, kind: ArtKind, key: &str, paths: Paths) -> Self {
+    pub fn open(ctx: &egui::Context, g: &Game, kind: ArtKind, cfg: &Config, paths: Paths) -> Self {
+        let key = &cfg.steamgriddb_key;
         let (tx, rx) = unbounded();
         let tags = g.tags.as_deref().unwrap_or("").to_lowercase();
         let mut p = Picker {
@@ -101,9 +132,12 @@ impl Picker {
             matches: Vec::new(),
             pinned: Vec::new(),
             sgdb: Vec::new(),
+            igdb: Vec::new(),
             vndb: Vec::new(),
             sgdb_done: false,
+            igdb_done: false,
             vndb_done: false,
+            igdb_cfg: igdb::configured(cfg).then(|| cfg.clone()),
             vn: tags.contains("visual novel"),
             chosen: None,
             tiles: Vec::new(),
@@ -144,12 +178,23 @@ impl Picker {
         p
     }
 
-    /// Name search on SteamGridDB (with a key) and VNDB, in parallel.
+    /// Name search on SteamGridDB, IGDB (with keys) and VNDB, in parallel.
     fn search(&mut self, ctx: &egui::Context) {
         let round = self.search_round.fetch_add(1, Ordering::SeqCst) + 1;
         log::info!("art picker: searching for {:?}", self.query.trim());
-        (self.sgdb, self.vndb) = (Vec::new(), Vec::new());
-        (self.sgdb_done, self.vndb_done) = (self.key.is_empty(), false);
+        (self.sgdb, self.igdb, self.vndb) = (Vec::new(), Vec::new(), Vec::new());
+        (self.sgdb_done, self.igdb_done, self.vndb_done) = (self.key.is_empty(), self.igdb_cfg.is_none(), false);
+        if let Some(cfg) = self.igdb_cfg.clone() {
+            let (q, tx, ctx) = (self.query.trim().to_string(), self.tx.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let r = igdb::search(&cfg, &q).map_err(|e| format!("{e:#}")).map(|hits| {
+                    let m = |h: &igdb::IgdbGame| SgdbMatch { path: format!("igdb/{}", h.id), year: h.year, name: igdb_label(h) };
+                    hits.iter().take(8).map(m).collect()
+                });
+                let _ = tx.send(Msg::Igdb(round, r));
+                ctx.request_repaint();
+            });
+        }
         if self.chosen.is_none() {
             self.busy = true;
         }
@@ -183,20 +228,22 @@ impl Picker {
 
     /// Recomputes the match list; picks one once enough results are in.
     fn rebuild(&mut self, ctx: &egui::Context) {
-        self.matches = self.pinned.iter().chain(&self.sgdb).chain(&self.vndb).cloned().collect();
+        self.matches = self.pinned.iter().chain(&self.sgdb).chain(&self.igdb).chain(&self.vndb).cloned().collect();
         if self.chosen.is_some() {
             return;
         }
-        let (p, s) = (self.pinned.len(), self.sgdb.len());
+        let (p, s, i) = (self.pinned.len(), self.sgdb.len(), self.igdb.len());
         let first_sgdb = (s > 0).then_some(p);
-        let first_vndb = (!self.vndb.is_empty()).then_some(p + s);
-        // Don't jump ahead while the preferred source is still searching.
+        let first_igdb = (i > 0).then_some(p + s);
+        let first_vndb = (!self.vndb.is_empty()).then_some(p + s + i);
+        // Don't jump ahead while a preferred source is still searching.
+        let after_sgdb = || first_igdb.or(if self.igdb_done { first_vndb } else { None });
         let pick = if self.vn {
-            first_vndb.or(if self.vndb_done { first_sgdb } else { None })
+            first_vndb.or(if self.vndb_done { first_sgdb.or(first_igdb) } else { None })
         } else {
-            first_sgdb.or(if self.sgdb_done { first_vndb } else { None })
+            first_sgdb.or(if self.sgdb_done { after_sgdb() } else { None })
         };
-        let all_done = self.sgdb_done && self.vndb_done;
+        let all_done = self.sgdb_done && self.igdb_done && self.vndb_done;
         match pick.or(if all_done && !self.matches.is_empty() { Some(0) } else { None }) {
             Some(i) => self.choose(ctx, i),
             None if all_done => {
@@ -215,10 +262,13 @@ impl Picker {
         self.busy = true;
         self.note = None;
         let (key, path, hero, nsfw) = (self.key.clone(), self.matches[i].path.clone(), self.kind == ArtKind::Banner, self.nsfw);
-        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        let (tx, ctx, igdb_cfg) = (self.tx.clone(), ctx.clone(), self.igdb_cfg.clone());
         std::thread::spawn(move || {
+            let igdb_id = path.strip_prefix("igdb/").and_then(|a| a.parse::<i64>().ok());
             let r = if let Some(appid) = path.strip_prefix("official/").and_then(|a| a.parse().ok()) {
                 Ok(scrape::steam_official_art(appid, hero))
+            } else if let (Some(id), Some(cfg)) = (igdb_id, igdb_cfg) {
+                igdb::game(&cfg, id).map_err(|e| format!("{e:#}")).map(|g| g.map(|g| igdb_art(&g, hero)).unwrap_or_default())
             } else if let Some(id) = path.strip_prefix("vndb/") {
                 gamut_core::vndb::images(id, nsfw).map_err(|e| format!("{e:#}")).map(|mut v| {
                     // Closest to the wanted shape first (portrait covers, wide banners).
@@ -290,13 +340,21 @@ impl Picker {
     fn handle(&mut self, ctx: &egui::Context) -> Option<Outcome> {
         while let Ok(m) = self.rx.try_recv() {
             match m {
-                Msg::Games(g, r) | Msg::Vndb(g, r) if g != self.search_round.load(Ordering::SeqCst) => {
+                Msg::Games(g, r) | Msg::Vndb(g, r) | Msg::Igdb(g, r) if g != self.search_round.load(Ordering::SeqCst) => {
                     let _ = r;
                 }
                 Msg::Games(_, r) => {
                     self.sgdb_done = true;
                     self.sgdb = r.unwrap_or_else(|e| {
                         log::warn!("art picker: SteamGridDB search failed: {e}");
+                        Vec::new()
+                    });
+                    self.rebuild(ctx);
+                }
+                Msg::Igdb(_, r) => {
+                    self.igdb_done = true;
+                    self.igdb = r.unwrap_or_else(|e| {
+                        log::warn!("art picker: IGDB search failed: {e}");
                         Vec::new()
                     });
                     self.rebuild(ctx);
@@ -328,6 +386,8 @@ impl Picker {
                                 let path = self.chosen.map_or("", |c| self.matches[c].path.as_str());
                                 self.note = Some(if path.starts_with("official/") {
                                     format!("Steam has no official {what} for this game.")
+                                } else if path.starts_with("igdb/") {
+                                    format!("IGDB has no {what} for this entry.")
                                 } else if path.starts_with("vndb/") {
                                     format!("VNDB has no suitable images for this entry.")
                                 } else {

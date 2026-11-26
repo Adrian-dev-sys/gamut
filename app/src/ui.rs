@@ -414,8 +414,8 @@ impl GamutApp {
                 Action::Stop(id) => self.confirm_stop = Some(id),
                 Action::PickArt(id, kind) => {
                     if let Some(g) = self.game(id) {
-                        let key = self.cfg.read().unwrap().steamgriddb_key.clone();
-                        self.picker = Some(Picker::open(&self.ctx_handle, g, kind, &key, self.paths.clone()));
+                        let cfg = self.cfg.read().unwrap().clone();
+                        self.picker = Some(Picker::open(&self.ctx_handle, g, kind, &cfg, self.paths.clone()));
                     }
                 }
             }
@@ -987,7 +987,9 @@ impl GamutApp {
 
     fn editor_window(&mut self, ctx: &egui::Context) {
         let Some(ed) = self.editor.as_mut() else { return };
-        let lists = Lists { platforms: &self.platforms, tags: &self.tags, genres: &self.ed_lists.0, completions: &self.ed_lists.1 };
+        let cfg = self.cfg.read().unwrap().clone();
+        let igdb = gamut_core::igdb::configured(&cfg).then_some(&cfg);
+        let lists = Lists { platforms: &self.platforms, tags: &self.tags, genres: &self.ed_lists.0, completions: &self.ed_lists.1, igdb };
         match ed.show(ctx, &lists) {
             EditorOutcome::Open => {}
             EditorOutcome::Cancel => self.editor = None,
@@ -1025,6 +1027,14 @@ impl GamutApp {
             let bytes = std::fs::read(p)?;
             images::store_cover(&bytes, &self.paths.cover(id), &self.paths.thumb(id))?;
             self.lib.set_cover_state(id, true, None, state::DONE)?;
+        }
+        // A hand-picked IGDB entry also supplies a missing cover (the cover worker fetches it).
+        if let Some(ig) = ed.igdb_pick {
+            self.lib.set_igdb_id(id, ig)?;
+            if let Some(g) = self.lib.get(id)?.filter(|g| !g.has_cover) {
+                self.lib.set_cover_state(id, false, None, state::PENDING)?;
+                log::info!("IGDB pick for {}: fetching its cover", g.name);
+            }
         }
         self.reload_one(id);
         self.workers.kick();

@@ -3,7 +3,9 @@ use crate::picker::ArtKind;
 use crate::theme::{self, ACCENT, CARD, CARD_HI, TEXT, TEXT_DIM};
 use crate::util::{self, opt};
 use egui::{vec2, Color32, CornerRadius, RichText, Stroke, Ui};
-use gamut_core::{Game, Source};
+use crossbeam_channel::{unbounded, Receiver};
+use gamut_core::igdb::{self, IgdbGame};
+use gamut_core::{Config, Game, Source};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
@@ -44,6 +46,19 @@ pub struct Editor {
     genre_input: String,
     tag_input: String,
     pub cover_file: Option<std::path::PathBuf>,
+    /// IGDB entry picked with "Fill from IGDB", saved as the game's match.
+    pub igdb_pick: Option<i64>,
+    igdb: Option<IgdbSearch>,
+    filled: Option<String>,
+}
+
+/// The "Fill from IGDB" panel: a name search and its results.
+struct IgdbSearch {
+    query: String,
+    results: Vec<IgdbGame>,
+    busy: bool,
+    error: Option<String>,
+    rx: Option<Receiver<Result<Vec<IgdbGame>, String>>>,
 }
 
 /// Suggestion lists taken from the library (value, count).
@@ -52,6 +67,8 @@ pub struct Lists<'a> {
     pub tags: &'a [(String, usize)],
     pub genres: &'a [(String, usize)],
     pub completions: &'a [(String, usize)],
+    /// Set when IGDB credentials are configured.
+    pub igdb: Option<&'a Config>,
 }
 
 pub enum EditorOutcome {
@@ -101,6 +118,9 @@ impl Editor {
             genre_input: String::new(),
             tag_input: String::new(),
             cover_file: None,
+            igdb_pick: None,
+            igdb: None,
+            filled: None,
         }
     }
 
@@ -183,6 +203,7 @@ impl Editor {
         let col_w = (ui.available_width() - 40.0) / 2.0;
         let field_w = col_w - 130.0;
         ui.add_space(4.0);
+        self.igdb_panel(ui, lists.igdb);
         ui.columns(2, |cols| {
             let grid = |ui: &mut Ui, id: &str, f: &mut dyn FnMut(&mut Ui)| {
                 egui::Grid::new(id).num_columns(2).spacing([14.0, 10.0]).min_col_width(110.0).show(ui, |ui| f(ui));
@@ -217,6 +238,122 @@ impl Editor {
                 egui::TextEdit::multiline(&mut self.description).hint_text("No description"),
             );
         });
+    }
+
+    /// "Fill from IGDB…": search by name, pick an entry, and its details replace the form's fields.
+    fn igdb_panel(&mut self, ui: &mut Ui, cfg: Option<&Config>) {
+        if let Some(s) = self.igdb.as_mut() {
+            if let Some(r) = s.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                s.busy = false;
+                s.rx = None;
+                match r {
+                    Ok(v) => (s.results, s.error) = (v, None),
+                    Err(e) => (s.results, s.error) = (Vec::new(), Some(e)),
+                }
+            }
+        }
+        let Some(cfg) = cfg else {
+            ui.add_enabled(false, egui::Button::new("Fill from IGDB…"))
+                .on_disabled_hover_text("Add IGDB credentials in Settings to look games up there.");
+            ui.add_space(8.0);
+            return;
+        };
+        let mut search = false;
+        match self.igdb.as_mut() {
+            None => {
+                ui.horizontal(|ui| {
+                    if ui.button("Fill from IGDB…").on_hover_text("Look this game up on IGDB and fill in its details").clicked() {
+                        self.igdb = Some(IgdbSearch { query: self.name.clone(), results: Vec::new(), busy: false, error: None, rx: None });
+                        search = true;
+                    }
+                    if let Some(f) = &self.filled {
+                        ui.label(RichText::new(f).color(TEXT_DIM));
+                    }
+                });
+            }
+            Some(s) => {
+                let mut picked = None;
+                let mut close = false;
+                egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut s.query).desired_width(360.0).hint_text("Game name"));
+                        if ui.button("Search").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            search = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                        if s.busy {
+                            ui.add(egui::Spinner::new().size(14.0));
+                        }
+                    });
+                    if let Some(e) = &s.error {
+                        ui.label(RichText::new(e).color(theme::DANGER));
+                    } else if !s.busy && s.results.is_empty() {
+                        ui.label(RichText::new("Nothing found. Try a shorter or different name.").color(TEXT_DIM));
+                    }
+                    egui::ScrollArea::vertical().id_salt("ed_igdb").max_height(220.0).show(ui, |ui| {
+                        for (i, g) in s.results.iter().enumerate() {
+                            let year = g.year.map(|y| format!(" ({y})")).unwrap_or_default();
+                            let plat = g.platforms.join(", ");
+                            let text = format!("{}{year}{}{plat}", g.name, if plat.is_empty() { "" } else { " · " });
+                            if ui.selectable_label(false, text).on_hover_text("Fill the form with this entry").clicked() {
+                                picked = Some(i);
+                            }
+                        }
+                    });
+                });
+                if let Some(i) = picked {
+                    let g = s.results[i].clone();
+                    self.fill_from(&g);
+                    close = true;
+                }
+                if close {
+                    self.igdb = None;
+                }
+            }
+        }
+        if let (true, Some(s)) = (search, self.igdb.as_mut()) {
+            let (tx, rx) = unbounded();
+            let (cfg, q, ctx) = (cfg.clone(), s.query.trim().to_string(), ui.ctx().clone());
+            (s.busy, s.error, s.rx) = (true, None, Some(rx));
+            std::thread::spawn(move || {
+                let _ = tx.send(igdb::search(&cfg, &q).map_err(|e| format!("{e:#}")));
+                ctx.request_repaint();
+            });
+        }
+        ui.add_space(8.0);
+    }
+
+    /// Replaces the form's details with an IGDB entry's (fields IGDB lacks stay as they are).
+    fn fill_from(&mut self, g: &IgdbGame) {
+        let m = &g.meta;
+        let set = |field: &mut String, v: &Option<String>| {
+            if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
+                *field = v.to_string();
+            }
+        };
+        if self.name.trim().is_empty() {
+            self.name = g.name.clone();
+        }
+        set(&mut self.description, &m.description);
+        set(&mut self.developer, &m.developer);
+        set(&mut self.publisher, &m.publisher);
+        set(&mut self.series, &m.series);
+        if let Some(d) = &m.release_date {
+            self.release = util::release(d);
+        }
+        if let Some(c) = m.critic_score {
+            self.critic = c.to_string();
+        }
+        if let Some(c) = m.community_score {
+            self.community = c.to_string();
+        }
+        if m.genres.is_some() {
+            self.genres = list(&m.genres);
+        }
+        self.igdb_pick = Some(g.id);
+        self.filled = Some(format!("Filled from IGDB: {}. Review and Save.", g.name));
     }
 
     fn launch(&mut self, ui: &mut Ui) {
