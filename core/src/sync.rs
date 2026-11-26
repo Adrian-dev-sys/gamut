@@ -134,7 +134,9 @@ pub fn igdb_entry(lib: &Library, cfg: &Config, g: &Game) -> Result<Option<igdb::
         Some(0) => Ok(None),
         Some(id) => igdb::game(cfg, id),
         None => {
-            let found = igdb::best(&g.name, g.platform.as_deref(), &igdb::search(cfg, &clean_name(&g.name))?).cloned();
+            let year = g.release_date.as_deref().and_then(release_year);
+            let hits = igdb::search(cfg, &igdb::search_name(&clean_name(&g.name)))?;
+            let found = igdb::best(&g.name, g.platform.as_deref(), year, &hits).cloned();
             lib.set_igdb_id(g.id, found.as_ref().map_or(0, |f| f.id))?;
             Ok(found)
         }
@@ -145,8 +147,17 @@ pub fn igdb_entry(lib: &Library, cfg: &Config, g: &Game) -> Result<Option<igdb::
 fn console(g: &Game) -> bool {
     g.platform.as_deref().is_some_and(|p| {
         let p = p.to_lowercase();
-        !p.trim().is_empty() && !["pc", "windows", "dos", "linux", "mac"].iter().any(|k| p.contains(k))
+        let words: Vec<&str> = p.split(|c: char| !c.is_alphanumeric()).collect();
+        // Whole words: "NEC PC Engine" is a console.
+        let pc = ["windows", "dos", "linux", "mac", "macos"].iter().any(|k| words.contains(k))
+            || (words.contains(&"pc") && !words.contains(&"engine") && !words.contains(&"fx"));
+        !p.trim().is_empty() && !pc
     })
+}
+
+/// Year from "YYYY-MM-DD", "DD/MM/YYYY" or Steam's "9 Jun, 2009".
+fn release_year(d: &str) -> Option<i32> {
+    d.split(|c: char| !c.is_ascii_digit()).filter(|p| p.len() == 4).find_map(|p| p.parse().ok())
 }
 
 /// Fills metadata from IGDB; false (and not found) without a confident match.

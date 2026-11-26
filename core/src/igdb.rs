@@ -128,9 +128,9 @@ pub fn game(cfg: &Config, id: i64) -> Result<Option<IgdbGame>> {
     Ok(parse(&query(cfg, "games", &format!("{FIELDS} where id = {id};"))?).into_iter().next())
 }
 
-/// Status line for Settings.
+/// Status line for Settings; uses the real field list so a bad field shows here, not only in sweeps.
 pub fn check(cfg: &Config) -> Result<String> {
-    query(cfg, "games", "fields name; limit 1;")?;
+    query(cfg, "games", &format!("{FIELDS} limit 1;"))?;
     Ok("Connected".into())
 }
 
@@ -276,16 +276,46 @@ pub fn on_platform(g: &IgdbGame, platform: &str) -> bool {
 }
 
 /// The one confident match: a main game whose title (or an alternative name) equals `name` after
-/// normalizing, on the game's platform when it has one. Anything less is left to a manual pick.
-pub fn best<'a>(name: &str, platform: Option<&str>, games: &'a [IgdbGame]) -> Option<&'a IgdbGame> {
+/// normalizing, on the game's platform when it has one. Several such (remakes share titles) need the
+/// release year to single one out; anything less is left to a manual pick.
+pub fn best<'a>(name: &str, platform: Option<&str>, year: Option<i32>, games: &'a [IgdbGame]) -> Option<&'a IgdbGame> {
     let want = crate::retro::title_key(name);
     if want.is_empty() {
         return None;
     }
     let platform = platform.map(str::trim).filter(|p| !p.is_empty());
     let ok = |g: &&IgdbGame| g.main && platform.is_none_or(|p| on_platform(g, p));
-    let exact = games.iter().filter(ok).find(|g| crate::retro::title_key(&g.name) == want);
-    exact.or_else(|| games.iter().filter(ok).find(|g| g.alt_names.iter().any(|a| crate::retro::title_key(a) == want)))
+    let one = |c: Vec<&'a IgdbGame>| -> Option<&'a IgdbGame> {
+        match c.len() {
+            0 => None,
+            1 => Some(c[0]),
+            _ => {
+                let by_year: Vec<_> = c.into_iter().filter(|g| year.is_some() && g.year == year).collect();
+                (by_year.len() == 1).then(|| by_year[0])
+            }
+        }
+    };
+    let exact: Vec<_> = games.iter().filter(ok).filter(|g| crate::retro::title_key(&g.name) == want).collect();
+    if !exact.is_empty() {
+        return one(exact);
+    }
+    one(games.iter().filter(ok).filter(|g| g.alt_names.iter().any(|a| crate::retro::title_key(a) == want)).collect())
+}
+
+/// Search text without region/dump tags ("Foo (USA) [!]" -> "Foo").
+pub fn search_name(name: &str) -> String {
+    let mut s = String::new();
+    let mut depth = 0;
+    for c in name.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = (depth - 1).max(0),
+            _ if depth == 0 => s.push(c),
+            _ => {}
+        }
+    }
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.is_empty() { name.trim().to_string() } else { s }
 }
 
 #[cfg(test)]
@@ -328,7 +358,7 @@ mod tests {
     #[test]
     fn matches_strictly() {
         let list = parse(&sample());
-        let id = |n: &str, p: Option<&str>| best(n, p, &list).map(|g| g.id);
+        let id = |n: &str, p: Option<&str>| best(n, p, None, &list).map(|g| g.id);
         assert_eq!(id("Ben 10: Protector of Earth", Some("Sony PlayStation 2")), Some(7));
         assert_eq!(id("Ben 10 - Protector of Earth", None), Some(7));
         assert_eq!(id("Ben 10: Protector of Earth", Some("Nintendo Switch")), None);
@@ -337,5 +367,18 @@ mod tests {
         assert_eq!(id("Pocket Monsters FireRed", Some("Nintendo Game Boy Advance")), Some(9));
         assert!(platform_variants("PC (Windows)").contains(&"pc".to_string()));
         assert!(platform_variants("Sony PSP").contains(&"playstation portable".to_string()));
+        assert_eq!(search_name("Ben 10 (USA) [!]"), "Ben 10");
+    }
+
+    #[test]
+    fn same_title_needs_the_year() {
+        let pc = serde_json::json!([{"name": "PC (Microsoft Windows)", "abbreviation": "PC"}]);
+        let v = serde_json::json!([
+            {"id": 1, "name": "Resident Evil 2", "first_release_date": 885081600, "platforms": pc},
+            {"id": 2, "name": "Resident Evil 2", "first_release_date": 1548374400, "platforms": pc}
+        ]);
+        let list = parse(&v);
+        assert_eq!(best("Resident Evil 2", Some("PC (Windows)"), None, &list).map(|g| g.id), None);
+        assert_eq!(best("Resident Evil 2", Some("PC (Windows)"), Some(2019), &list).map(|g| g.id), Some(2));
     }
 }

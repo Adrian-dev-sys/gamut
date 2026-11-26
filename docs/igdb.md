@@ -16,7 +16,8 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
 ## Matching (automatic)
 - Strict, since fills are hard to undo: a main game (not DLC/bundle/mod/…) whose title or an alternative name
   equals the game's after `retro::title_key`, on the game's platform when it has one (`platform_variants`:
-  maker prefixes and aliases like "Sony PSP", "PC (Windows)").
+  maker prefixes and aliases like "Sony PSP", "PC (Windows)"). Several candidates (remakes share titles) need
+  the game's release year to pick exactly one. Searches drop region/dump tags ("(USA) [!]").
 - Result stored in `igdb_match(game_id, igdb_id)`: >0 id, 0 = no confident match. Dropped on rename/platform
   change and delete.
 - Anything else is left to the manual pick.
@@ -25,7 +26,7 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
 - `fetch_meta`: custom games on consoles use IGDB first; PC custom games try the exact Steam match, then IGDB.
   `save_metadata` only fills empty fields (now also series, critic/community score), so user edits win.
 - `fetch_cover`: Steam CDN, then SteamGridDB, then IGDB (cover; artwork or screenshot as banner).
-- `Library::igdb_requeue`: once per new Client ID (hash in `meta.igdb_client`) and after a passing check, custom
+- `Library::igdb_requeue`: once per new Client ID + secret (hash in `meta.igdb_client`) and after a passing check, custom
   games with gaps (not found, missing description/developer/genres/date, or no cover) are queued again and old
   "no match" results forgotten. Runs at startup and when the credentials are saved.
 

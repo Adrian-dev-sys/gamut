@@ -187,11 +187,12 @@ impl Workers {
         std::thread::spawn(move || {
             let r = (|| -> anyhow::Result<usize> {
                 let mut lib = Library::open(&paths.db)?;
-                if lib.igdb_requeued(&cfg.igdb_client_id)? {
+                let creds = format!("{}\n{}", cfg.igdb_client_id.trim(), cfg.igdb_client_secret.trim());
+                if lib.igdb_requeued(&creds)? {
                     return Ok(0);
                 }
                 gamut_core::igdb::check(&cfg)?;
-                lib.igdb_requeue(&cfg.igdb_client_id)
+                lib.igdb_requeue(&creds)
             })();
             match r {
                 Ok(0) => {}

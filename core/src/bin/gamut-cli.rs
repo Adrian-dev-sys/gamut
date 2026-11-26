@@ -42,6 +42,38 @@ fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    // Network-only checks: fine while the app runs (the library isn't opened).
+    match args.first().map(String::as_str) {
+        Some("status") => {
+            use gamut_core::status;
+            let show = |r: anyhow::Result<String>| r.unwrap_or_else(|e| format!("error: {e:#}"));
+            println!("Steam:             {}", show(status::steam(&cfg)));
+            println!("SteamGridDB:       {}", show(status::steamgriddb(&cfg.steamgriddb_key)));
+            println!("RetroAchievements: {}", show(status::retro(&cfg.ra_user, &cfg.ra_api_key)));
+            let ig = if gamut_core::igdb::configured(&cfg) { show(gamut_core::igdb::check(&cfg)) } else { "not set".into() };
+            println!("IGDB:              {ig}");
+        }
+        // igdb NAME [PLATFORM]: search results and which one would be matched automatically.
+        Some("igdb") if args.len() >= 2 => {
+            anyhow::ensure!(gamut_core::igdb::configured(&cfg), "IGDB isn't set up: add the Client ID and secret in Settings");
+            use gamut_core::igdb;
+            let list = igdb::search(&cfg, &igdb::search_name(&args[1]))?;
+            let pick = igdb::best(&args[1], args.get(2).map(String::as_str), None, &list).map(|g| g.id);
+            for g in &list {
+                let mark = if Some(g.id) == pick { "*" } else { " " };
+                println!("{mark} {:>7}  {}  ({})  main={}  [{}]", g.id, g.name, g.year.unwrap_or(0), g.main, g.platforms.join(", "));
+            }
+            if let Some(g) = list.iter().find(|g| Some(g.id) == pick) {
+                println!("
+{:#?}
+cover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
+            }
+        }
+        _ => {}
+    }
+    if matches!(args.first().map(String::as_str), Some("status" | "igdb")) {
+        return Ok(());
+    }
     // Writing commands must not run alongside the app.
     // Every command, even read-only ones, stays out while the app has the library open.
     let _lock = paths.lock().ok_or_else(|| anyhow::anyhow!("Gamut is running; close it first"))?;
@@ -83,29 +115,6 @@ fn main() -> anyhow::Result<()> {
                     g.meta_state,
                     g.name
                 );
-            }
-        }
-        Some("status") => {
-            use gamut_core::status;
-            let show = |r: anyhow::Result<String>| r.unwrap_or_else(|e| format!("error: {e:#}"));
-            println!("Steam:             {}", show(status::steam(&cfg)));
-            println!("SteamGridDB:       {}", show(status::steamgriddb(&cfg.steamgriddb_key)));
-            println!("RetroAchievements: {}", show(status::retro(&cfg.ra_user, &cfg.ra_api_key)));
-            println!("IGDB:              {}", show(gamut_core::igdb::check(&cfg)));
-        }
-        // igdb NAME [PLATFORM]: search results and which one would be matched automatically.
-        Some("igdb") if args.len() >= 2 => {
-            use gamut_core::igdb;
-            let list = igdb::search(&cfg, &args[1])?;
-            let pick = igdb::best(&args[1], args.get(2).map(String::as_str), &list).map(|g| g.id);
-            for g in &list {
-                let mark = if Some(g.id) == pick { "*" } else { " " };
-                println!("{mark} {:>7}  {}  ({})  main={}  [{}]", g.id, g.name, g.year.unwrap_or(0), g.main, g.platforms.join(", "));
-            }
-            if let Some(g) = list.iter().find(|g| Some(g.id) == pick) {
-                println!("
-{:#?}
-cover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
             }
         }
         Some("achievements") if args.len() >= 2 => {

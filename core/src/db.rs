@@ -667,16 +667,16 @@ impl Library {
     }
 
     /// True when `igdb_requeue` already ran for this Client ID.
-    pub fn igdb_requeued(&self, client_id: &str) -> Result<bool> {
+    pub fn igdb_requeued(&self, creds: &str) -> Result<bool> {
         let seen: Option<i64> =
             self.conn.query_row("SELECT value FROM meta WHERE key = 'igdb_client'", [], |r| r.get(0)).optional()?;
-        Ok(seen == Some(client_hash(client_id)))
+        Ok(seen == Some(client_hash(creds)))
     }
 
-    /// Once per new IGDB Client ID: requeues custom games with gaps (metadata or cover) so IGDB can
+    /// Once per new IGDB credentials (`creds` = id + secret; only a hash is kept): requeues custom games with gaps (metadata or cover) so IGDB can
     /// fill them, and forgets earlier "no match" results. Returns how many games were requeued.
-    pub fn igdb_requeue(&mut self, client_id: &str) -> Result<usize> {
-        let h = client_hash(client_id);
+    pub fn igdb_requeue(&mut self, creds: &str) -> Result<usize> {
+        let h = client_hash(creds);
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let seen: Option<i64> = tx.query_row("SELECT value FROM meta WHERE key = 'igdb_client'", [], |r| r.get(0)).optional()?;
         if seen == Some(h) {
@@ -854,7 +854,7 @@ impl Library {
     }
 }
 
-/// FNV-1a of a trimmed Client ID (the meta table holds integers).
+/// FNV-1a of the trimmed credentials (the meta table holds integers).
 fn client_hash(id: &str) -> i64 {
     id.trim().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)) as i64
 }
