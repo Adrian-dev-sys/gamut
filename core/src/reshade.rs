@@ -128,9 +128,18 @@ fn extract_package(bytes: &[u8], dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// DLL name ReShade must take for this executable, from the graphics APIs it imports.
+/// How ReShade hooks a game.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Hook {
+    /// Copied next to the exe under this DLL name.
+    Proxy(&'static str),
+    /// Loaded by the Vulkan loader as an implicit layer; a ReShade.ini next to the exe enables it.
+    Vulkan,
+}
+
+/// How ReShade must hook this executable (and its bitness), from the graphics APIs it imports.
 /// Engines often load the API from a DLL next to the exe (UnityPlayer.dll), so those count too.
-pub fn proxy_name(exe: &Path) -> Option<(bool, &'static str)> {
+pub fn hook_for(exe: &Path) -> Option<(bool, Hook)> {
     let (is64, mut names) = procs::pe_imports(exe)?;
     let graphics = |n: &[String]| n.iter().any(|x| x.starts_with("d3d") || x == "dxgi.dll" || x == "opengl32.dll" || x == "vulkan-1.dll");
     if !graphics(&names) {
@@ -146,19 +155,19 @@ pub fn proxy_name(exe: &Path) -> Option<(bool, &'static str)> {
         }
     }
     let has = |n: &str| names.iter().any(|x| x == n);
-    let dll = if ["d3d12.dll", "d3d11.dll", "d3d10.dll", "d3d10_1.dll", "dxgi.dll"].iter().any(|n| has(n)) {
-        "dxgi.dll"
+    let hook = if ["d3d12.dll", "d3d11.dll", "d3d10.dll", "d3d10_1.dll", "dxgi.dll"].iter().any(|n| has(n)) {
+        Hook::Proxy("dxgi.dll")
     } else if has("d3d9.dll") {
-        "d3d9.dll"
+        Hook::Proxy("d3d9.dll")
     } else if has("opengl32.dll") {
-        "opengl32.dll"
+        Hook::Proxy("opengl32.dll")
     } else if has("vulkan-1.dll") {
-        return None;
+        Hook::Vulkan
     } else {
         // Unknown: most games today are DirectX 10-12.
-        "dxgi.dll"
+        Hook::Proxy("dxgi.dll")
     };
-    Some((is64, dll))
+    Some((is64, hook))
 }
 
 fn has_existing(dir: &Path) -> Option<String> {
@@ -179,10 +188,17 @@ pub fn install(g: &Game, cache: &Path) -> Result<Outcome> {
     if let Some(f) = roots.iter().find_map(|d| has_existing(d)) {
         return Ok(Outcome::Skipped(format!("already has its own setup ({f})")));
     }
-    let Some((is64, dll)) = proxy_name(&exe) else { return Ok(Outcome::Skipped("Vulkan games aren't supported".into())) };
+    let Some((is64, hook)) = hook_for(&exe) else { return Ok(Outcome::Skipped("couldn't read the executable".into())) };
     download(cache, false)?;
-    std::fs::copy(cache.join(if is64 { "ReShade64.dll" } else { "ReShade32.dll" }), dir.join(dll))
-        .with_context(|| format!("copying ReShade into {}", dir.display()))?;
+    let mut added = Vec::new();
+    match hook {
+        Hook::Proxy(dll) => {
+            std::fs::copy(cache.join(if is64 { "ReShade64.dll" } else { "ReShade32.dll" }), dir.join(dll))
+                .with_context(|| format!("copying ReShade into {}", dir.display()))?;
+            added.push(dll);
+        }
+        Hook::Vulkan => vulkan::ensure_layer(cache)?,
+    }
     let shaders = cache.join("reshade-shaders");
     std::fs::write(
         dir.join("ReShade.ini"),
@@ -194,9 +210,14 @@ pub fn install(g: &Game, cache: &Path) -> Result<Outcome> {
     )?;
     // Effects start switched off, like a fresh ReShade install; pick them in the overlay (Home).
     std::fs::write(dir.join("ReShadePreset.ini"), "Techniques=\r\nTechniqueSorting=\r\n")?;
-    std::fs::write(dir.join(MARKER), format!("{dll}\r\nReShade.ini\r\nReShadePreset.ini\r\nReShade.log\r\n"))?;
-    log::info!("ReShade: installed into {} as {dll} ({}-bit)", dir.display(), if is64 { 64 } else { 32 });
-    Ok(Outcome::Installed(dir.join(dll)))
+    added.extend(["ReShade.ini", "ReShadePreset.ini", "ReShade.log"]);
+    std::fs::write(dir.join(MARKER), added.join("\r\n") + "\r\n")?;
+    let how = match hook {
+        Hook::Proxy(dll) => dll.to_string(),
+        Hook::Vulkan => "Vulkan layer".into(),
+    };
+    log::info!("ReShade: installed into {} as {how} ({}-bit)", dir.display(), if is64 { 64 } else { 32 });
+    Ok(Outcome::Installed(dir.join("ReShade.ini")))
 }
 
 /// Folder where Gamut installed ReShade for this game, if it did.
@@ -274,5 +295,82 @@ mod tests {
         assert!(dest.join(r"Textures\t.png").is_file());
         assert!(!dest.join("README.md").exists());
         let _ = std::fs::remove_dir_all(&dest);
+    }
+}
+
+/// ReShade's Vulkan layer. The DLL only activates in games with a ReShade.ini next to their exe,
+/// so registering it once is safe; per-game setup is just that ini.
+pub mod vulkan {
+    use anyhow::{Context, Result};
+    use std::path::{Path, PathBuf};
+
+    const KEY: &str = r"SOFTWARE\Khronos\Vulkan\ImplicitLayers";
+    const NAME: &str = "VK_LAYER_reshade_gamut";
+
+    /// Manifest path of a ReShade layer already registered for this user or machine.
+    pub fn registered() -> Option<PathBuf> {
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+            let Ok(k) = winreg::RegKey::predef(hive).open_subkey(KEY) else { continue };
+            for (name, _) in k.enum_values().flatten() {
+                let p = PathBuf::from(&name);
+                let file = p.file_name().map(|f| f.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if file.starts_with("reshade64") && file.ends_with(".json") && p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    fn manifest(bits: u32) -> String {
+        format!(
+            r#"{{
+	"file_format_version": "1.0.0",
+	"layer": {{
+		"name": "{NAME}",
+		"type": "GLOBAL",
+		"library_path": ".\\ReShade{bits}.dll",
+		"api_version": "1.3.268",
+		"implementation_version": "1",
+		"description": "ReShade post-processing injector ({bits}-bit, set up by Gamut)",
+		"device_extensions": [
+			{{ "name": "VK_EXT_tooling_info", "spec_version": "1", "entrypoints": [ "vkGetPhysicalDeviceToolPropertiesEXT" ] }}
+		],
+		"disable_environment": {{ "DISABLE_VK_LAYER_reshade_gamut_1": "1" }}
+	}}
+}}
+"#
+        )
+    }
+
+    /// Uses an existing ReShade layer (e.g. from ReShade's installer), else registers Gamut's own
+    /// copy for the current user (HKCU, no admin needed).
+    pub fn ensure_layer(cache: &Path) -> Result<()> {
+        if let Some(p) = registered() {
+            log::info!("ReShade: using the Vulkan layer at {}", p.display());
+            return Ok(());
+        }
+        let dir = cache.join("vulkan");
+        std::fs::create_dir_all(&dir)?;
+        let (k, _) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).create_subkey(KEY).context("opening the Vulkan layer key")?;
+        for bits in [64, 32] {
+            let dll = format!("ReShade{bits}.dll");
+            std::fs::copy(cache.join(&dll), dir.join(&dll))?;
+            let json = dir.join(format!("ReShade{bits}.json"));
+            std::fs::write(&json, manifest(bits))?;
+            k.set_value(json.to_string_lossy().as_ref(), &0u32)?;
+        }
+        log::info!("ReShade: registered Gamut's Vulkan layer for this user ({})", dir.display());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod vulkan_tests {
+    #[test]
+    fn finds_registered_layer() {
+        // Read-only: reports an existing ReShade Vulkan layer, if any.
+        println!("ReShade Vulkan layer: {:?}", super::vulkan::registered());
     }
 }

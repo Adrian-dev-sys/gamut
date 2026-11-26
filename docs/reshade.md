@@ -14,7 +14,7 @@ The code is `core/src/reshade.rs`. It runs from `with_reshade` in `app/src/worke
   - d3d10, d3d11, d3d12 or dxgi → `dxgi.dll`;
   - d3d9 → `d3d9.dll`;
   - opengl32 → `opengl32.dll`;
-  - Vulkan only → skipped;
+  - Vulkan only → no DLL is copied. The game uses ReShade's Vulkan layer, which only activates for exes that have a `ReShade.ini` next to them. Gamut uses an existing ReShade64 layer if one is registered under HKLM or HKCU; otherwise it copies the DLLs and manifests to `<data>\reshade\vulkan\` and registers `VK_LAYER_reshade_gamut` under HKCU, which needs no admin;
   - unknown → `dxgi.dll`.
 
   The 64- or 32-bit build is chosen from the exe's PE header.
