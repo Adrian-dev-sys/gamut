@@ -111,8 +111,12 @@ enum Bulk {
     Refresh,
 }
 
+/// Filters reachable from big screen tabs and LB/RB, with their labels.
+const BIG_TABS: [(Filter, &str); 5] =
+    [(Filter::All, "All games"), (Filter::Installed, "Installed"), (Filter::Favorites, "Favorites"), (Filter::Steam, "Steam"), (Filter::Custom, "Custom")];
+
 /// A grid cursor move (keyboard or controller).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Nav {
     Left,
     Right,
@@ -160,6 +164,9 @@ pub struct GamutApp {
     grid_scroll: (f32, f32),
     scroll_to: Option<f32>,
     confirm_refresh: Option<Vec<i64>>,
+    pad: Receiver<crate::gamepad::Pad>,
+    /// Big screen mode: the zoom factor to restore when leaving it.
+    big: Option<f32>,
     thumbs: ThumbCache,
     /// Covers for the Achievements tab rows, decoded at their exact size.
     small_thumbs: ThumbCache,
@@ -249,6 +256,8 @@ impl GamutApp {
             grid_scroll: (0.0, 0.0),
             scroll_to: None,
             confirm_refresh: None,
+            pad: crate::gamepad::start(cc.egui_ctx.clone()),
+            big: None,
             workers,
             hero: None,
             hero_tx,
@@ -517,6 +526,10 @@ impl GamutApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Big screen").on_hover_text("Full screen, controller-friendly (F11, or View on a controller)").clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.toggle_big(&ctx);
+                }
                 if ui.button("Settings").clicked() {
                     self.settings = Some(self.cfg.read().unwrap().clone());
                 }
@@ -530,6 +543,107 @@ impl GamutApp {
                 }
             });
         });
+    }
+
+    /// Enters or leaves big screen: full screen, larger UI, the library with a visible cursor.
+    fn toggle_big(&mut self, ctx: &egui::Context) {
+        match self.big.take() {
+            Some(zoom) => {
+                ctx.set_zoom_factor(zoom);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
+            None => {
+                self.big = Some(ctx.zoom_factor());
+                ctx.set_zoom_factor(ctx.zoom_factor() * 1.35);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                (self.ach_tab, self.stats_tab) = (None, None);
+                if self.filter == Filter::Hidden {
+                    self.filter = Filter::All;
+                }
+                self.kb_focus = true;
+            }
+        }
+    }
+
+    /// Big screen top bar: filter tabs and the way out.
+    fn big_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            theme::logo(ui);
+            ui.add_space(24.0);
+            for (f, label) in BIG_TABS {
+                if ui.selectable_label(self.filter == f, RichText::new(label).size(17.0)).clicked() {
+                    self.filter = f;
+                }
+                ui.add_space(4.0);
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button(RichText::new("Exit big screen").size(15.0)).clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.toggle_big(&ctx);
+                }
+                ui.label(RichText::new(format!("{} games", self.view.len())).color(TEXT_DIM).size(15.0));
+            });
+        });
+    }
+
+    /// Controller buttons; ignored while Gamut isn't the focused window (e.g. a game is being played).
+    fn handle_pad(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        use crate::gamepad::Pad;
+        let events: Vec<Pad> = self.pad.try_iter().collect();
+        if events.is_empty() || !ctx.input(|i| i.focused) {
+            return;
+        }
+        let dialog = self.editor.is_some()
+            || self.settings.is_some()
+            || self.confirm_remove.is_some()
+            || self.confirm_refresh.is_some()
+            || self.confirm_stop.is_some()
+            || self.playnite.is_some()
+            || self.picker.is_some()
+            || self.ra_pick.is_some();
+        for p in events {
+            let grid = self.ach_tab.is_none() && self.stats_tab.is_none();
+            match p {
+                Pad::BigScreen => self.toggle_big(ctx),
+                _ if dialog => {}
+                Pad::Nav(n) if self.selected.is_none() && grid => self.nav(n, false),
+                Pad::Nav(_) => {}
+                Pad::Confirm | Pad::Start => match self.selected {
+                    Some(id) => actions.push(Action::Play(id)),
+                    None if grid => match self.cursor.filter(|_| self.kb_focus) {
+                        Some(id) => {
+                            self.selected = Some(id);
+                            self.opened_at = ctx.input(|i| i.time);
+                        }
+                        None => self.nav(Nav::Home, false),
+                    },
+                    None => {}
+                },
+                Pad::Back => {
+                    if self.selected.is_some() {
+                        self.selected = None;
+                    } else if !self.multi.is_empty() {
+                        self.multi.clear();
+                    } else if !grid {
+                        (self.ach_tab, self.stats_tab) = (None, None);
+                    }
+                }
+                Pad::Favorite => {
+                    if let Some(id) = self.selected.or(self.cursor.filter(|_| self.kb_focus)) {
+                        actions.push(Action::ToggleFav(id));
+                    }
+                }
+                Pad::PrevTab | Pad::NextTab if self.selected.is_none() && grid => {
+                    let i = BIG_TABS.iter().position(|(f, _)| *f == self.filter).unwrap_or(0) as isize;
+                    let d = if matches!(p, Pad::NextTab) { 1 } else { -1 };
+                    self.filter = BIG_TABS[(i + d).rem_euclid(BIG_TABS.len() as isize) as usize].0;
+                    self.cursor = None;
+                    self.scroll_to = Some(0.0);
+                }
+                Pad::PrevTab | Pad::NextTab => {}
+            }
+            self.kb_focus = true;
+        }
     }
 
     /// Search, filters, sort and cover size for the library grid.
@@ -1747,7 +1861,8 @@ impl GamutApp {
             let v = i.viewport();
             (v.inner_rect, v.outer_rect, v.maximized.unwrap_or(false), v.minimized.unwrap_or(false))
         });
-        if minimized {
+        // Big screen's full screen and zoom aren't the normal placement.
+        if minimized || self.big.is_some() {
             return;
         }
         if !maximized {
@@ -1808,6 +1923,24 @@ fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
         ui.separator();
         item(ui, "Remove…", Action::Remove(id));
     }
+}
+
+/// Big screen footer: what the controller buttons do.
+fn big_hints(ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        for (k, v) in [("A", "Open / Play"), ("B", "Back"), ("X", "Favorite"), ("LB/RB", "Filter"), ("LT/RT", "Page"), ("View", "Exit big screen")] {
+            egui::Frame::new()
+                .fill(CARD_HI)
+                .corner_radius(CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(7, 2))
+                .show(ui, |ui| ui.label(RichText::new(k).strong().size(14.0)));
+            ui.label(RichText::new(v).color(TEXT_DIM).size(14.0));
+            ui.add_space(14.0);
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new("Keyboard: arrows, Enter, Esc, F11").color(TEXT_DIM).size(13.0));
+        });
+    });
 }
 
 /// Right-click menu on a multi-selection.
@@ -2166,6 +2299,13 @@ impl eframe::App for GamutApp {
             || self.playnite.is_some()
             || self.picker.is_some()
             || self.ra_pick.is_some();
+        if ctx.input(|i| i.key_pressed(Key::F11)) {
+            self.toggle_big(&ctx);
+        }
+        self.handle_pad(&ctx, &mut actions);
+        if self.big.is_some() && grid_shown && self.cursor.is_none() && !self.view.is_empty() {
+            self.nav(Nav::Home, false);
+        }
         if !typing && grid_shown && !blocked {
             self.grid_keys(&ctx);
         } else if !typing && self.editor.is_none() {
@@ -2181,12 +2321,12 @@ impl eframe::App for GamutApp {
 
         let top = egui::Panel::top("top")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 10)))
-            .show(ui, |ui| self.top_bar(ui));
+            .show(ui, |ui| if self.big.is_some() { self.big_bar(ui) } else { self.top_bar(ui) });
         let line = Rect::from_min_size(top.response.rect.left_bottom() - vec2(0.0, 1.0), vec2(top.response.rect.width(), 1.5));
         theme::hgradient(ui.painter(), line, ACCENT.gamma_multiply(0.7), theme::ACCENT_2.gamma_multiply(0.15));
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 5)))
-            .show(ui, |ui| self.status_bar(ui));
+            .show(ui, |ui| if self.big.is_some() { big_hints(ui) } else { self.status_bar(ui) });
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
             .show(ui, |ui| {

@@ -4,6 +4,7 @@ mod ach_tab;
 mod achievements;
 mod avif;
 mod editor;
+mod gamepad;
 mod keycheck;
 mod sessions_view;
 mod logging;

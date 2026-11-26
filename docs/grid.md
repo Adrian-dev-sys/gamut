@@ -11,3 +11,12 @@
   (filter, hide) drop out of it.
 - Bulk actions (bar above the grid, or right-click a selected card): favorite, hide (and undo), refresh
   metadata. Refresh asks first since `requeue(force)` replaces description/developer/publisher/date/genres.
+
+## Controller and big screen
+- `app/src/gamepad.rs`: a gilrs thread (XInput, DualShock/DualSense, …) sends `Pad` actions; D-pad/left
+  stick repeat after 380 ms, every 95 ms. `GamutApp::handle_pad` ignores them while Gamut's window isn't
+  focused (a game is in front) and while dialogs are open. A = open/Play, B = back/clear, X = favorite,
+  LB/RB = filter tabs, LT/RT = page, View/Guide = big screen, Start = like A.
+- Big screen (`toggle_big`, F11, top-bar button, View): full screen, zoom ×1.35, filter tabs instead of the
+  normal bar, a button-hint footer, cursor always placed. Leaving restores zoom and windowed mode;
+  `track_window` pauses meanwhile so the saved placement isn't overwritten.

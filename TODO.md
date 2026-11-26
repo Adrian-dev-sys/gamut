@@ -38,6 +38,6 @@
 - [ ] **HowLongToBeat** – main/extra/completionist times in the details view
 
 ## Extras
-- [ ] Fullscreen / controller mode (gamepad navigation, big-picture style)
+- [x] Fullscreen / controller mode (gamepad navigation, big-picture style)
 - [ ] Tray icon (minimize to tray, quick-launch recent games)
 - [ ] App icon and installer/portable zip release (GitHub Actions)
