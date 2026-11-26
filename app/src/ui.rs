@@ -1799,17 +1799,22 @@ fn description(ui: &mut Ui, d: &str) {
                 continue;
             }
             let w = ui.available_width().min(900.0);
-            let img = egui::Image::new(url.to_string()).corner_radius(6).show_loading_spinner(true);
+            let img = egui::Image::new(url.to_string()).corner_radius(6);
             // Exact size from the image itself: in a scroll area egui would otherwise fit it to the
             // visible space left, which is zero below the fold. Broken/unsupported images are skipped.
-            let size = match img.load_for_size(ui.ctx(), egui::vec2(w, w)) {
-                Ok(egui::load::TexturePoll::Ready { texture }) => Some(texture.size * (w / texture.size.x).min(1.0)),
-                Ok(egui::load::TexturePoll::Pending { .. }) => Some(egui::vec2(w.min(640.0), w.min(640.0) * 9.0 / 16.0)),
-                Err(_) => None,
+            let (size, ready) = match img.load_for_size(ui.ctx(), egui::vec2(w, w)) {
+                Ok(egui::load::TexturePoll::Ready { texture }) => (Some(texture.size * (w / texture.size.x).min(1.0)), true),
+                Ok(egui::load::TexturePoll::Pending { .. }) => (Some(egui::vec2(w.min(640.0), w.min(640.0) * 9.0 / 16.0)), false),
+                Err(_) => (None, false),
             };
             if let Some(size) = size {
                 ui.add_space(if first { 4.0 } else { 16.0 });
-                if crate::video::is_clip_poster(url) {
+                if !ready {
+                    // Faint placeholder with a small spinner (egui's own spinner fills the whole image).
+                    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                    ui.painter().rect_filled(rect, 6.0, CARD);
+                    ui.put(Rect::from_center_size(rect.center(), vec2(22.0, 22.0)), egui::Spinner::new().size(22.0));
+                } else if crate::video::is_clip_poster(url) {
                     crate::video::show(ui, url, img, size);
                 } else {
                     ui.add(img.fit_to_exact_size(size));
