@@ -14,6 +14,8 @@ const COLS: &str = "id, source, source_id, name, installed, install_dir, exe, ar
     has_cover, has_hero, cover_state, meta_state, favorite, hidden, added, \
     playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk, reshade, auto_hdr, ra_id";
 
+const ACH_COLS: &str = "key, name, description, icon, icon_locked, hidden, unlocked, percent, points";
+
 /// Columns added after the first release: (name, SQL type).
 const ADDED_COLS: [(&str, &str); 13] = [
     ("playnite_id", "TEXT"),
@@ -389,23 +391,42 @@ impl Library {
 
     /// Cached achievements for a game, in the source's order.
     pub fn achievements(&self, id: i64) -> Result<Vec<Achievement>> {
-        let mut st = self.conn.prepare_cached(
-            "SELECT key, name, description, icon, icon_locked, hidden, unlocked, percent, points
-             FROM achievements WHERE game_id = ?1 ORDER BY ord",
+        let mut st = self.conn.prepare_cached(&format!("SELECT {ACH_COLS} FROM achievements WHERE game_id = ?1 ORDER BY ord"))?;
+        let rows = st.query_map([id], Self::ach_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn ach_row(r: &Row) -> rusqlite::Result<Achievement> {
+        Ok(Achievement {
+            key: r.get(0)?,
+            name: r.get(1)?,
+            description: r.get(2)?,
+            icon: r.get(3)?,
+            icon_locked: r.get(4)?,
+            hidden: r.get(5)?,
+            unlocked: r.get(6)?,
+            percent: r.get(7)?,
+            points: r.get(8)?,
+        })
+    }
+
+    /// Unlocked achievements of all games as (game id, achievement): newest first, or rarest first.
+    pub fn unlocked_achievements(&self, rarest: bool, limit: usize) -> Result<Vec<(i64, Achievement)>> {
+        let order = if rarest { "percent IS NULL, percent ASC, unlocked DESC" } else { "unlocked DESC" };
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {ACH_COLS}, game_id FROM achievements WHERE unlocked > 0 ORDER BY {order} LIMIT ?1"
+        ))?;
+        let rows = st.query_map([limit as i64], |r| Ok((r.get(9)?, Self::ach_row(r)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Games that have achievements: (game id, total, unlocked, newest unlock time, points earned).
+    pub fn achievement_progress(&self) -> Result<Vec<(i64, i64, i64, i64, i64)>> {
+        let mut st = self.conn.prepare(
+            "SELECT game_id, COUNT(*), SUM(unlocked > 0), MAX(unlocked), SUM(CASE WHEN unlocked > 0 THEN points ELSE 0 END)
+             FROM achievements GROUP BY game_id",
         )?;
-        let rows = st.query_map([id], |r| {
-            Ok(Achievement {
-                key: r.get(0)?,
-                name: r.get(1)?,
-                description: r.get(2)?,
-                icon: r.get(3)?,
-                icon_locked: r.get(4)?,
-                hidden: r.get(5)?,
-                unlocked: r.get(6)?,
-                percent: r.get(7)?,
-                points: r.get(8)?,
-            })
-        })?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -843,6 +864,9 @@ world"));
         assert_eq!(lib.achievement_state(id).unwrap().unwrap().unlocked, 2);
         assert!(!lib.save_achievements(id, &Fetched::List { items: vec![a("z", 1)], full: false }).unwrap());
         assert_eq!(lib.achievements(id).unwrap()[0].unlocked, 70, "rejected refresh rolled back");
+        assert_eq!(lib.achievement_progress().unwrap(), vec![(id, 2, 2, 70, 0)]);
+        let recent = lib.unlocked_achievements(false, 5).unwrap();
+        assert_eq!(recent.iter().map(|(g, a)| (*g, a.key.as_str())).collect::<Vec<_>>(), vec![(id, "x"), (id, "y")]);
 
         lib.save_achievement_error(id, "private").unwrap();
         assert_eq!(lib.achievements(id).unwrap().len(), 2);

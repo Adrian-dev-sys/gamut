@@ -30,3 +30,8 @@ Per-game achievements on the details page, cached in the library DB. Steam games
 - Only `Source::Steam` games get Steam achievements; a custom entry matched to a Steam appid (e.g. a console copy) doesn't.
 
 CLI: `gamut-cli --data <dir> achievements APPID` prints what Steam returns, without saving.
+
+## Achievements tab (`app/src/ach_tab.rs`)
+- Switch next to the logo (Library / Achievements). Reads only the cache: `achievement_progress` (per-game totals) and `unlocked_achievements` (recent / rarest).
+- Totals (unlocked, perfect games, average completion over started games, RA points), recent and rarest unlocks, "Almost there" (60%+), and every game with a sort. Hidden games are left out; clicking opens the game.
+- Worker updates mark it dirty; it rereads at most every 3 s.

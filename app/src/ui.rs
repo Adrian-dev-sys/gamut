@@ -154,6 +154,8 @@ pub struct GamutApp {
     /// Achievements of the game on the details page.
     ach: Option<crate::achievements::GameAch>,
     ra_pick: Option<crate::achievements::RetroPick>,
+    /// The Achievements tab, while it's the one shown.
+    ach_tab: Option<crate::ach_tab::Overview>,
 }
 
 impl GamutApp {
@@ -214,6 +216,7 @@ impl GamutApp {
             saved_view: (sort, filter, platform, tag, completion),
             ach: None,
             ra_pick: None,
+            ach_tab: None,
         })
     }
 
@@ -269,6 +272,9 @@ impl GamutApp {
                 Event::Error(e) => self.toasts.error(e),
                 Event::Info(m) => self.toasts.info(m),
                 Event::Achievements(id) => {
+                    if let Some(ov) = self.ach_tab.as_mut() {
+                        ov.dirty = true;
+                    }
                     if let Some(a) = self.ach.as_mut().filter(|a| a.id == id) {
                         let show_all = a.show_all;
                         *a = crate::achievements::GameAch::load(&self.lib, id);
@@ -400,63 +406,17 @@ impl GamutApp {
         ui.horizontal(|ui| {
             theme::logo(ui);
             ui.add_space(14.0);
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Search  (Ctrl+F)")
-                    .desired_width(260.0),
-            );
-            if std::mem::take(&mut self.focus_search) {
-                search.request_focus();
+            let lib_tab = ui.selectable_label(self.ach_tab.is_none(), RichText::new("Library").size(15.0));
+            let ach_tab = ui.selectable_label(self.ach_tab.is_some(), RichText::new("Achievements").size(15.0));
+            if lib_tab.clicked() {
+                self.ach_tab = None;
             }
-            egui::ComboBox::from_id_salt("filter")
-                .selected_text(match self.filter {
-                    Filter::All => "All games",
-                    Filter::Installed => "Installed",
-                    Filter::Favorites => "Favorites",
-                    Filter::Steam => "Steam",
-                    Filter::Custom => "Custom",
-                    Filter::Hidden => "Hidden",
-                })
-                .show_ui(ui, |ui| {
-                    for (f, l) in [
-                        (Filter::All, "All games"),
-                        (Filter::Installed, "Installed"),
-                        (Filter::Favorites, "Favorites"),
-                        (Filter::Steam, "Steam"),
-                        (Filter::Custom, "Custom"),
-                        (Filter::Hidden, "Hidden"),
-                    ] {
-                        ui.selectable_value(&mut self.filter, f, l);
-                    }
-                })
-                .response
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if let Some(p) = facet_picker(ui, "platform", "All platforms", &self.platform, &mut self.platform_query, &self.platforms) {
-                self.platform = p;
+            if ach_tab.clicked() && self.ach_tab.is_none() {
+                self.ach_tab = Some(crate::ach_tab::Overview::load(&self.lib, ui.input(|i| i.time)));
             }
-            if let Some(t) = facet_picker(ui, "tag", "All tags", &self.tag, &mut self.tag_query, &self.tags) {
-                self.tag = t;
-            }
-            if let Some(c) = facet_picker(ui, "completion", "Any status", &self.completion, &mut self.completion_query, &self.completions) {
-                self.completion = c;
-            }
-            egui::ComboBox::from_id_salt("sort")
-                .selected_text(SORT_LABELS.iter().find(|(x, _)| *x == self.sort).map_or("", |(_, l)| *l))
-                .height(400.0)
-                .show_ui(ui, |ui| {
-                    for (x, l) in SORT_LABELS {
-                        ui.selectable_value(&mut self.sort, x, l);
-                    }
-                })
-                .response
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            let mut w = self.cfg.read().unwrap().card_width;
-            if ui
-                .add(egui::Slider::new(&mut w, 110.0..=280.0).show_value(false))
-                .on_hover_text("Cover size")
-                .changed()
-            {
-                self.cfg.write().unwrap().card_width = w;
+            ui.add_space(14.0);
+            if self.ach_tab.is_none() {
+                self.grid_controls(ui);
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -473,6 +433,68 @@ impl GamutApp {
                 }
             });
         });
+    }
+
+    /// Search, filters, sort and cover size for the library grid.
+    fn grid_controls(&mut self, ui: &mut Ui) {
+        let search = ui.add(
+            egui::TextEdit::singleline(&mut self.search)
+                .hint_text("Search  (Ctrl+F)")
+                .desired_width(260.0),
+        );
+        if std::mem::take(&mut self.focus_search) {
+            search.request_focus();
+        }
+        egui::ComboBox::from_id_salt("filter")
+            .selected_text(match self.filter {
+                Filter::All => "All games",
+                Filter::Installed => "Installed",
+                Filter::Favorites => "Favorites",
+                Filter::Steam => "Steam",
+                Filter::Custom => "Custom",
+                Filter::Hidden => "Hidden",
+            })
+            .show_ui(ui, |ui| {
+                for (f, l) in [
+                    (Filter::All, "All games"),
+                    (Filter::Installed, "Installed"),
+                    (Filter::Favorites, "Favorites"),
+                    (Filter::Steam, "Steam"),
+                    (Filter::Custom, "Custom"),
+                    (Filter::Hidden, "Hidden"),
+                ] {
+                    ui.selectable_value(&mut self.filter, f, l);
+                }
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if let Some(p) = facet_picker(ui, "platform", "All platforms", &self.platform, &mut self.platform_query, &self.platforms) {
+            self.platform = p;
+        }
+        if let Some(t) = facet_picker(ui, "tag", "All tags", &self.tag, &mut self.tag_query, &self.tags) {
+            self.tag = t;
+        }
+        if let Some(c) = facet_picker(ui, "completion", "Any status", &self.completion, &mut self.completion_query, &self.completions) {
+            self.completion = c;
+        }
+        egui::ComboBox::from_id_salt("sort")
+            .selected_text(SORT_LABELS.iter().find(|(x, _)| *x == self.sort).map_or("", |(_, l)| *l))
+            .height(400.0)
+            .show_ui(ui, |ui| {
+                for (x, l) in SORT_LABELS {
+                    ui.selectable_value(&mut self.sort, x, l);
+                }
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let mut w = self.cfg.read().unwrap().card_width;
+        if ui
+            .add(egui::Slider::new(&mut w, 110.0..=280.0).show_value(false))
+            .on_hover_text("Cover size")
+            .changed()
+        {
+            self.cfg.write().unwrap().card_width = w;
+        }
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -496,6 +518,10 @@ impl GamutApp {
             if c + m > 0 {
                 ui.spinner();
                 ui.label(RichText::new(format!("Fetching: {c} covers, {m} metadata")).color(TEXT_DIM));
+            }
+            if !self.workers.ach_busy.lock().unwrap().is_empty() {
+                ui.spinner();
+                ui.label(RichText::new("Checking achievements…").color(TEXT_DIM));
             }
             let cfg = self.cfg.read().unwrap();
             if cfg.steam_api_key.trim().is_empty() {
@@ -1695,6 +1721,15 @@ impl eframe::App for GamutApp {
         let ctx = ui.ctx().clone();
         self.handle_events();
         self.update_view();
+        if let Some(ov) = self.ach_tab.as_mut().filter(|o| o.dirty) {
+            // The sweep sends many updates; reread at most every few seconds.
+            let now = ctx.input(|i| i.time);
+            if now - ov.loaded > 3.0 {
+                ov.refresh(&self.lib, now);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs(3));
+            }
+        }
         self.thumbs.begin_frame(&ctx);
 
         let typing = ctx.memory(|m| m.focused().is_some());
@@ -1725,7 +1760,16 @@ impl eframe::App for GamutApp {
             .show(ui, |ui| self.status_bar(ui));
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
-            .show(ui, |ui| self.grid(ui, &mut actions));
+            .show(ui, |ui| match self.ach_tab.as_mut() {
+                Some(ov) => {
+                    let busy = !self.workers.ach_busy.lock().unwrap().is_empty();
+                    if let Some(id) = crate::ach_tab::show(ui, ov, &self.games, &mut self.thumbs, busy) {
+                        self.selected = Some(id);
+                        self.opened_at = ui.input(|i| i.time);
+                    }
+                }
+                None => self.grid(ui, &mut actions),
+            });
 
         if let Some(s) = self.startup.as_mut() {
             if s.tick(&ctx) {
