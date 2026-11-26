@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|gog NAME|steam NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -79,9 +79,31 @@ fn main() -> anyhow::Result<()> {
                 println!("\n{:#?}\ntags: {}", d.meta, d.tags.join(", "));
             }
         }
+        // gog NAME / steam NAME: store search results, then the first one's details.
+        Some("gog") if args.len() >= 2 => {
+            use gamut_core::gog;
+            let list = gog::search(&args[1])?;
+            for g in &list {
+                println!("{:>11}  {}  ({})  {}", g.id, g.title, g.year.unwrap_or(0), g.kind);
+            }
+            if let Some(g) = list.first() {
+                let d = gog::description(&g.id)?.unwrap_or_default();
+                println!("\n{:#?}\ntags: {}\ndescription: {}…", g.meta, g.tags.join(", "), d.chars().take(300).collect::<String>());
+            }
+        }
+        Some("steam") if args.len() >= 2 => {
+            use gamut_core::scrape;
+            let list = scrape::steam_find(&args[1])?;
+            for (id, n) in &list {
+                println!("{id:>8}  {n}");
+            }
+            if let Some(d) = list.first().map(|(id, _)| scrape::steam_details(*id)).transpose()?.flatten() {
+                println!("\n{:#?}", gamut_core::model::Metadata { description: d.meta.description.map(|s| s.chars().take(300).collect()), ..d.meta });
+            }
+        }
         _ => {}
     }
-    if matches!(args.first().map(String::as_str), Some("status" | "igdb" | "vndb")) {
+    if matches!(args.first().map(String::as_str), Some("status" | "igdb" | "vndb" | "gog" | "steam")) {
         return Ok(());
     }
     // Writing commands must not run alongside the app.
@@ -189,7 +211,7 @@ fn main() -> anyhow::Result<()> {
             let id = lib.add_custom(&Game::new_custom(args[1].clone(), Some(args[2].clone())))?;
             println!("added #{id}");
         }
-        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
+        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|gog NAME|steam NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
     }
     Ok(())
 }

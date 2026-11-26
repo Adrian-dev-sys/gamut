@@ -37,5 +37,10 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
 - Editor → "Fill from VNDB…" (no key needed, `vndb::details`): description (BBCode stripped, spoilers
   dropped), developers, most frequent official publisher, full release date, genre "Visual Novel", VNDB
   rating as community score, and up to 10 non-spoiler content tags added to the game's tags. Not stored as a match.
-- `gamut-cli vndb NAME` prints VNDB results and the first one's details.
+- Editor → "Fill from Steam…" (any game, owned or not): store search (`scrape::steam_find`), then the store
+  page's description, developer, publisher, date, genres and Metacritic score (also used by the Steam fetch now).
+- Editor → "Fill from GOG…" (`gog.rs`, public catalog, no account): developer, publisher, date, genres,
+  rating (stars ×20) and up to 10 store tags from the catalog, description from `api.gog.com/products/{id}`.
+  "Edition/bundle" marks packs. Steam/GOG/VNDB picks fetch details after the click; none is stored as a match.
+- `gamut-cli vndb|gog|steam NAME` prints results and the first one's details.
 - `gamut-cli igdb NAME [PLATFORM]` prints search results and marks the automatic pick; `gamut-cli status` checks keys.

@@ -28,6 +28,11 @@ struct AppData {
     genres: Vec<Named>,
     release_date: Option<Release>,
     fullgame: Option<FullGame>,
+    metacritic: Option<Metacritic>,
+}
+#[derive(Deserialize)]
+struct Metacritic {
+    score: i64,
 }
 #[derive(Deserialize)]
 struct FullGame {
@@ -73,6 +78,7 @@ pub fn steam_details(appid: u32) -> Result<Option<SteamDetails>> {
             publisher: join(&d.publishers),
             release_date: d.release_date.map(|r| r.date).filter(|s| !s.is_empty()),
             genres: join(&d.genres.into_iter().map(|g| g.description).collect::<Vec<_>>()),
+            critic_score: d.metacritic.map(|m| m.score).filter(|s| (1..=100).contains(s)),
             ..Default::default()
         },
     }))
@@ -91,13 +97,15 @@ struct SearchItem {
 
 /// Finds a Steam appid whose name matches `name` (normalized).
 pub fn steam_search(name: &str) -> Result<Option<u32>> {
-    let url = format!(
-        "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
-        encode(name)
-    );
-    let r: SearchResp = get_json(&url)?;
     let want = normalize(name);
-    Ok(r.items.into_iter().find(|i| normalize(&i.name) == want).map(|i| i.id))
+    Ok(steam_find(name)?.into_iter().find(|(_, n)| normalize(n) == want).map(|(id, _)| id))
+}
+
+/// Store search results (appid, name), Steam's order.
+pub fn steam_find(name: &str) -> Result<Vec<(u32, String)>> {
+    let url = format!("https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US", encode(name));
+    let r: SearchResp = get_json(&url)?;
+    Ok(r.items.into_iter().map(|i| (i.id, i.name)).collect())
 }
 
 const CDN: &str = "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps";

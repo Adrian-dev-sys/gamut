@@ -26,4 +26,4 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 - `docs/descriptions.md` – description images (AVIF via WIC, alpha) and Steam clips (Media Foundation playback).
 - `docs/achievements.md` – achievement cache, Steam + RetroAchievements fetching and title matching, refresh rules, Achievements tab.
 - `docs/statistics.md` – Statistics tab, play session logging (Gamut-timed + Steam scan deltas), Steam as playtime master.
-- `docs/igdb.md` – IGDB metadata/art for non-Steam games: Twitch credentials, strict matching, pipeline, manual fill (IGDB + VNDB).
+- `docs/igdb.md` – IGDB metadata/art for non-Steam games: Twitch credentials, strict matching, pipeline, manual fill (Steam, GOG, IGDB, VNDB).

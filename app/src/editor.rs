@@ -5,8 +5,9 @@ use crate::util::{self, opt};
 use egui::{vec2, Color32, CornerRadius, RichText, Stroke, Ui};
 use crossbeam_channel::{unbounded, Receiver};
 use gamut_core::igdb::{self, IgdbGame};
+use gamut_core::gog::{self, GogGame};
 use gamut_core::vndb::{self, Vn, VnDetails};
-use gamut_core::{Config, Game, Source};
+use gamut_core::{scrape, Config, Game, Source};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
@@ -55,6 +56,8 @@ pub struct Editor {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Src {
+    Steam,
+    Gog,
     Igdb,
     Vndb,
 }
@@ -62,6 +65,8 @@ enum Src {
 impl Src {
     fn name(self) -> &'static str {
         match self {
+            Src::Steam => "Steam",
+            Src::Gog => "GOG",
             Src::Igdb => "IGDB",
             Src::Vndb => "VNDB",
         }
@@ -70,17 +75,19 @@ impl Src {
 
 #[derive(Clone)]
 enum Hit {
+    Steam(u32, String),
+    Gog(GogGame),
     Igdb(IgdbGame),
     Vndb(Vn),
 }
 
 enum Msg {
     Results(Result<Vec<Hit>, String>),
-    /// A picked VNDB entry's details (fetched after the pick).
+    /// A picked Steam/GOG/VNDB entry's details (fetched after the pick).
     Details(Result<VnDetails, String>),
 }
 
-/// The "Fill from IGDB/VNDB" panel: a name search and its results.
+/// The "Fill from …" panel: a name search and its results.
 struct Lookup {
     src: Src,
     query: String,
@@ -109,6 +116,23 @@ pub enum EditorOutcome {
 
 fn list(v: &Option<String>) -> Vec<String> {
     v.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+}
+
+/// Full details of a picked entry (IGDB hits already carry theirs).
+fn fetch_details(h: Hit) -> anyhow::Result<VnDetails> {
+    match h {
+        Hit::Vndb(v) => vndb::details(&v.id),
+        Hit::Steam(id, title) => {
+            let d = scrape::steam_details(id)?.ok_or_else(|| anyhow::anyhow!("Steam has no store page for {title}"))?;
+            Ok(VnDetails { title, meta: d.meta, tags: Vec::new() })
+        }
+        Hit::Gog(g) => {
+            let mut meta = g.meta;
+            meta.description = gog::description(&g.id)?;
+            Ok(VnDetails { title: g.title, meta, tags: g.tags })
+        }
+        Hit::Igdb(g) => Ok(VnDetails { title: g.name, meta: g.meta, tags: Vec::new() }),
+    }
 }
 
 impl Editor {
@@ -269,7 +293,7 @@ impl Editor {
         });
     }
 
-    /// "Fill from IGDB/VNDB…": search by name, pick an entry, and its details replace the form's fields.
+    /// "Fill from Steam/GOG/IGDB/VNDB…": search by name, pick an entry, and its details replace the form's fields.
     fn lookup_panel(&mut self, ui: &mut Ui, cfg: Option<&Config>) {
         let mut details = None;
         if let Some(s) = self.lookup.as_mut() {
@@ -285,7 +309,8 @@ impl Editor {
             }
         }
         if let Some(d) = details {
-            self.fill_vndb(&d);
+            let src = self.lookup.as_ref().map_or("", |l| l.src.name());
+            self.fill_details(&d, src);
             self.lookup = None;
         }
         let mut search = false;
@@ -293,12 +318,16 @@ impl Editor {
         match self.lookup.as_mut() {
             None => {
                 ui.horizontal(|ui| {
+                    ui.label(RichText::new("Fill from").color(TEXT_DIM));
+                    let steam = ui.button("Steam…").on_hover_text("Fill in details from the Steam store page (works for games you don't own there)");
+                    let gog = ui.button("GOG…").on_hover_text("Fill in details from the GOG store page");
                     let igdb = ui
-                        .add_enabled(cfg.is_some(), egui::Button::new("Fill from IGDB…"))
+                        .add_enabled(cfg.is_some(), egui::Button::new("IGDB…"))
                         .on_hover_text("Look this game up on IGDB and fill in its details")
                         .on_disabled_hover_text("Add IGDB credentials in Settings to look games up there.");
-                    let vndb = ui.button("Fill from VNDB…").on_hover_text("Look this visual novel up on VNDB and fill in its details");
-                    for (clicked, src) in [(igdb.clicked(), Src::Igdb), (vndb.clicked(), Src::Vndb)] {
+                    let vndb = ui.button("VNDB…").on_hover_text("Look this visual novel up on VNDB and fill in its details");
+                    let srcs = [(steam, Src::Steam), (gog, Src::Gog), (igdb, Src::Igdb), (vndb, Src::Vndb)];
+                    for (clicked, src) in srcs.map(|(r, s)| (r.clicked(), s)) {
                         if clicked {
                             let query = igdb::search_name(&self.name);
                             self.lookup = Some(Lookup { src, query, results: Vec::new(), busy: false, error: None, rx: None });
@@ -335,6 +364,8 @@ impl Editor {
                     egui::ScrollArea::vertical().id_salt("ed_lookup").max_height(220.0).show(ui, |ui| {
                         for (i, h) in s.results.iter().enumerate() {
                             let (name, year, plat) = match h {
+                                Hit::Steam(_, n) => (n.as_str(), None, String::new()),
+                                Hit::Gog(g) => (g.title.as_str(), g.year, if g.kind == "pack" { "Edition/bundle".into() } else { String::new() }),
                                 Hit::Igdb(g) => (g.name.as_str(), g.year, g.platforms.join(", ")),
                                 Hit::Vndb(v) => (v.title.as_str(), v.year(), v.platforms.join(", ").to_uppercase()),
                             };
@@ -352,7 +383,7 @@ impl Editor {
                         self.fill_from(&g);
                         close = true;
                     }
-                    Some(Hit::Vndb(v)) => fetch = Some(v.id),
+                    Some(h) => fetch = Some(h),
                     None => {}
                 }
                 if close {
@@ -367,7 +398,11 @@ impl Editor {
             std::thread::spawn(move || {
                 let err = |e: anyhow::Error| format!("{e:#}");
                 let msg = match (fetch, src) {
-                    (Some(id), _) => Msg::Details(vndb::details(&id).map_err(err)),
+                    (Some(h), _) => Msg::Details(fetch_details(h).map_err(err)),
+                    (None, Src::Steam) => {
+                        Msg::Results(scrape::steam_find(&q).map_err(err).map(|v| v.into_iter().map(|(id, n)| Hit::Steam(id, n)).collect()))
+                    }
+                    (None, Src::Gog) => Msg::Results(gog::search(&q).map_err(err).map(|v| v.into_iter().map(Hit::Gog).collect())),
                     (None, Src::Vndb) => Msg::Results(vndb::search(&q).map_err(err).map(|v| v.into_iter().map(Hit::Vndb).collect())),
                     (None, Src::Igdb) => Msg::Results(match &cfg {
                         Some(c) => igdb::search(c, &q).map_err(err).map(|v| v.into_iter().map(Hit::Igdb).collect()),
@@ -391,8 +426,8 @@ impl Editor {
         self.filled = Some(format!("Filled from IGDB: {}. Review and Save.", g.name));
     }
 
-    /// Same for a VNDB entry; its content tags are added to the game's tags.
-    fn fill_vndb(&mut self, d: &VnDetails) {
+    /// Same for a fetched Steam/GOG/VNDB entry; its tags are added to the game's tags.
+    fn fill_details(&mut self, d: &VnDetails, src: &str) {
         if self.name.trim().is_empty() {
             self.name = d.title.clone();
         }
@@ -402,7 +437,7 @@ impl Editor {
                 self.tags.push(t.clone());
             }
         }
-        self.filled = Some(format!("Filled from VNDB: {}. Review and Save.", d.title));
+        self.filled = Some(format!("Filled from {src}: {}. Review and Save.", d.title));
     }
 
     fn fill_meta(&mut self, m: &gamut_core::model::Metadata) {
