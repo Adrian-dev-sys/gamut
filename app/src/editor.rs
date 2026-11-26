@@ -24,6 +24,11 @@ pub struct Editor {
     pub args: String,
     pub work_dir: String,
     specialk: Option<bool>,
+    reshade: Option<bool>,
+    auto_hdr: bool,
+    /// The game as opened (for ReShade's folder); and where Gamut installed ReShade, once looked up.
+    orig: Game,
+    rs_dir: Option<Option<std::path::PathBuf>>,
     pub description: String,
     developer: String,
     publisher: String,
@@ -77,6 +82,10 @@ impl Editor {
             args: s(&g.args),
             work_dir: s(&g.work_dir),
             specialk: g.specialk,
+            reshade: g.reshade,
+            auto_hdr: g.auto_hdr,
+            orig: g.clone(),
+            rs_dir: None,
             description: s(&g.description),
             developer: s(&g.developer),
             publisher: s(&g.publisher),
@@ -104,6 +113,8 @@ impl Editor {
         g.args = opt(&self.args);
         g.work_dir = opt(&self.work_dir);
         g.specialk = self.specialk;
+        g.reshade = self.reshade;
+        g.auto_hdr = self.auto_hdr;
         g.description = opt(&self.description);
         g.developer = opt(&self.developer);
         g.publisher = opt(&self.publisher);
@@ -223,6 +234,32 @@ impl Editor {
                             ui.selectable_value(&mut self.specialk, v, l);
                         }
                     });
+            });
+            row(ui, "ReShade", |ui| {
+                const OPTS: [(Option<bool>, &str); 3] =
+                    [(None, "Use the global setting"), (Some(true), "Install on first start"), (Some(false), "Never install")];
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("ed_rs")
+                        .width(220.0)
+                        .selected_text(OPTS.iter().find(|o| o.0 == self.reshade).map_or("", |o| o.1))
+                        .show_ui(ui, |ui| {
+                            for (v, l) in OPTS {
+                                ui.selectable_value(&mut self.reshade, v, l);
+                            }
+                        });
+                    let dir = self.rs_dir.get_or_insert_with(|| gamut_core::reshade::installed_dir(&self.orig)).clone();
+                    if let Some(d) = dir {
+                        if ui.button("Remove ReShade").on_hover_text(format!("Deletes the ReShade files Gamut added in {}", d.display())).clicked() {
+                            match gamut_core::reshade::uninstall(&self.orig) {
+                                Ok(_) => self.rs_dir = Some(None),
+                                Err(e) => log::warn!("removing ReShade failed: {e:#}"),
+                            }
+                        }
+                    }
+                });
+            });
+            row(ui, "HDR", |ui| {
+                ui.checkbox(&mut self.auto_hdr, "Turn Windows HDR on while this game runs");
             });
             if self.source == Source::Steam {
                 return;

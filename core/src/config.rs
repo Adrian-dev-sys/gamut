@@ -24,6 +24,7 @@ pub struct Config {
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,
+    pub reshade: crate::reshade::Settings,
 }
 
 /// Window placement in logical points; size/position are the un-maximized ones.

@@ -1,11 +1,14 @@
 pub mod config;
 pub mod db;
 pub mod http;
+pub mod hdr;
 pub mod images;
 pub mod launch;
 pub mod litedb;
 pub mod model;
 pub mod playnite;
+pub mod procs;
+pub mod reshade;
 pub mod scrape;
 pub mod specialk;
 pub mod steam;

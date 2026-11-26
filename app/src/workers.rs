@@ -233,25 +233,35 @@ impl Workers {
         });
     }
 
-    /// Starts a game; with Special K on, the service is started first on a worker thread.
+    /// Starts a game on a worker thread: HDR, ReShade and Special K first, then the game.
     pub fn play(&self, g: Game) -> anyhow::Result<()> {
-        let sk = self.cfg.read().unwrap().specialk.clone();
+        let (sk, rs) = {
+            let c = self.cfg.read().unwrap();
+            (c.specialk.clone(), c.reshade.clone())
+        };
         if g.installed {
             if let (gamut_core::Source::Steam, Some(app)) = (g.source, g.steam_appid()) {
                 self.steam_starting.lock().unwrap().insert(app, Instant::now());
             }
         }
         let t = Tracker { paths: self.paths.clone(), tx: self.tx.clone(), ctx: self.ctx.clone(), running: self.running.clone() };
-        if sk.mode == "off" {
-            t.track(g.id, launch::launch_with(&g, &specialk::game_env(&sk, &g))?, None);
-            return Ok(());
-        }
-        // Counts as running while Special K starts, so a second click doesn't launch twice.
+        let cache = self.reshade_cache();
+        // Counts as running while it starts, so a second click doesn't launch twice.
         t.running.lock().unwrap().insert(g.id);
         std::thread::spawn(move || {
-            let guard = with_specialk(&g, &sk, &t.tx);
+            let hdr = if g.auto_hdr && g.installed {
+                gamut_core::hdr::Guard::acquire()
+                    .map_err(|e| {
+                        let _ = t.tx.send(Event::Error(format!("Couldn't turn HDR on: {e:#}")));
+                    })
+                    .ok()
+            } else {
+                None
+            };
+            with_reshade(&g, &rs, &cache, &t.tx);
+            let guard = if sk.mode == "off" && g.specialk != Some(true) { None } else { with_specialk(&g, &sk, &t.tx) };
             match launch::launch_with(&g, &specialk::game_env(&sk, &g)) {
-                Ok(l) => t.track(g.id, l, guard),
+                Ok(l) => t.track(&g, l, guard, hdr),
                 Err(e) => {
                     t.running.lock().unwrap().remove(&g.id);
                     let _ = t.tx.send(Event::Error(format!("Couldn't start {}: {e:#}", g.name)));
@@ -260,6 +270,28 @@ impl Workers {
             t.ctx.request_repaint();
         });
         Ok(())
+    }
+
+    /// Where the downloaded ReShade and shader packages live.
+    pub fn reshade_cache(&self) -> std::path::PathBuf {
+        self.paths.root.join("reshade")
+    }
+
+    /// Downloads (or with `force`, re-downloads) ReShade and its shaders.
+    pub fn reshade_download(&self, force: bool) {
+        let (cache, tx, ctx) = (self.reshade_cache(), self.tx.clone(), self.ctx.clone());
+        let _ = tx.send(Event::Info("Downloading ReShade…".into()));
+        std::thread::spawn(move || {
+            match gamut_core::reshade::download(&cache, force) {
+                Ok(v) => {
+                    let _ = tx.send(Event::Info(format!("ReShade {v} is ready (Standard effects + SweetFX).")));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("ReShade download failed: {e:#}")));
+                }
+            }
+            ctx.request_repaint();
+        });
     }
 }
 
@@ -336,6 +368,27 @@ struct Tracker {
 /// SK's service handle plus how to release it; None when SK isn't used for this launch.
 type SkGuard = Option<(specialk::Guard, Option<specialk::InjectionSignal>, String)>;
 
+/// Installs ReShade into the game when it should have it. Problems are reported, never fatal.
+fn with_reshade(g: &Game, rs: &gamut_core::reshade::Settings, cache: &std::path::Path, tx: &Sender<Event>) {
+    use gamut_core::reshade::{self, Outcome};
+    if let Err(why) = reshade::decide(g, rs) {
+        if rs.enabled || g.reshade.is_some() {
+            log::info!("ReShade: skipping {}: {why}", g.name);
+        }
+        return;
+    }
+    match reshade::install(g, cache) {
+        Ok(Outcome::Installed(p)) => {
+            let _ = tx.send(Event::Info(format!("ReShade installed into {} ({}). Press Home in game to open it.", g.name, p.display())));
+        }
+        Ok(Outcome::Skipped(why)) => log::info!("ReShade: skipping {}: {why}", g.name),
+        Ok(Outcome::AlreadyInstalled) => {}
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("Installing ReShade into {} failed: {e:#}", g.name)));
+        }
+    }
+}
+
 /// Starts Special K's service if this game should get it. Problems are reported, never fatal.
 fn with_specialk(g: &Game, sk: &specialk::Settings, tx: &Sender<Event>) -> SkGuard {
     if let Err(why) = specialk::decide(g, sk) {
@@ -383,13 +436,20 @@ fn release_specialk(sk: SkGuard, name: String, exited: bool) {
 }
 
 impl Tracker {
-    /// Adds the session's playtime when a tracked game exits, and releases Special K.
-    fn track(&self, id: i64, launched: Launched, sk: SkGuard) {
+    /// Adds the session's playtime when a tracked game exits, and releases Special K and HDR.
+    fn track(&self, g: &Game, launched: Launched, sk: SkGuard, hdr: Option<gamut_core::hdr::Guard>) {
+        let (id, name) = (g.id, g.name.clone());
         let exit_stop = sk.as_ref().is_some_and(|s| s.2 == "exit");
-        let name = format!("game {id}");
         let Launched::Tracked(handle) = launched else {
             self.running.lock().unwrap().remove(&id);
             release_specialk(sk, name, false);
+            if let Some(h) = hdr {
+                let g = g.clone();
+                std::thread::spawn(move || {
+                    wait_exit(&g);
+                    drop(h);
+                });
+            }
             return;
         };
         let (paths, tx, ctx, running) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.running.clone());
@@ -403,6 +463,7 @@ impl Tracker {
         std::thread::spawn(move || {
             let r = handle.join();
             release_specialk(sk, name, true);
+            drop(hdr);
             running.lock().unwrap().remove(&id);
             ctx.request_repaint();
             if let Ok(Some((mins, start))) = r {
@@ -414,6 +475,29 @@ impl Tracker {
             }
         });
     }
+}
+
+/// Waits until a game Gamut can't track directly (Steam, shortcuts) has started and exited again.
+fn wait_exit(g: &Game) {
+    let running: Box<dyn Fn() -> bool> = match (g.source, g.steam_appid()) {
+        (gamut_core::Source::Steam, Some(app)) => Box::new(move || steam::running_appid() == Some(app)),
+        _ => {
+            let dirs = gamut_core::procs::game_dirs(g);
+            Box::new(move || !gamut_core::procs::under(&dirs).is_empty())
+        }
+    };
+    let start = Instant::now();
+    while !running() {
+        if start.elapsed() > Duration::from_secs(600) {
+            log::warn!("{} didn't seem to start within 10 minutes", g.name);
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    while running() {
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    log::info!("{} exited", g.name);
 }
 
 /// Deletes art whose game no longer exists, so a reused id never shows another game's cover.

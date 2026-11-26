@@ -20,3 +20,5 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 ## Docs
 - `docs/playnite-import.md` – Playnite import: LiteDB reader, field mapping, emulator launch resolution, merge rules.
 - `docs/specialk.md` – Special K helper: service start/stop, injection signal, per-game override, anti-cheat skip.
+- `docs/reshade.md` – automatic per-game ReShade install (download, API detection, existing-setup skip).
+- `docs/launching.md` – launch pipeline, exit detection, close/force-close, auto HDR.

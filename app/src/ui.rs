@@ -96,6 +96,8 @@ enum Action {
     Refresh(i64),
     Remove(i64),
     PickArt(i64, ArtKind),
+    /// Ask to close a running game.
+    Stop(i64),
 }
 
 
@@ -130,6 +132,7 @@ pub struct GamutApp {
     ed_lists: (Vec<(String, usize)>, Vec<(String, usize)>),
     settings: Option<Config>,
     confirm_remove: Option<i64>,
+    confirm_stop: Option<i64>,
     picker: Option<Picker>,
     ctx_handle: egui::Context,
     toasts: Toasts,
@@ -189,6 +192,7 @@ impl GamutApp {
             ed_lists: Default::default(),
             settings: None,
             confirm_remove: None,
+            confirm_stop: None,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice),
@@ -356,6 +360,7 @@ impl GamutApp {
                     self.workers.kick();
                 }
                 Action::Remove(id) => self.confirm_remove = Some(id),
+                Action::Stop(id) => self.confirm_stop = Some(id),
                 Action::PickArt(id, kind) => {
                     if let Some(g) = self.game(id) {
                         let key = self.cfg.read().unwrap().steamgriddb_key.clone();
@@ -693,9 +698,10 @@ impl GamutApp {
                     if is_running {
                         let b = egui::Button::new(RichText::new("Running").size(17.0).strong().color(Color32::WHITE))
                             .fill(GOOD)
-                            .sense(Sense::hover())
                             .min_size(vec2(150.0, 38.0));
-                        ui.add(b).on_hover_text("This game is running");
+                        if ui.add(b).on_hover_text("This game is running. Click to close it.").clicked() {
+                            actions.push(Action::Stop(id));
+                        }
                     } else {
                         let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
                         let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
@@ -893,6 +899,7 @@ impl GamutApp {
         let mut save = false;
         let mut preview: Option<Option<std::path::PathBuf>> = None;
         let mut sk_install = false;
+        let mut rs_download = false;
         let importing = self.workers.importing.1.load(Ordering::Relaxed) > 0;
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
@@ -985,6 +992,25 @@ impl GamutApp {
                 }
                 ui.add_space(12.0);
                 ui.separator();
+                theme::section(ui, "ReShade");
+                ui.checkbox(&mut s.reshade.enabled, "Install ReShade into games when they first start");
+                ui.checkbox(&mut s.reshade.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
+                ui.label(theme::hint(
+                    "Like ReShade's installer, with Standard effects + SweetFX, all effects off; press Home in game. \
+                     Games that already have ReShade (or another dxgi/d3d9 mod) are left alone. Per game: Edit → Launch.",
+                ));
+                let cache = self.workers.reshade_cache();
+                ui.horizontal(|ui| {
+                    match gamut_core::reshade::version(&cache) {
+                        Some(v) => ui.label(format!("Downloaded: ReShade {v}")),
+                        None => ui.label(theme::hint("Not downloaded yet (happens on first use).")),
+                    };
+                    if ui.button("Download latest").clicked() {
+                        rs_download = true;
+                    }
+                });
+                ui.add_space(12.0);
+                ui.separator();
                 theme::section(ui, "Playnite");
                 ui.label(theme::hint("Copies games, playtime, favorites, covers and launch settings. Close Playnite first."));
                 ui.horizontal(|ui| {
@@ -1021,6 +1047,9 @@ impl GamutApp {
         }
         if sk_install {
             self.workers.install_sk_update();
+        }
+        if rs_download {
+            self.workers.reshade_download(true);
         }
         if save {
             let new = self.settings.take().unwrap();
@@ -1068,6 +1097,56 @@ impl GamutApp {
             });
         if close || !open {
             self.confirm_remove = None;
+        }
+    }
+
+    /// "Close game?" for a running game: politely (WM_CLOSE) or by force.
+    fn stop_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.confirm_stop else { return };
+        let Some(g) = self.game(id).cloned() else {
+            self.confirm_stop = None;
+            return;
+        };
+        let (mut close, mut open) = (false, true);
+        let mut act: Option<bool> = None;
+        theme::dialog(ctx, "Close game", false, |ui| {
+            ui.set_max_width(460.0);
+            dialog_header(ui, "Close game", &mut open);
+            ui.label(format!("Close \"{}\"? Unsaved progress may be lost.", g.name));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Close game").on_hover_text("Asks the game to quit, like clicking its X").clicked() {
+                    act = Some(false);
+                }
+                if ui
+                    .add(egui::Button::new(RichText::new("Force close").color(Color32::WHITE)).fill(theme::DANGER))
+                    .on_hover_text("Ends the game's processes immediately")
+                    .clicked()
+                {
+                    act = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if let Some(force) = act {
+            let pids: Vec<u32> = gamut_core::procs::under(&gamut_core::procs::game_dirs(&g)).into_iter().map(|(p, _)| p).collect();
+            if pids.is_empty() {
+                self.toasts.error(format!("Couldn't find {}'s processes.", g.name));
+            } else if force {
+                let n = gamut_core::procs::kill(&pids);
+                log::info!("force closed {} ({n}/{} processes)", g.name, pids.len());
+                self.toasts.success(format!("Closed {}.", g.name));
+            } else if gamut_core::procs::close(&pids) == 0 {
+                self.toasts.error(format!("{} has no window to close; use Force close.", g.name));
+            } else {
+                log::info!("asked {} to close", g.name);
+            }
+            close = true;
+        }
+        if close || !open {
+            self.confirm_stop = None;
         }
     }
 
@@ -1535,6 +1614,7 @@ impl eframe::App for GamutApp {
             || self.editor.is_some()
             || self.settings.is_some()
             || self.confirm_remove.is_some()
+            || self.confirm_stop.is_some()
             || self.playnite.is_some()
             || self.picker.is_some();
         if any_popup {
@@ -1545,6 +1625,7 @@ impl eframe::App for GamutApp {
             self.editor.is_some()
             || self.settings.is_some()
             || self.confirm_remove.is_some()
+            || self.confirm_stop.is_some()
             || self.playnite.is_some();
         if let (Some(id), false) = (self.selected, dialog_open) {
             let screen = ctx.content_rect();
@@ -1595,6 +1676,7 @@ impl eframe::App for GamutApp {
         self.editor_window(&ctx);
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
+        self.stop_window(&ctx);
         self.playnite_window(&ctx);
         self.toasts.show(&ctx);
 

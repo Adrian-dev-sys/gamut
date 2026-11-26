@@ -67,6 +67,10 @@ pub struct Game {
     pub series: Option<String>,
     /// Special K per game: None = follow the global mode, Some(true) = always, Some(false) = never.
     pub specialk: Option<bool>,
+    /// ReShade per game: None = follow the global setting.
+    pub reshade: Option<bool>,
+    /// Turn Windows HDR on while this game runs.
+    pub auto_hdr: bool,
 }
 
 impl Game {
@@ -105,6 +109,8 @@ impl Game {
             tags: None,
             series: None,
             specialk: None,
+            reshade: None,
+            auto_hdr: false,
         }
     }
 

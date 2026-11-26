@@ -12,6 +12,7 @@ pub const BORDER: Color32 = Color32::from_rgb(44, 50, 70);
 pub const TEXT: Color32 = Color32::from_rgb(228, 232, 242);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(146, 154, 178);
 pub const GOOD: Color32 = Color32::from_rgb(56, 180, 112);
+pub const DANGER: Color32 = Color32::from_rgb(196, 64, 76);
 /// Dim layer behind every dialog.
 pub const BACKDROP: Color32 = Color32::from_black_alpha(160);
 /// Extra dim for a popup stacked on another (art picker over details).

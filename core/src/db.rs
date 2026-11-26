@@ -11,10 +11,10 @@ pub struct Library {
 const COLS: &str = "id, source, source_id, name, installed, install_dir, exe, args, work_dir, \
     playtime_min, last_played, description, developer, publisher, release_date, genres, \
     has_cover, has_hero, cover_state, meta_state, favorite, hidden, added, \
-    playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk";
+    playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk, reshade, auto_hdr";
 
 /// Columns added after the first release: (name, SQL type).
-const ADDED_COLS: [(&str, &str); 10] = [
+const ADDED_COLS: [(&str, &str); 12] = [
     ("playnite_id", "TEXT"),
     ("platform", "TEXT"),
     ("store", "TEXT"),
@@ -25,6 +25,8 @@ const ADDED_COLS: [(&str, &str); 10] = [
     ("tags", "TEXT"),
     ("series", "TEXT"),
     ("specialk", "INTEGER"),
+    ("reshade", "INTEGER"),
+    ("auto_hdr", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// A Steam app as seen by a scan (local manifest and/or owned-games API).
@@ -206,13 +208,13 @@ impl Library {
     /// Inserts a complete row, keeping its id (used when rebuilding).
     fn insert_full(&self, g: &Game) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)"),
+            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)"),
             params![
                 g.id, g.source.as_str(), g.source_id, g.name, g.installed, g.install_dir, g.exe, g.args, g.work_dir,
                 g.playtime_min, g.last_played, g.description, g.developer, g.publisher, g.release_date, g.genres,
                 g.has_cover, g.has_hero, g.cover_state, g.meta_state, g.favorite, g.hidden, g.added,
                 g.playnite_id, g.platform, g.store, g.completion, g.play_count, g.critic_score, g.community_score,
-                g.tags, g.series, g.specialk
+                g.tags, g.series, g.specialk, g.reshade, g.auto_hdr
             ],
         )?;
         Ok(())
@@ -258,6 +260,8 @@ impl Library {
             tags: r.get(30)?,
             series: r.get(31)?,
             specialk: r.get(32)?,
+            reshade: r.get(33)?,
+            auto_hdr: r.get(34)?,
         })
     }
 
@@ -334,13 +338,13 @@ impl Library {
             "UPDATE games SET name = ?2, exe = ?3, args = ?4, work_dir = ?5, favorite = ?6, hidden = ?7,
              description = ?8, developer = ?9, publisher = ?10, release_date = ?11, genres = ?12,
              platform = ?13, store = ?14, completion = ?15, critic_score = ?16, community_score = ?17,
-             tags = ?18, series = ?19, specialk = ?20
+             tags = ?18, series = ?19, specialk = ?20, reshade = ?21, auto_hdr = ?22
              WHERE id = ?1",
             params![
                 g.id, g.name, g.exe, g.args, g.work_dir, g.favorite, g.hidden,
                 g.description, g.developer, g.publisher, g.release_date, g.genres,
                 g.platform, g.store, g.completion, g.critic_score, g.community_score, g.tags, g.series,
-                g.specialk
+                g.specialk, g.reshade, g.auto_hdr
             ],
         )?;
         Ok(())
