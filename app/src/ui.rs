@@ -88,6 +88,8 @@ fn from_key<T: Copy>(table: &[(T, &'static str)], k: &str) -> T {
     table.iter().find(|(_, n)| *n == k).map(|(t, _)| *t).unwrap_or(table[0].0)
 }
 
+const SETTINGS_TABS: [&str; 4] = ["Library", "Special K", "ReShade", "General"];
+
 enum Action {
     Play(i64),
     Edit(i64),
@@ -133,6 +135,7 @@ pub struct GamutApp {
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     confirm_stop: Option<i64>,
+    settings_tab: usize,
     picker: Option<Picker>,
     ctx_handle: egui::Context,
     toasts: Toasts,
@@ -193,6 +196,7 @@ impl GamutApp {
             settings: None,
             confirm_remove: None,
             confirm_stop: None,
+            settings_tab: 0,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice),
@@ -904,144 +908,163 @@ impl GamutApp {
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
             .unwrap_or_default();
+        let mut tab = self.settings_tab;
+        let screen = ctx.content_rect();
+        let size = vec2(680.0_f32.min(screen.width() - 80.0), 600.0_f32.min(screen.height() - 120.0));
         theme::dialog(ctx, "Settings", false, |ui| {
-                ui.set_width(460.0);
                 dialog_header(ui, "Settings", &mut open);
-                theme::section(ui, "Steam");
-                egui::Grid::new("st").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                    ui.label("Web API key");
-                    ui.add(egui::TextEdit::singleline(&mut s.steam_api_key).password(true).desired_width(320.0));
-                    ui.end_row();
-                    ui.label("SteamID64");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut s.steam_id)
-                            .hint_text(format!("auto: {detected}"))
-                            .desired_width(320.0),
-                    );
-                    ui.end_row();
-                });
-                ui.hyperlink_to("Get a Steam Web API key", "https://steamcommunity.com/dev/apikey");
-                ui.label(theme::hint("Your profile's game details must be public, or the key must belong to this account."));
-                ui.add_space(12.0);
-                ui.separator();
-                theme::section(ui, "SteamGridDB");
-                egui::Grid::new("sg").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                    ui.label("API key");
-                    ui.add(egui::TextEdit::singleline(&mut s.steamgriddb_key).password(true).desired_width(320.0));
-                    ui.end_row();
-                });
-                ui.hyperlink_to("Get a SteamGridDB key", "https://www.steamgriddb.com/profile/preferences/api");
-                ui.label(theme::hint("Used for covers and banners Steam doesn't have."));
-                ui.add_space(12.0);
-                ui.separator();
-                theme::section(ui, "Special K");
-                let sk = &mut s.specialk;
-                egui::Grid::new("sk").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                    const MODES: [(&str, &str); 3] =
-                        [("off", "Off"), ("global", "Every game (unless turned off)"), ("selective", "Only games turned on")];
-                    const STOPS: [(&str, &str); 3] =
-                        [("injection", "Once it's in the game"), ("exit", "When the game exits"), ("never", "Never")];
-                    ui.label("Inject into");
-                    combo(ui, "sk_mode", &mut sk.mode, &MODES);
-                    ui.end_row();
-                    ui.label("Stop service");
-                    combo(ui, "sk_stop", &mut sk.stop, &STOPS);
-                    ui.end_row();
-                    ui.label("Folder");
-                    let found = gamut_core::specialk::install_dir("").map(|p| p.display().to_string());
-                    ui.add(
-                        egui::TextEdit::singleline(&mut sk.path)
-                            .hint_text(found.map_or("not found".into(), |p| format!("auto: {p}")))
-                            .desired_width(320.0),
-                    );
-                    ui.end_row();
-                });
-                ui.checkbox(&mut sk.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
-                ui.label(theme::hint("Starts Special K's injection service before a game launches. Set a game to always/never in Edit → Launch."));
-                ui.add_space(6.0);
-                ui.label(RichText::new("Defaults for new game profiles").strong());
-                ui.checkbox(&mut sk.steam_overlay, "Load the Steam overlay (writes steam_appid.txt for non-Steam games)");
-                ui.checkbox(&mut sk.reshade, "Enable ReShade (with a preset per game)");
-                ui.checkbox(&mut sk.flip_model, "Use the flip model presentation");
-                ui.checkbox(&mut sk.disable_nvidia_bloat, "Disable NVIDIA bloatware (overlay, telemetry)");
+                ui.set_min_size(size);
+                ui.set_max_size(size);
                 ui.horizontal(|ui| {
-                    ui.label("Frame rate limit");
-                    ui.add(egui::DragValue::new(&mut sk.fps_limit).range(0.0..=1000.0).speed(1.0).suffix(" fps"));
-                    ui.label(theme::hint("0 = none"));
+                    for (t, label) in SETTINGS_TABS.iter().enumerate() {
+                        ui.selectable_value(&mut tab, t, RichText::new(*label).size(14.5));
+                    }
                 });
-                ui.checkbox(&mut sk.bpm_overlay, "Big Picture overlay for non-Steam games while Steam is in Big Picture");
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut sk.check_updates, "Check for updates on");
-                    let mut ch = sk.channel.clone();
-                    let chans: Vec<(&str, &str)> = gamut_core::specialk::update::CHANNELS.iter().map(|c| (*c, *c)).collect();
-                    combo(ui, "sk_chan", &mut ch, &chans);
-                    sk.channel = ch;
-                });
-                let installing = self.workers.sk_installing.load(Ordering::Relaxed);
-                if let Some(u) = self.workers.sk_update.lock().unwrap().clone() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Special K {} is available (installed {}).", u.latest, u.current));
-                        let b = ui
-                            .add_enabled(!installing, egui::Button::new(if installing { "Installing…" } else { "Install update" }))
-                            .on_hover_text(u.notes.chars().take(1500).collect::<String>());
-                        if b.clicked() {
-                            sk_install = true;
+                ui.separator();
+                let body_h = ui.available_height() - 48.0;
+                egui::ScrollArea::vertical().id_salt("settings_body").max_height(body_h).auto_shrink([false, false]).show(ui, |ui| {
+                    match tab {
+                        0 => {
+                        theme::section(ui, "Steam");
+                        egui::Grid::new("st").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                            ui.label("Web API key");
+                            ui.add(egui::TextEdit::singleline(&mut s.steam_api_key).password(true).desired_width(420.0));
+                            ui.end_row();
+                            ui.label("SteamID64");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut s.steam_id)
+                                    .hint_text(format!("auto: {detected}"))
+                                    .desired_width(420.0),
+                            );
+                            ui.end_row();
+                        });
+                        ui.hyperlink_to("Get a Steam Web API key", "https://steamcommunity.com/dev/apikey");
+                        ui.label(theme::hint("Your profile's game details must be public, or the key must belong to this account."));
+                        ui.add_space(12.0);
+                        ui.separator();
+                        theme::section(ui, "SteamGridDB");
+                        egui::Grid::new("sg").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                            ui.label("API key");
+                            ui.add(egui::TextEdit::singleline(&mut s.steamgriddb_key).password(true).desired_width(420.0));
+                            ui.end_row();
+                        });
+                        ui.hyperlink_to("Get a SteamGridDB key", "https://www.steamgriddb.com/profile/preferences/api");
+                        ui.label(theme::hint("Used for covers and banners Steam doesn't have."));
+                        ui.add_space(12.0);
+                        ui.separator();
+                        theme::section(ui, "Playnite");
+                        ui.label(theme::hint("Copies games, playtime, favorites, covers and launch settings. Close Playnite first."));
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(!importing, egui::Button::new("Import from Playnite…")).clicked() {
+                                preview = Some(None);
+                            }
+                            let pick = ui
+                                .add_enabled(!importing, egui::Button::new("Choose folder…"))
+                                .on_hover_text("For portable Playnite: the folder that contains \"library\"");
+                            if pick.clicked() {
+                                if let Some(d) = rfd::FileDialog::new().set_title("Playnite folder").pick_folder() {
+                                    preview = Some(Some(d));
+                                }
+                            }
+                        });
                         }
-                    });
-                }
-                ui.add_space(12.0);
-                ui.separator();
-                theme::section(ui, "ReShade");
-                ui.checkbox(&mut s.reshade.enabled, "Install ReShade into games when they first start");
-                ui.checkbox(&mut s.reshade.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
-                ui.label(theme::hint(
-                    "Like ReShade's installer, with Standard effects + SweetFX, all effects off; press Home in game. \
-                     Games that already have ReShade (or another dxgi/d3d9 mod) are left alone. Per game: Edit → Launch.",
-                ));
-                let cache = self.workers.reshade_cache();
-                ui.horizontal(|ui| {
-                    match gamut_core::reshade::version(&cache) {
-                        Some(v) => ui.label(format!("Downloaded: ReShade {v}")),
-                        None => ui.label(theme::hint("Not downloaded yet (happens on first use).")),
-                    };
-                    if ui.button("Download latest").clicked() {
-                        rs_download = true;
-                    }
-                });
-                ui.add_space(12.0);
-                ui.separator();
-                theme::section(ui, "Playnite");
-                ui.label(theme::hint("Copies games, playtime, favorites, covers and launch settings. Close Playnite first."));
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(!importing, egui::Button::new("Import from Playnite…")).clicked() {
-                        preview = Some(None);
-                    }
-                    let pick = ui
-                        .add_enabled(!importing, egui::Button::new("Choose folder…"))
-                        .on_hover_text("For portable Playnite: the folder that contains \"library\"");
-                    if pick.clicked() {
-                        if let Some(d) = rfd::FileDialog::new().set_title("Playnite folder").pick_folder() {
-                            preview = Some(Some(d));
+                        1 => {
+                        theme::section(ui, "Special K");
+                        let sk = &mut s.specialk;
+                        egui::Grid::new("sk").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                            const MODES: [(&str, &str); 3] =
+                                [("off", "Off"), ("global", "Every game (unless turned off)"), ("selective", "Only games turned on")];
+                            const STOPS: [(&str, &str); 3] =
+                                [("injection", "Once it's in the game"), ("exit", "When the game exits"), ("never", "Never")];
+                            ui.label("Inject into");
+                            combo(ui, "sk_mode", &mut sk.mode, &MODES);
+                            ui.end_row();
+                            ui.label("Stop service");
+                            combo(ui, "sk_stop", &mut sk.stop, &STOPS);
+                            ui.end_row();
+                            ui.label("Folder");
+                            let found = gamut_core::specialk::install_dir("").map(|p| p.display().to_string());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut sk.path)
+                                    .hint_text(found.map_or("not found".into(), |p| format!("auto: {p}")))
+                                    .desired_width(420.0),
+                            );
+                            ui.end_row();
+                        });
+                        ui.checkbox(&mut sk.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
+                        ui.label(theme::hint("Starts Special K's injection service before a game launches. Set a game to always/never in Edit → Launch."));
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Defaults for new game profiles").strong());
+                        ui.checkbox(&mut sk.steam_overlay, "Load the Steam overlay (writes steam_appid.txt for non-Steam games)");
+                        ui.checkbox(&mut sk.reshade, "Enable ReShade (with a preset per game)");
+                        ui.checkbox(&mut sk.flip_model, "Use the flip model presentation");
+                        ui.checkbox(&mut sk.disable_nvidia_bloat, "Disable NVIDIA bloatware (overlay, telemetry)");
+                        ui.horizontal(|ui| {
+                            ui.label("Frame rate limit");
+                            ui.add(egui::DragValue::new(&mut sk.fps_limit).range(0.0..=1000.0).speed(1.0).suffix(" fps"));
+                            ui.label(theme::hint("0 = none"));
+                        });
+                        ui.checkbox(&mut sk.bpm_overlay, "Big Picture overlay for non-Steam games while Steam is in Big Picture");
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut sk.check_updates, "Check for updates on");
+                            let mut ch = sk.channel.clone();
+                            let chans: Vec<(&str, &str)> = gamut_core::specialk::update::CHANNELS.iter().map(|c| (*c, *c)).collect();
+                            combo(ui, "sk_chan", &mut ch, &chans);
+                            sk.channel = ch;
+                        });
+                        let installing = self.workers.sk_installing.load(Ordering::Relaxed);
+                        if let Some(u) = self.workers.sk_update.lock().unwrap().clone() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Special K {} is available (installed {}).", u.latest, u.current));
+                                let b = ui
+                                    .add_enabled(!installing, egui::Button::new(if installing { "Installing…" } else { "Install update" }))
+                                    .on_hover_text(u.notes.chars().take(1500).collect::<String>());
+                                if b.clicked() {
+                                    sk_install = true;
+                                }
+                            });
+                        }
+                        }
+                        2 => {
+                        theme::section(ui, "ReShade");
+                        ui.checkbox(&mut s.reshade.enabled, "Install ReShade into games when they first start");
+                        ui.checkbox(&mut s.reshade.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
+                        ui.label(theme::hint(
+                            "Like ReShade's installer, with Standard effects + SweetFX, all effects off; press Home in game. \
+                             Games that already have ReShade (or another dxgi/d3d9 mod) are left alone. Per game: Edit → Launch.",
+                        ));
+                        let cache = self.workers.reshade_cache();
+                        ui.horizontal(|ui| {
+                            match gamut_core::reshade::version(&cache) {
+                                Some(v) => ui.label(format!("Downloaded: ReShade {v}")),
+                                None => ui.label(theme::hint("Not downloaded yet (happens on first use).")),
+                            };
+                            if ui.button("Download latest").clicked() {
+                                rs_download = true;
+                            }
+                        });
+                        }
+                        _ => {
+                        ui.label(theme::hint(&format!("Data folder: {}", self.paths.root.display())));
+                        ui.horizontal(|ui| {
+                            if ui.button("Open log").on_hover_text("What Gamut did this run, including errors").clicked() {
+                                let _ = open::that(crate::logging::path(&self.paths.root));
+                            }
+                            if ui.button("Open data folder").clicked() {
+                                let _ = open::that(&self.paths.root);
+                            }
+                        });
                         }
                     }
                 });
-                ui.add_space(12.0);
                 ui.separator();
-                ui.label(theme::hint(&format!("Data folder: {}", self.paths.root.display())));
-                ui.horizontal(|ui| {
-                    if ui.button("Open log").on_hover_text("What Gamut did this run, including errors").clicked() {
-                        let _ = open::that(crate::logging::path(&self.paths.root));
-                    }
-                    if ui.button("Open data folder").clicked() {
-                        let _ = open::that(&self.paths.root);
-                    }
-                });
                 ui.add_space(8.0);
                 if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
                     save = true;
                 }
             });
+        self.settings_tab = tab;
         if let Some(dir) = preview {
             self.workers.playnite_preview(dir);
         }
