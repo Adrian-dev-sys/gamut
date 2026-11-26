@@ -152,14 +152,14 @@ pub fn no_fade(id: egui::Id) -> egui::Area {
 
 /// Small ✕ drawn as two centered strokes (font glyphs sit off-center); highlights on hover.
 pub fn x_at(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id) -> egui::Response {
-    let r = ui.interact(rect, id, egui::Sense::click());
+    let r = ui.interact(rect, id, egui::Sense::CLICK); // not focusable: controller focus skips the ✕
     paint_x(ui, &r);
     r
 }
 
 /// [`x_at`] laid out as a square widget of `size`.
 pub fn x_button(ui: &mut egui::Ui, size: f32) -> egui::Response {
-    let (_, r) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let (_, r) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::CLICK);
     paint_x(ui, &r);
     r
 }

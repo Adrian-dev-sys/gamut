@@ -16,12 +16,13 @@ pub enum Pad {
     Back,
     /// West (X / Square).
     Favorite,
-    /// LB / RB: previous/next filter.
+    /// LB / RB: previous/next tab.
     PrevTab,
     NextTab,
-    /// View/Select (Create) or Guide (PS): toggle big screen.
+    /// View/Select (Xbox) or PS: toggle big screen.
     BigScreen,
-    Start,
+    /// Start / Options (and Create on PlayStation): the game's menu.
+    Menu,
     /// North (Y / Triangle).
     Search,
 }
@@ -29,6 +30,8 @@ pub enum Pad {
 /// Held-direction repeat: first repeat after `DELAY`, then every `RATE`.
 const DELAY: Duration = Duration::from_millis(380);
 const RATE: Duration = Duration::from_millis(95);
+/// After input from one device, others are ignored this long (a remapper's mirrored copy).
+const LEAD: Duration = Duration::from_millis(400);
 const STICK: f32 = 0.55;
 const SONY: u16 = 0x054c;
 /// DualSense, DualSense Edge.
@@ -46,7 +49,7 @@ pub fn start(ctx: egui::Context) -> Receiver<Pad> {
 }
 
 /// Pressed buttons that map to actions, plus the direction a pad is pushing.
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
 struct PadState {
     buttons: [bool; 11],
     dir: Option<Nav>,
@@ -61,67 +64,126 @@ const ACTIONS: [Pad; 11] = [
     Pad::NextTab,
     Pad::Nav(Nav::PageUp),
     Pad::Nav(Nav::PageDown),
+    Pad::Menu,
     Pad::BigScreen,
-    Pad::BigScreen,
-    Pad::Start,
+    Pad::Menu,
     Pad::Search,
 ];
+
+/// One device's last state and when its held direction repeats next.
+#[derive(Default)]
+struct Src {
+    state: PadState,
+    due: Option<Instant>,
+}
+
+impl Src {
+    /// Applies a new state; presses and new directions become actions.
+    fn update(&mut self, new: PadState, now: Instant, out: &mut Vec<Pad>) {
+        for (i, a) in ACTIONS.iter().enumerate() {
+            if new.buttons[i] && !self.state.buttons[i] {
+                out.push(*a);
+            }
+        }
+        if new.dir != self.state.dir {
+            self.due = new.dir.map(|d| {
+                out.push(Pad::Nav(d));
+                now + DELAY
+            });
+        }
+        self.state = new;
+    }
+
+    /// Repeats a held direction when due.
+    fn tick(&mut self, now: Instant, out: &mut Vec<Pad>) {
+        if let (Some(d), Some(due)) = (self.state.dir, self.due) {
+            if now >= due {
+                out.push(Pad::Nav(d));
+                self.due = Some(now + RATE);
+            }
+        }
+    }
+}
+
+/// A remapper (DSX, DS4Windows, Steam) can show one controller twice (real + virtual). The device
+/// that acts first leads; others are ignored until it has been quiet for `LEAD`.
+#[derive(Default)]
+struct Lead(Option<(u64, Instant)>);
+
+impl Lead {
+    fn accept(&mut self, src: u64, now: Instant) -> bool {
+        if let Some((l, t)) = self.0 {
+            if l != src && now - t < LEAD {
+                return false;
+            }
+        }
+        self.0 = Some((src, now));
+        true
+    }
+
+    /// Keeps the lead while its device is still holding something.
+    fn hold(&mut self, src: u64, now: Instant) {
+        if self.0.is_some_and(|(l, _)| l == src) {
+            self.0 = Some((src, now));
+        }
+    }
+}
 
 struct HidPad {
     dev: hidapi::HidDevice,
     path: CString,
     dualsense: bool,
-    state: PadState,
+    src: Src,
+    id: u64,
 }
 
 fn run(tx: Sender<Pad>, ctx: egui::Context) {
     let mut gil = Gilrs::new().map_err(|e| log::warn!("gilrs unavailable: {e}")).ok();
     let mut hid = hidapi::HidApi::new().map_err(|e| log::warn!("HID unavailable: {e}")).ok();
     let mut pads: Vec<HidPad> = Vec::new();
+    let mut next_id = 1u64 << 32;
+    let mut gil_src: std::collections::HashMap<usize, Src> = Default::default();
     let mut scanned = Instant::now() - Duration::from_secs(60);
-
-    // A remapper (DSX, DS4Windows, Steam) can show one controller twice (real + virtual);
-    // the same action within 60 ms counts once. Held-direction repeats are 95 ms apart.
-    let mut last: Option<(Pad, Instant)> = None;
-    let mut send = |p: Pad| {
-        let now = Instant::now();
-        if last.is_some_and(|(q, t)| q == p && now - t < Duration::from_millis(60)) {
-            return;
-        }
-        last = Some((p, now));
-        let _ = tx.send(p);
-        ctx.request_repaint();
-    };
-    let mut held: Option<(Nav, Instant)> = None;
+    let mut lead = Lead::default();
+    let mut out: Vec<(u64, Pad)> = Vec::new();
     loop {
-        // gilrs: button presses as events, direction from state.
-        let mut dir = None;
+        let now = Instant::now();
+        // gilrs: button presses as events (no missed quick taps), direction from state.
         if let Some(g) = gil.as_mut() {
             while let Some(ev) = g.next_event() {
                 if let EventType::ButtonPressed(b, _) = ev.event {
                     if let Some(p) = gilrs_action(b) {
-                        send(p);
+                        out.push((usize::from(ev.id) as u64, p));
                     }
                 }
             }
-            dir = g.gamepads().find_map(|(_, p)| gilrs_dir(&p));
+            for (id, p) in g.gamepads() {
+                let s = gil_src.entry(id.into()).or_default();
+                let mut v = Vec::new();
+                s.update(PadState { buttons: s.state.buttons, dir: gilrs_dir(&p) }, now, &mut v);
+                s.tick(now, &mut v);
+                out.extend(v.into_iter().map(|a| (usize::from(id) as u64, a)));
+                if s.state.dir.is_some() {
+                    lead.hold(usize::from(id) as u64, now);
+                }
+            }
         }
 
-        // HID PlayStation pads: rescan every 2 s for (re)connects.
+        // HID PlayStation pads: rescan every 2 s for (re)connects; every report counts (quick taps).
         if let Some(api) = hid.as_mut() {
             if scanned.elapsed() > Duration::from_secs(2) {
                 scanned = Instant::now();
-                open_new(api, &mut pads);
+                open_new(api, &mut pads, &mut next_id);
             }
             pads.retain_mut(|p| {
-                let before = p.state;
                 let mut buf = [0u8; 128];
+                let mut v = Vec::new();
                 loop {
                     match p.dev.read_timeout(&mut buf, 0) {
                         Ok(0) => break,
                         Ok(n) => {
                             if let Some(s) = parse(&buf[..n], p.dualsense) {
-                                p.state = s;
+                                p.src.update(s, now, &mut v);
                             }
                         }
                         Err(e) => {
@@ -130,35 +192,23 @@ fn run(tx: Sender<Pad>, ctx: egui::Context) {
                         }
                     }
                 }
-                for (i, a) in ACTIONS.iter().enumerate() {
-                    if p.state.buttons[i] && !before.buttons[i] {
-                        send(*a);
-                    }
+                p.src.tick(now, &mut v);
+                out.extend(v.into_iter().map(|a| (p.id, a)));
+                if p.src.state != PadState::default() {
+                    lead.hold(p.id, now);
                 }
                 true
             });
-            dir = dir.or_else(|| pads.iter().find_map(|p| p.state.dir));
         }
 
-        let now = Instant::now();
-        held = match (dir, held) {
-            (None, _) => None,
-            // Same direction still held: repeat when due.
-            (Some(d), Some((h, due))) if d == h => {
-                if now >= due {
-                    send(Pad::Nav(d));
-                    Some((d, now + RATE))
-                } else {
-                    Some((h, due))
-                }
+        for (src, p) in out.drain(..) {
+            if lead.accept(src, now) {
+                let _ = tx.send(p);
+                ctx.request_repaint();
             }
-            (Some(d), _) => {
-                send(Pad::Nav(d));
-                Some((d, now + DELAY))
-            }
-        };
+        }
         let idle = pads.is_empty() && gil.as_ref().is_none_or(|g| g.gamepads().next().is_none());
-        std::thread::sleep(Duration::from_millis(if idle { 250 } else { 12 }));
+        std::thread::sleep(Duration::from_millis(if idle { 250 } else { 8 }));
     }
 }
 
@@ -173,7 +223,7 @@ fn gilrs_action(b: Button) -> Option<Pad> {
         Button::LeftTrigger2 => Pad::Nav(Nav::PageUp),
         Button::RightTrigger2 => Pad::Nav(Nav::PageDown),
         Button::Select | Button::Mode => Pad::BigScreen,
-        Button::Start => Pad::Start,
+        Button::Start => Pad::Menu,
         _ => return None,
     })
 }
@@ -204,7 +254,7 @@ fn stick_dir(x: f32, y: f32) -> Option<Nav> {
 }
 
 /// Opens Sony pads not open yet (the gamepad interface only; others are audio/touch).
-fn open_new(api: &mut hidapi::HidApi, pads: &mut Vec<HidPad>) {
+fn open_new(api: &mut hidapi::HidApi, pads: &mut Vec<HidPad>, next_id: &mut u64) {
     if api.refresh_devices().is_err() {
         return;
     }
@@ -219,7 +269,8 @@ fn open_new(api: &mut hidapi::HidApi, pads: &mut Vec<HidPad>) {
         }
         if let Ok(dev) = d.open_device(api) {
             log::info!("controller connected: {} ({pid:04x})", d.product_string().unwrap_or("PlayStation pad"));
-            pads.push(HidPad { dev, path: d.path().to_owned(), dualsense: DUALSENSE.contains(&pid), state: PadState::default() });
+            *next_id += 1;
+            pads.push(HidPad { dev, path: d.path().to_owned(), dualsense: DUALSENSE.contains(&pid), src: Src::default(), id: *next_id });
         }
     }
 }
@@ -291,5 +342,38 @@ mod tests {
         let s = parse(&r, false).unwrap();
         assert_eq!(s.dir, Some(Nav::Right));
         assert!(s.buttons[1]);
+    }
+
+    #[test]
+    fn quick_taps_within_one_poll_all_count() {
+        let (t, mut s, mut out) = (Instant::now(), Src::default(), Vec::new());
+        let right = PadState { dir: Some(Nav::Right), ..Default::default() };
+        let mut cross = PadState::default();
+        cross.buttons[0] = true;
+        for st in [right, PadState::default(), right, PadState::default(), cross, PadState::default(), cross] {
+            s.update(st, t, &mut out);
+        }
+        assert_eq!(out, [Pad::Nav(Nav::Right), Pad::Nav(Nav::Right), Pad::Confirm, Pad::Confirm]);
+    }
+
+    #[test]
+    fn mirrored_device_is_ignored_but_fast_taps_pass() {
+        let (t, mut l) = (Instant::now(), Lead::default());
+        let ms = |n| t + Duration::from_millis(n);
+        assert!(l.accept(1, t)); // tap on the real pad
+        assert!(!l.accept(2, ms(30))); // its lagged copy from the virtual pad
+        assert!(l.accept(1, ms(60))); // second quick tap
+        assert!(!l.accept(2, ms(90)));
+        assert!(l.accept(2, ms(1000))); // other device after the first went quiet
+    }
+
+    #[test]
+    fn held_direction_repeats() {
+        let (t, mut s, mut out) = (Instant::now(), Src::default(), Vec::new());
+        s.update(PadState { dir: Some(Nav::Down), ..Default::default() }, t, &mut out);
+        s.tick(t + Duration::from_millis(100), &mut out);
+        s.tick(t + DELAY, &mut out);
+        s.tick(t + DELAY + RATE, &mut out);
+        assert_eq!(out.len(), 3);
     }
 }

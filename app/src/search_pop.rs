@@ -65,7 +65,7 @@ impl SearchPop {
             Pad::Favorite => {
                 q.pop();
             }
-            Pad::Back | Pad::Search | Pad::Start => return true,
+            Pad::Back | Pad::Search | Pad::Menu => return true,
             _ => {}
         }
         false

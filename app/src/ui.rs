@@ -92,6 +92,8 @@ const SETTINGS_TABS: [&str; 4] = ["Library", "Special K", "ReShade", "General"];
 
 enum Action {
     Play(i64),
+    /// Play after the "another Steam game is running" warning.
+    PlayAnyway(i64),
     Edit(i64),
     ToggleFav(i64),
     ToggleHidden(i64),
@@ -191,6 +193,14 @@ pub struct GamutApp {
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     confirm_stop: Option<i64>,
+    /// (game to start, Steam game running) when Steam would have to close one for the other.
+    confirm_play: Option<(i64, i64)>,
+    /// Controller menu (Start) for this game.
+    game_menu: Option<i64>,
+    /// A dialog was open last frame (the first controller frame in a new one focuses its first widget).
+    was_dialog: bool,
+    /// Controller input held for the next frame (egui moves focus once per frame).
+    pad_later: Vec<crate::gamepad::Pad>,
     settings_tab: usize,
     picker: Option<Picker>,
     ctx_handle: egui::Context,
@@ -283,6 +293,10 @@ impl GamutApp {
             settings: None,
             confirm_remove: None,
             confirm_stop: None,
+            confirm_play: None,
+            game_menu: None,
+            was_dialog: false,
+            pad_later: Vec::new(),
             settings_tab: 0,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
@@ -462,10 +476,24 @@ impl GamutApp {
             match a {
                 Action::Play(id) => {
                     let Some(g) = self.game(id).cloned() else { return Ok(()) };
-                    if self.running().contains(&id) {
+                    let running = self.running();
+                    if running.contains(&id) {
                         return Ok(());
                     }
+                    // Steam runs one game at a time; other games may run side by side.
+                    if g.installed && g.source == Source::Steam {
+                        let other = self.games.iter().find(|o| o.source == Source::Steam && running.contains(&o.id)).map(|o| o.id);
+                        if let Some(other) = other {
+                            self.confirm_play = Some((id, other));
+                            return Ok(());
+                        }
+                    }
                     self.workers.play(g)?;
+                }
+                Action::PlayAnyway(id) => {
+                    if let Some(g) = self.game(id).cloned() {
+                        self.workers.play(g)?;
+                    }
                 }
                 Action::Edit(id) => {
                     if let Some(g) = self.game(id) {
@@ -628,19 +656,21 @@ impl GamutApp {
             }
             return;
         }
-        let dialog = self.editor.is_some()
-            || self.settings.is_some()
-            || self.confirm_remove.is_some()
-            || self.confirm_refresh.is_some()
-            || self.confirm_stop.is_some()
-            || self.playnite.is_some()
-            || self.picker.is_some()
-            || self.ra_pick.is_some();
         for p in events {
             let grid = self.ach_tab.is_none() && self.stats_tab.is_none();
             match p {
                 Pad::BigScreen => self.toggle_big(ctx),
-                _ if dialog => {}
+                // In dialogs the D-pad/A drive egui focus (raw_input_hook); B cancels simple ones.
+                Pad::Back if self.any_dialog() => {
+                    (self.confirm_play, self.game_menu, self.confirm_stop) = (None, None, None);
+                    (self.confirm_remove, self.confirm_refresh) = (None, None);
+                }
+                _ if self.any_dialog() => {}
+                Pad::Menu => {
+                    if let Some(id) = self.selected.or(self.cursor.filter(|_| self.kb_focus && grid)) {
+                        self.game_menu = Some(id);
+                    }
+                }
                 Pad::Nav(n) if self.selected.is_none() && grid => self.nav(n, false),
                 // Details: L2/R2 page through the description.
                 Pad::Nav(Nav::PageUp) if self.selected.is_some() => self.detail_scroll = Some(-420.0),
@@ -655,7 +685,7 @@ impl GamutApp {
                     }
                 }
                 Pad::Search => {}
-                Pad::Confirm | Pad::Start => match self.selected {
+                Pad::Confirm => match self.selected {
                     Some(id) => actions.push(Action::Play(id)),
                     None if grid => match self.cursor.filter(|_| self.kb_focus) {
                         Some(id) => {
@@ -681,12 +711,24 @@ impl GamutApp {
                         actions.push(Action::ToggleFav(id));
                     }
                 }
-                Pad::PrevTab | Pad::NextTab if self.selected.is_none() && grid => {
+                // Big screen: filter tabs. Otherwise the top tabs (Library, Achievements, Statistics).
+                Pad::PrevTab | Pad::NextTab if self.selected.is_none() && self.big.is_some() => {
                     let i = BIG_TABS.iter().position(|(f, _)| *f == self.filter).unwrap_or(0) as isize;
                     let d = if matches!(p, Pad::NextTab) { 1 } else { -1 };
                     self.filter = BIG_TABS[(i + d).rem_euclid(BIG_TABS.len() as isize) as usize].0;
                     self.cursor = None;
                     self.scroll_to = Some(0.0);
+                }
+                Pad::PrevTab | Pad::NextTab if self.selected.is_none() => {
+                    let i = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else { 0 };
+                    let d = if matches!(p, Pad::NextTab) { 1 } else { 2 };
+                    let now = ctx.input(|i| i.time);
+                    (self.ach_tab, self.stats_tab) = (None, None);
+                    match (i + d) % 3 {
+                        1 => self.ach_tab = Some(crate::ach_tab::Overview::load(&self.lib, now)),
+                        2 => self.stats_tab = Some(crate::stats_tab::Stats::load(&self.lib, now)),
+                        _ => {}
+                    }
                 }
                 Pad::PrevTab | Pad::NextTab => {}
             }
@@ -710,6 +752,8 @@ impl GamutApp {
             || self.picker.is_some()
             || self.ra_pick.is_some()
             || self.search_pop.is_some()
+            || self.confirm_play.is_some()
+            || self.game_menu.is_some()
     }
 
     /// Search, filters, sort and cover size for the library grid.
@@ -1803,6 +1847,62 @@ impl GamutApp {
         }
     }
 
+    /// Controller (Start) version of the right-click menu.
+    fn game_menu_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some(id) = self.game_menu else { return };
+        let Some(g) = self.game(id).cloned() else {
+            self.game_menu = None;
+            return;
+        };
+        let bulk = self.multi.len() > 1 && self.multi.contains(&id) && self.selected.is_none();
+        let before = actions.len();
+        let mut open = true;
+        let resp = theme::dialog(ctx, "game_menu", self.selected.is_some(), |ui| {
+            ui.set_width(300.0);
+            dialog_header(ui, if bulk { "Selected games" } else { &g.name }, &mut open);
+            ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
+                ui.spacing_mut().button_padding = vec2(14.0, 9.0);
+                if bulk {
+                    bulk_menu(ui, self.multi.len(), actions);
+                } else {
+                    context_menu(ui, &g, actions);
+                }
+            });
+        });
+        if !open || actions.len() > before || resp.should_close() {
+            self.game_menu = None;
+        }
+    }
+
+    /// Steam can't run two games: starting one closes (or asks to close) the other.
+    fn play_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some((id, other)) = self.confirm_play else { return };
+        let (Some(g), Some(o)) = (self.game(id).cloned(), self.game(other).cloned()) else {
+            self.confirm_play = None;
+            return;
+        };
+        let (mut close, mut open) = (false, true);
+        let resp = theme::dialog(ctx, "confirm_play", self.selected.is_some(), |ui| {
+            ui.set_max_width(480.0);
+            dialog_header(ui, "Another game is running", &mut open);
+            ui.label(format!("\"{}\" is running. Steam runs one game at a time, so starting \"{}\" may close it.", o.name, g.name));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                // Cancel first: it gets the controller focus, so a double press doesn't close the game.
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+                if ui.button(format!("Start {}", g.name)).clicked() {
+                    actions.push(Action::PlayAnyway(id));
+                    close = true;
+                }
+            });
+        });
+        if close || !open || resp.should_close() {
+            self.confirm_play = None;
+        }
+    }
+
     /// "Close game?" for a running game: politely (WM_CLOSE) or by force.
     fn stop_window(&mut self, ctx: &egui::Context) {
         let Some(id) = self.confirm_stop else { return };
@@ -2016,7 +2116,7 @@ fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
 /// Big screen footer: what the controller buttons do.
 fn big_hints(ui: &mut Ui) {
     ui.horizontal(|ui| {
-        for (k, v) in [("A", "Open / Play"), ("B", "Back"), ("X", "Favorite"), ("Y", "Search"), ("LB/RB", "Filter"), ("LT/RT", "Page"), ("View", "Exit big screen")] {
+        for (k, v) in [("A", "Open / Play"), ("B", "Back"), ("X", "Favorite"), ("Y", "Search"), ("Start", "Menu"), ("LB/RB", "Filter"), ("LT/RT", "Page"), ("View / PS", "Exit big screen")] {
             egui::Frame::new()
                 .fill(CARD_HI)
                 .corner_radius(CornerRadius::same(4))
@@ -2350,31 +2450,63 @@ impl eframe::App for GamutApp {
     /// keys so egui moves focus between its buttons and presses the focused one.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         use crate::gamepad::Pad;
+        let dialog = self.any_dialog() && self.search_pop.is_none();
         let details = self.selected.is_some() && !self.any_dialog();
-        let has_focus = ctx.memory(|m| m.focused().is_some());
-        for p in self.pad.try_iter().collect::<Vec<_>>() {
+        let mut has_focus = ctx.memory(|m| m.focused().is_some());
+        let push = |raw: &mut egui::RawInput, key: Key, shift: bool| {
+            let modifiers = egui::Modifiers { shift, ..Default::default() };
+            for pressed in [true, false] {
+                raw.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
+            }
+        };
+        // A dialog just opened from the controller: focus its first widget.
+        if dialog && !self.was_dialog && self.kb_focus {
+            push(raw, Key::Tab, false);
+            has_focus = true;
+        }
+        self.was_dialog = dialog;
+        let mut events = std::mem::take(&mut self.pad_later);
+        events.extend(self.pad.try_iter());
+        let mut moved = false;
+        for (i, p) in events.iter().copied().enumerate() {
             if !raw.focused {
                 continue;
             }
-            let key = match p {
-                Pad::Nav(Nav::Up) => Some(Key::ArrowUp),
-                Pad::Nav(Nav::Down) => Some(Key::ArrowDown),
-                Pad::Nav(Nav::Left) => Some(Key::ArrowLeft),
-                Pad::Nav(Nav::Right) => Some(Key::ArrowRight),
-                Pad::Confirm if has_focus => Some(Key::Enter),
+            // egui applies one focus move per frame; the rest wait for the next one.
+            if moved && matches!(p, Pad::Nav(_) | Pad::Confirm) && (dialog || details) {
+                self.pad_later.extend_from_slice(&events[i..]);
+                ctx.request_repaint();
+                break;
+            }
+            // Dialogs are mostly forms whose text fields keep the arrows, so the D-pad steps with Tab.
+            let key = match (p, dialog) {
+                (Pad::Nav(Nav::Up | Nav::Left), true) => Some((Key::Tab, true)),
+                (Pad::Nav(Nav::Down | Nav::Right), true) => Some((Key::Tab, false)),
+                (Pad::Nav(Nav::Up), false) => Some((Key::ArrowUp, false)),
+                (Pad::Nav(Nav::Down), false) => Some((Key::ArrowDown, false)),
+                (Pad::Nav(Nav::Left), false) => Some((Key::ArrowLeft, false)),
+                (Pad::Nav(Nav::Right), false) => Some((Key::ArrowRight, false)),
+                (Pad::Confirm, _) if has_focus => Some((Key::Enter, false)),
+                (Pad::Confirm, true) => Some((Key::Tab, false)),
+                (Pad::Back, true) => Some((Key::Escape, false)),
                 _ => None,
             };
-            match key.filter(|_| details) {
-                // Nothing focused yet (opened with the mouse): the first move lands on Play.
-                Some(_) if !has_focus => {
+            match key.filter(|_| dialog || details) {
+                // Details opened with the mouse: the first move lands on Play.
+                Some(_) if details && !has_focus => {
                     self.focus_play = true;
                     self.kb_focus = true;
+                    moved = true;
                 }
-                Some(key) => {
-                    for pressed in [true, false] {
-                        raw.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Default::default() });
-                    }
+                Some((key, shift)) => {
+                    push(raw, key, shift);
                     self.kb_focus = true;
+                    moved = matches!(p, Pad::Nav(_) | Pad::Confirm);
+                    has_focus = true;
+                    // B also reaches handle_pad, which closes the simple dialogs.
+                    if key == Key::Escape {
+                        self.pad_buf.push(p);
+                    }
                 }
                 None => self.pad_buf.push(p),
             }
@@ -2414,6 +2546,8 @@ impl eframe::App for GamutApp {
         let mut actions = Vec::new();
         let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none();
         let blocked = self.selected.is_some() || self.any_dialog();
+        // Before handle_pad: a B that closes a dialog mustn't also close the details under it.
+        let blocked_by_dialog = self.any_dialog();
         if ctx.input(|i| i.key_pressed(Key::F11)) {
             self.toggle_big(&ctx);
         }
@@ -2423,7 +2557,7 @@ impl eframe::App for GamutApp {
         }
         if !typing && grid_shown && !blocked {
             self.grid_keys(&ctx);
-        } else if !typing && self.editor.is_none() {
+        } else if !typing && !blocked_by_dialog {
             if let Some(id) = self.selected {
                 if ctx.input(|i| i.key_pressed(Key::Enter)) {
                     actions.push(Action::Play(id));
@@ -2558,6 +2692,11 @@ impl eframe::App for GamutApp {
         self.refresh_window(&ctx);
         self.stop_window(&ctx);
         self.playnite_window(&ctx);
+        self.game_menu_window(&ctx, &mut actions);
+        self.play_window(&ctx, &mut actions);
+        if self.any_dialog() != self.was_dialog {
+            ctx.request_repaint();
+        }
         self.toasts.show(&ctx);
 
         for a in actions {
