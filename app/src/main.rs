@@ -10,6 +10,7 @@ mod theme;
 mod thumbs;
 mod ui;
 mod util;
+mod video;
 mod workers;
 
 fn main() -> eframe::Result {

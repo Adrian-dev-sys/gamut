@@ -22,3 +22,4 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 - `docs/specialk.md` – Special K helper: service start/stop, injection signal, per-game override, anti-cheat skip.
 - `docs/reshade.md` – automatic per-game ReShade install (download, API detection, existing-setup skip).
 - `docs/launching.md` – launch pipeline, exit detection, close/force-close, auto HDR.
+- `docs/descriptions.md` – description images (AVIF via WIC, alpha) and Steam clips (Media Foundation playback).

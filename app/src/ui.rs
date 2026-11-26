@@ -1773,7 +1773,11 @@ fn description(ui: &mut Ui, d: &str) {
                 };
                 if let Some(size) = size {
                     ui.add_space(6.0);
-                    ui.add(img.fit_to_exact_size(size));
+                    if crate::video::is_clip_poster(url) {
+                        crate::video::show(ui, url, img, size);
+                    } else {
+                        ui.add(img.fit_to_exact_size(size));
+                    }
                     ui.add_space(6.0);
                 }
             }
