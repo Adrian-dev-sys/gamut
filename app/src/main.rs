@@ -5,6 +5,7 @@ mod achievements;
 mod avif;
 mod editor;
 mod keycheck;
+mod sessions_view;
 mod logging;
 mod notify;
 mod picker;

@@ -159,6 +159,7 @@ pub struct GamutApp {
     stats_tab: Option<crate::stats_tab::Stats>,
     /// Details page tab: 0 = About, 1 = Achievements (kept while browsing games).
     detail_tab: usize,
+    sessions: Option<crate::sessions_view::GameSessions>,
     key_checks: crate::keycheck::KeyChecks,
 }
 
@@ -223,6 +224,7 @@ impl GamutApp {
             ach_tab: None,
             stats_tab: None,
             detail_tab: 0,
+            sessions: None,
             key_checks: Default::default(),
         })
     }
@@ -277,8 +279,16 @@ impl GamutApp {
                 st.dirty = true;
             }
             match ev {
-                Event::LibraryChanged => self.reload_all(),
-                Event::GameUpdated(id) => self.reload_one(id),
+                Event::LibraryChanged => {
+                    self.sessions = None; // Steam scans add sessions
+                    self.reload_all()
+                }
+                Event::GameUpdated(id) => {
+                    if self.sessions.as_ref().is_some_and(|s| s.id == id) {
+                        self.sessions = None;
+                    }
+                    self.reload_one(id)
+                }
                 Event::Error(e) => self.toasts.error(e),
                 Event::Info(m) => self.toasts.info(m),
                 Event::Achievements(id) => {
@@ -843,18 +853,24 @@ impl GamutApp {
             }
             ui.add_space(20.0);
 
-            // About / Achievements tabs, so achievements don't sit below a long description.
+            // About / Achievements / Sessions tabs, so they don't sit below a long description.
             let show_ach = ach_src.is_some() && self.detail_tab == 1;
-            if ach_src.is_some() {
+            let show_sessions = self.detail_tab == 2;
+            if self.sessions.as_ref().is_none_or(|s| s.id != id) {
+                self.sessions = Some(crate::sessions_view::GameSessions::load(&self.lib, id));
+            }
+            {
                 let count = self.ach.as_ref().filter(|a| a.id == id).and_then(crate::achievements::tile);
+                let n = self.sessions.as_ref().map_or(0, |s| s.count());
                 ui.horizontal(|ui| {
                     ui.add_space(pad);
-                    let ach_label = match count {
-                        Some(c) => format!("Achievements  {c}"),
-                        None => "Achievements".into(),
-                    };
-                    for (i, label) in [(0, "About".to_string()), (1, ach_label)] {
-                        let on = self.detail_tab == i;
+                    let mut tabs = vec![(0, "About".to_string())];
+                    if ach_src.is_some() {
+                        tabs.push((1, count.map_or("Achievements".into(), |c| format!("Achievements  {c}"))));
+                    }
+                    tabs.push((2, if n > 0 { format!("Sessions  {n}") } else { "Sessions".into() }));
+                    for (i, label) in tabs {
+                        let on = self.detail_tab == i || (i == 0 && self.detail_tab == 1 && ach_src.is_none());
                         let text = RichText::new(label).size(15.0).color(if on { theme::TEXT } else { TEXT_DIM });
                         if ui.add(egui::Button::selectable(on, text).min_size(vec2(0.0, 30.0))).clicked() {
                             self.detail_tab = i;
@@ -926,7 +942,10 @@ impl GamutApp {
                 let right_w = ui.available_width() - pad;
                 ui.allocate_ui_with_layout(vec2(right_w, 0.0), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(right_w);
-                    if !show_ach {
+                    if let (true, Some(sv)) = (show_sessions, self.sessions.as_mut()) {
+                        crate::sessions_view::section(ui, sv);
+                    }
+                    if !show_ach && !show_sessions {
                         theme::section(ui, "Description");
                         ui.vertical(|ui| {
                             match &g.description {
@@ -1905,6 +1924,7 @@ impl eframe::App for GamutApp {
         // Reopening a game rereads (and if needed refreshes) its achievements.
         if self.selected.is_none() {
             self.ach = None;
+            self.sessions = None;
         }
         if let Some(p) = self.ra_pick.as_mut() {
             use crate::achievements::PickOutcome;

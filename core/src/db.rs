@@ -639,6 +639,13 @@ impl Library {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// One game's play sessions, newest first: (start, minutes, kind).
+    pub fn game_sessions(&self, id: i64) -> Result<Vec<(i64, i64, i64)>> {
+        let mut st = self.conn.prepare("SELECT start, minutes, kind FROM sessions WHERE game_id = ?1 ORDER BY start DESC, id DESC")?;
+        let rows = st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// When session logging began (first session or first API scan), if it has.
     pub fn stats_since(&self) -> Result<Option<i64>> {
         Ok(self.conn.query_row(
@@ -1013,6 +1020,8 @@ world"));
         let c = lib.add_custom(&Game::new_custom("Emu".into(), None)).unwrap();
         lib.add_playtime(c, 25, 1000).unwrap();
         assert_eq!(lib.sessions_since(900).unwrap()[0], (c, 1000, 25));
+        lib.add_playtime(c, 5, 2000).unwrap();
+        assert_eq!(lib.game_sessions(c).unwrap(), vec![(2000, 5, 0), (1000, 25, 0)]);
         lib.delete(c).unwrap();
         assert!(lib.sessions_since(900).unwrap().iter().all(|s| s.0 != c));
         drop(lib);

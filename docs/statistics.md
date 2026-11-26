@@ -26,3 +26,7 @@ reread (at most every 5 s) when the library, a game or achievements change.
 - Playtime and achievements: 30 days / 12 months / years. Most played: all time or last 30 days (rows open the game).
 - Playtime by platform (Steam games as "Steam") and genre, completion status, weekday, games added per month.
 - Tiles: total playtime, games played, never played, this month, play streak (days in a row with a session).
+
+## Game page
+- Sessions tab (`app/src/sessions_view.rs`, `Library::game_sessions`): tiles (count, recorded, average, longest, last 30 days)
+  and sessions newest first; Steam ones show an approximate start. Reloaded when the game or library changes.
