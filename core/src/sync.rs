@@ -1,7 +1,7 @@
 //! One-game scraping steps, shared by the UI's background workers and the CLI.
 use crate::model::{state, Game, Source};
 use crate::scrape::{self, SgdbRef};
-use crate::{images, steam, Config, Library, Paths};
+use crate::{igdb, images, steam, Config, Library, Paths};
 use anyhow::Result;
 
 /// Fetches whatever art is missing (cover and/or banner). Errors mean "try again later".
@@ -32,6 +32,7 @@ pub fn fetch_cover(lib: &Library, paths: &Paths, cfg: &Config, g: &Game) -> Resu
             }
         }
     }
+    let mut sgdb_err = None;
     if missing(&cover, &hero) && !key.is_empty() {
         let clean = clean_name(&g.name);
         let mut refs = Vec::new();
@@ -48,11 +49,31 @@ pub fn fetch_cover(lib: &Library, paths: &Paths, cfg: &Config, g: &Game) -> Resu
                     cover = cover.or(c);
                     hero = hero.or(h);
                 }
-                // Fatal only if SteamGridDB was our last chance at a cover.
-                Err(e) if want_cover && cover.is_none() && !g.has_cover => return Err(e),
+                // Fatal only if nothing else finds a cover (IGDB is tried first).
+                Err(e) if want_cover && cover.is_none() && !g.has_cover => sgdb_err = Some(e),
                 Err(e) => log::warn!("sgdb {}: {e:#}", g.name),
             }
         }
+    }
+
+    if missing(&cover, &hero) && g.source == Source::Custom && igdb::configured(cfg) {
+        match igdb_entry(lib, cfg, g) {
+            Ok(Some(e)) => {
+                if want_cover && cover.is_none() {
+                    cover = e.cover.as_deref().and_then(|i| download(&igdb::cover_url(i), &g.name));
+                }
+                if want_hero && hero.is_none() {
+                    hero = e.artworks.iter().chain(&e.screenshots).next().and_then(|i| download(&igdb::hero_url(i), &g.name));
+                }
+            }
+            Ok(None) => {}
+            Err(e) if igdb::is_auth_error(&e) => log::warn!("igdb {}: {e:#}", g.name),
+            Err(e) if want_cover && cover.is_none() && !g.has_cover => return Err(e),
+            Err(e) => log::warn!("igdb {}: {e:#}", g.name),
+        }
+    }
+    if let (Some(e), true) = (sgdb_err, want_cover && cover.is_none()) {
+        return Err(e);
     }
 
     let has_hero = match hero {
@@ -100,14 +121,70 @@ fn clean_name(name: &str) -> String {
     n.trim().to_string()
 }
 
-/// Fetches store metadata. Custom games are matched to Steam by exact (normalized) name.
-pub fn fetch_meta(lib: &Library, g: &Game) -> Result<bool> {
+fn download(url: &str, name: &str) -> Option<Vec<u8>> {
+    crate::http::get_bytes_opt(url).unwrap_or_else(|e| {
+        log::warn!("igdb image for {name}: {e:#}");
+        None
+    })
+}
+
+/// The game's IGDB entry: the stored match, or a strict lookup by name and platform (stored either way).
+pub fn igdb_entry(lib: &Library, cfg: &Config, g: &Game) -> Result<Option<igdb::IgdbGame>> {
+    match lib.igdb_id(g.id)? {
+        Some(0) => Ok(None),
+        Some(id) => igdb::game(cfg, id),
+        None => {
+            let found = igdb::best(&g.name, g.platform.as_deref(), &igdb::search(cfg, &clean_name(&g.name))?).cloned();
+            lib.set_igdb_id(g.id, found.as_ref().map_or(0, |f| f.id))?;
+            Ok(found)
+        }
+    }
+}
+
+/// True for platforms Steam can't have (consoles, handhelds); PC or unknown is false.
+fn console(g: &Game) -> bool {
+    g.platform.as_deref().is_some_and(|p| {
+        let p = p.to_lowercase();
+        !p.trim().is_empty() && !["pc", "windows", "dos", "linux", "mac"].iter().any(|k| p.contains(k))
+    })
+}
+
+/// Fills metadata from IGDB; false (and not found) without a confident match.
+fn igdb_meta(lib: &Library, cfg: &Config, g: &Game) -> Result<bool> {
+    let Some(e) = igdb_entry(lib, cfg, g)? else {
+        lib.set_meta_state(g.id, state::NOT_FOUND)?;
+        return Ok(false);
+    };
+    lib.save_metadata(g.id, &e.meta, None)?;
+    // A cover that wasn't found before may be on IGDB.
+    if !g.has_cover && g.cover_state == state::NOT_FOUND {
+        lib.set_cover_state(g.id, false, None, state::PENDING)?;
+    }
+    Ok(true)
+}
+
+/// Fetches store metadata. Custom games: console games from IGDB; PC games matched to Steam by exact
+/// (normalized) name, then IGDB. Bad IGDB credentials fall back to the Steam-only behavior.
+pub fn fetch_meta(lib: &Library, cfg: &Config, g: &Game) -> Result<bool> {
+    let use_igdb = g.source == Source::Custom && igdb::configured(cfg);
+    if use_igdb && console(g) {
+        match igdb_meta(lib, cfg, g) {
+            Err(e) if igdb::is_auth_error(&e) => log::warn!("igdb {}: {e:#}", g.name),
+            r => return r,
+        }
+    }
     let appid = match (g.source, g.steam_appid()) {
         (_, Some(id)) => Some(id),
         (Source::Custom, None) => scrape::steam_search(&g.name)?,
         (Source::Steam, None) => None,
     };
     let Some(appid) = appid else {
+        if use_igdb && !console(g) {
+            match igdb_meta(lib, cfg, g) {
+                Err(e) if igdb::is_auth_error(&e) => log::warn!("igdb {}: {e:#}", g.name),
+                r => return r,
+            }
+        }
         lib.set_meta_state(g.id, state::NOT_FOUND)?;
         return Ok(false);
     };

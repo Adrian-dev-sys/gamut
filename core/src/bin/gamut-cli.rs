@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -91,6 +91,22 @@ fn main() -> anyhow::Result<()> {
             println!("Steam:             {}", show(status::steam(&cfg)));
             println!("SteamGridDB:       {}", show(status::steamgriddb(&cfg.steamgriddb_key)));
             println!("RetroAchievements: {}", show(status::retro(&cfg.ra_user, &cfg.ra_api_key)));
+            println!("IGDB:              {}", show(gamut_core::igdb::check(&cfg)));
+        }
+        // igdb NAME [PLATFORM]: search results and which one would be matched automatically.
+        Some("igdb") if args.len() >= 2 => {
+            use gamut_core::igdb;
+            let list = igdb::search(&cfg, &args[1])?;
+            let pick = igdb::best(&args[1], args.get(2).map(String::as_str), &list).map(|g| g.id);
+            for g in &list {
+                let mark = if Some(g.id) == pick { "*" } else { " " };
+                println!("{mark} {:>7}  {}  ({})  main={}  [{}]", g.id, g.name, g.year.unwrap_or(0), g.main, g.platforms.join(", "));
+            }
+            if let Some(g) = list.iter().find(|g| Some(g.id) == pick) {
+                println!("
+{:#?}
+cover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
+            }
         }
         Some("achievements") if args.len() >= 2 => {
             use gamut_core::achievements::{steam, Fetched};
@@ -114,7 +130,7 @@ fn main() -> anyhow::Result<()> {
                 println!("cover {:<40} {r:?}", g.name);
             }
             for g in lib.needing_meta()?.into_iter().take(n) {
-                let r = sync::fetch_meta(&lib, &g);
+                let r = sync::fetch_meta(&lib, &cfg, &g);
                 println!("meta  {:<40} {r:?}", g.name);
             }
         }
@@ -154,7 +170,7 @@ fn main() -> anyhow::Result<()> {
             let id = lib.add_custom(&Game::new_custom(args[1].clone(), Some(args[2].clone())))?;
             println!("added #{id}");
         }
-        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
+        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
     }
     Ok(())
 }

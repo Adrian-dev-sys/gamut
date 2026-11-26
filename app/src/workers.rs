@@ -137,7 +137,7 @@ impl Workers {
                         continue;
                     }
                     let c = cfg.read().unwrap().clone();
-                    let r = if meta { sync::fetch_meta(&lib, &g) } else { sync::fetch_cover(&lib, &paths, &c, &g) };
+                    let r = if meta { sync::fetch_meta(&lib, &c, &g) } else { sync::fetch_cover(&lib, &paths, &c, &g) };
                     match r {
                         Ok(_) => {
                             ok += 1;
@@ -175,6 +175,35 @@ impl Workers {
     pub fn kick(&self) {
         let _ = self.kick_cover.send(());
         let _ = self.kick_meta.send(());
+    }
+
+    /// With working IGDB credentials not used before, requeues custom games with gaps so IGDB fills them.
+    pub fn igdb_requeue(&self) {
+        let cfg = self.cfg.read().unwrap().clone();
+        if !gamut_core::igdb::configured(&cfg) {
+            return;
+        }
+        let (paths, tx, kc, km) = (self.paths.clone(), self.tx.clone(), self.kick_cover.clone(), self.kick_meta.clone());
+        std::thread::spawn(move || {
+            let r = (|| -> anyhow::Result<usize> {
+                let mut lib = Library::open(&paths.db)?;
+                if lib.igdb_requeued(&cfg.igdb_client_id)? {
+                    return Ok(0);
+                }
+                gamut_core::igdb::check(&cfg)?;
+                lib.igdb_requeue(&cfg.igdb_client_id)
+            })();
+            match r {
+                Ok(0) => {}
+                Ok(n) => {
+                    log::info!("IGDB connected: {n} games queued");
+                    let _ = tx.send(Event::LibraryChanged);
+                    let _ = kc.send(());
+                    let _ = km.send(());
+                }
+                Err(e) => log::warn!("igdb requeue: {e:#}"),
+            }
+        });
     }
 
     /// Reads a Playnite library (default location when `dir` is None) and reports what an import would do.

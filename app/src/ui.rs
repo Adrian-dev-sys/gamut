@@ -178,6 +178,7 @@ impl GamutApp {
         let (platforms, tags) = facets(&games);
         let completions = completion_facets(&games);
         let workers = Workers::start(&cc.egui_ctx, paths.clone(), cfg.clone());
+        workers.igdb_requeue();
         workers.rescan();
         let (hero_tx, hero_rx) = unbounded();
         Ok(GamutApp {
@@ -1106,6 +1107,22 @@ impl GamutApp {
                         ui.label(theme::hint("Achievements for emulated games, matched by platform and title."));
                         ui.add_space(12.0);
                         ui.separator();
+                        theme::section(ui, "IGDB");
+                        egui::Grid::new("igdb").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                            ui.label("Client ID");
+                            ui.add(egui::TextEdit::singleline(&mut s.igdb_client_id).desired_width(420.0));
+                            ui.end_row();
+                            ui.label("Client secret");
+                            ui.add(egui::TextEdit::singleline(&mut s.igdb_client_secret).password(true).desired_width(420.0));
+                            ui.end_row();
+                            checks.row(ui, crate::keycheck::IGDB);
+                        });
+                        ui.hyperlink_to("Register a Twitch app for IGDB", "https://dev.twitch.tv/console/apps");
+                        ui.label(theme::hint(
+                            "Metadata and covers for games not on Steam. Any app name, redirect URL http://localhost,                              category Application Integration; needs a Twitch account with two-factor sign-in.",
+                        ));
+                        ui.add_space(12.0);
+                        ui.separator();
                         theme::section(ui, "Playnite");
                         ui.label(theme::hint("Copies games, playtime, favorites, covers and launch settings. Close Playnite first."));
                         ui.horizontal(|ui| {
@@ -1247,6 +1264,9 @@ impl GamutApp {
             }
             if new.steamgriddb_key != old.steamgriddb_key {
                 let _ = self.lib.retry_missing_covers();
+            }
+            if (&new.igdb_client_id, &new.igdb_client_secret) != (&old.igdb_client_id, &old.igdb_client_secret) {
+                self.workers.igdb_requeue();
             }
             self.workers.rescan();
         } else if !open {

@@ -90,6 +90,8 @@ impl Library {
              );
              CREATE INDEX IF NOT EXISTS sessions_start ON sessions(start);
              CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+             -- IGDB game per game: >0 the IGDB id, 0 = looked up, no confident match.
+             CREATE TABLE IF NOT EXISTS igdb_match (game_id INTEGER PRIMARY KEY, igdb_id INTEGER NOT NULL);
              -- Last Steam API total per game and when it was first seen at that value (session baseline).
              CREATE TABLE IF NOT EXISTS steam_seen (game_id INTEGER PRIMARY KEY, minutes INTEGER NOT NULL, since INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS achievement_state (
@@ -415,6 +417,12 @@ impl Library {
 
     /// Saves user-editable fields.
     pub fn update_user_fields(&self, g: &Game) -> Result<()> {
+        // A renamed or moved game needs a new IGDB lookup.
+        self.conn.execute(
+            "DELETE FROM igdb_match WHERE game_id = ?1 AND EXISTS
+             (SELECT 1 FROM games WHERE id = ?1 AND (name IS NOT ?2 OR platform IS NOT ?3))",
+            params![g.id, g.name, g.platform],
+        )?;
         self.conn.execute(
             "UPDATE games SET name = ?2, exe = ?3, args = ?4, work_dir = ?5, favorite = ?6, hidden = ?7,
              description = ?8, developer = ?9, publisher = ?10, release_date = ?11, genres = ?12,
@@ -440,6 +448,7 @@ impl Library {
         self.conn.execute("DELETE FROM achievement_state WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM sessions WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM steam_seen WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM igdb_match WHERE game_id = ?1", [id])?;
         Ok(())
     }
 
@@ -584,12 +593,13 @@ impl Library {
             "UPDATE games SET
                 description = COALESCE(description, ?2), developer = COALESCE(developer, ?3),
                 publisher = COALESCE(publisher, ?4), release_date = COALESCE(release_date, ?5),
-                genres = COALESCE(genres, ?6), meta_state = 1,
+                genres = COALESCE(genres, ?6), series = COALESCE(series, ?8),
+                critic_score = COALESCE(critic_score, ?9), community_score = COALESCE(community_score, ?10), meta_state = 1,
                 source_id = CASE WHEN source = 'custom' AND ?7 IS NOT NULL THEN ?7 ELSE source_id END
              WHERE id = ?1",
             params![
                 id, m.description, m.developer, m.publisher, m.release_date, m.genres,
-                matched_appid.map(|a| a.to_string())
+                matched_appid.map(|a| a.to_string()), m.series, m.critic_score, m.community_score
             ],
         )?;
         Ok(())
@@ -644,6 +654,43 @@ impl Library {
         let mut st = self.conn.prepare("SELECT start, minutes, kind FROM sessions WHERE game_id = ?1 ORDER BY start DESC, id DESC")?;
         let rows = st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The stored IGDB match: None = not looked up, Some(0) = no confident match.
+    pub fn igdb_id(&self, id: i64) -> Result<Option<i64>> {
+        Ok(self.conn.query_row("SELECT igdb_id FROM igdb_match WHERE game_id = ?1", [id], |r| r.get(0)).optional()?)
+    }
+
+    pub fn set_igdb_id(&self, id: i64, igdb: i64) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO igdb_match (game_id, igdb_id) VALUES (?1, ?2)", params![id, igdb])?;
+        Ok(())
+    }
+
+    /// True when `igdb_requeue` already ran for this Client ID.
+    pub fn igdb_requeued(&self, client_id: &str) -> Result<bool> {
+        let seen: Option<i64> =
+            self.conn.query_row("SELECT value FROM meta WHERE key = 'igdb_client'", [], |r| r.get(0)).optional()?;
+        Ok(seen == Some(client_hash(client_id)))
+    }
+
+    /// Once per new IGDB Client ID: requeues custom games with gaps (metadata or cover) so IGDB can
+    /// fill them, and forgets earlier "no match" results. Returns how many games were requeued.
+    pub fn igdb_requeue(&mut self, client_id: &str) -> Result<usize> {
+        let h = client_hash(client_id);
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let seen: Option<i64> = tx.query_row("SELECT value FROM meta WHERE key = 'igdb_client'", [], |r| r.get(0)).optional()?;
+        if seen == Some(h) {
+            return Ok(0);
+        }
+        tx.execute("DELETE FROM igdb_match WHERE igdb_id = 0", [])?;
+        let n = tx.execute(
+            "UPDATE games SET meta_state = 0 WHERE source = 'custom' AND meta_state != 0 AND (meta_state = 2
+             OR description IS NULL OR developer IS NULL OR genres IS NULL OR release_date IS NULL)",
+            [],
+        )? + tx.execute("UPDATE games SET cover_state = 0 WHERE source = 'custom' AND has_cover = 0 AND cover_state = 2", [])?;
+        tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('igdb_client', ?1)", [h])?;
+        tx.commit()?;
+        Ok(n)
     }
 
     /// When session logging began (first session or first API scan), if it has.
@@ -807,6 +854,11 @@ impl Library {
     }
 }
 
+/// FNV-1a of a trimmed Client ID (the meta table holds integers).
+fn client_hash(id: &str) -> i64 {
+    id.trim().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,6 +1015,34 @@ world"));
         assert_eq!(lib.achievements(id).unwrap().len(), 2);
         lib.delete(id).unwrap();
         assert!(lib.achievements(id).unwrap().is_empty() && lib.achievement_state(id).unwrap().is_none());
+        drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn igdb_match_and_requeue() {
+        let dir = std::env::temp_dir().join(format!("gamut-igdb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lib = Library::open(&dir.join("t.db")).unwrap();
+        let g = Game::new_custom("Rom".into(), None);
+        let id = lib.add_custom(&g).unwrap();
+        lib.set_igdb_id(id, 42).unwrap();
+        lib.update_user_fields(&Game { id, ..g.clone() }).unwrap();
+        assert_eq!(lib.igdb_id(id).unwrap(), Some(42), "unchanged name keeps the match");
+        lib.update_user_fields(&Game { id, name: "Rom 2".into(), ..g.clone() }).unwrap();
+        assert_eq!(lib.igdb_id(id).unwrap(), None, "rename drops it");
+        lib.set_igdb_id(id, 0).unwrap();
+        lib.set_meta_state(id, state::NOT_FOUND).unwrap();
+        assert_eq!(lib.igdb_requeue("abc").unwrap(), 1);
+        assert_eq!(lib.igdb_id(id).unwrap(), None, "no-match forgotten");
+        assert_eq!(lib.needing_meta().unwrap().len(), 1);
+        lib.set_meta_state(id, state::NOT_FOUND).unwrap();
+        assert_eq!(lib.igdb_requeue(" abc ").unwrap(), 0, "same client id: once");
+        let m = Metadata { series: Some("S".into()), critic_score: Some(80), ..Default::default() };
+        lib.save_metadata(id, &m, None).unwrap();
+        let got = lib.get(id).unwrap().unwrap();
+        assert_eq!((got.series.as_deref(), got.critic_score), (Some("S"), Some(80)));
+        lib.delete(id).unwrap();
+        assert_eq!(lib.igdb_id(id).unwrap(), None);
         drop(lib);
         let _ = std::fs::remove_dir_all(&dir);
     }

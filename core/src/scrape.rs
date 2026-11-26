@@ -73,6 +73,7 @@ pub fn steam_details(appid: u32) -> Result<Option<SteamDetails>> {
             publisher: join(&d.publishers),
             release_date: d.release_date.map(|r| r.date).filter(|s| !s.is_empty()),
             genres: join(&d.genres.into_iter().map(|g| g.description).collect::<Vec<_>>()),
+            ..Default::default()
         },
     }))
 }

@@ -16,19 +16,23 @@ enum Check {
 pub const STEAM: usize = 0;
 pub const SGDB: usize = 1;
 pub const RETRO: usize = 2;
+pub const IGDB: usize = 3;
+const N: usize = 4;
 
 #[derive(Default)]
 pub struct KeyChecks {
-    state: Arc<Mutex<[Check; 3]>>,
+    state: Arc<Mutex<[Check; N]>>,
     /// Values last checked, and the values seen last frame with when they changed.
-    checked: [String; 3],
-    seen: [(String, f64); 3],
+    checked: [String; N],
+    seen: [(String, f64); N],
 }
 
 fn values(c: &Config, i: usize) -> String {
     match i {
         STEAM => format!("{}\n{}", c.steam_api_key.trim(), c.steam_id.trim()),
         SGDB => c.steamgriddb_key.trim().to_string(),
+        IGDB => format!("{}
+{}", c.igdb_client_id.trim(), c.igdb_client_secret.trim()),
         _ => format!("{}\n{}", c.ra_user.trim(), c.ra_api_key.trim()),
     }
 }
@@ -37,7 +41,7 @@ impl KeyChecks {
     /// Starts checks for keys that changed and then sat still for a second (immediately on first open).
     pub fn update(&mut self, c: &Config, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        for i in 0..3 {
+        for i in 0..N {
             let v = values(c, i);
             if self.seen[i].0 != v {
                 let first = self.checked[i].is_empty() && self.seen[i].0.is_empty();
@@ -53,6 +57,7 @@ impl KeyChecks {
             let empty = match i {
                 STEAM => c.steam_api_key.trim().is_empty(),
                 SGDB => c.steamgriddb_key.trim().is_empty(),
+                IGDB => !gamut_core::igdb::configured(c),
                 _ => c.ra_user.trim().is_empty() || c.ra_api_key.trim().is_empty(),
             };
             if empty {
@@ -65,6 +70,7 @@ impl KeyChecks {
                 let r = match i {
                     STEAM => gamut_core::status::steam(&c),
                     SGDB => gamut_core::status::steamgriddb(&c.steamgriddb_key),
+                    IGDB => gamut_core::igdb::check(&c),
                     _ => gamut_core::status::retro(&c.ra_user, &c.ra_api_key),
                 };
                 // A newer check may have started meanwhile; only the latest values' result counts.

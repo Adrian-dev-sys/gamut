@@ -2,6 +2,7 @@ pub mod achievements;
 pub mod config;
 pub mod db;
 pub mod http;
+pub mod igdb;
 pub mod hdr;
 pub mod images;
 pub mod launch;

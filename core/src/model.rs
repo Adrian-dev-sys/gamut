@@ -130,4 +130,7 @@ pub struct Metadata {
     pub publisher: Option<String>,
     pub release_date: Option<String>,
     pub genres: Option<String>,
+    pub series: Option<String>,
+    pub critic_score: Option<i64>,
+    pub community_score: Option<i64>,
 }
