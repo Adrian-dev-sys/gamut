@@ -90,6 +90,8 @@ impl Library {
              );
              CREATE INDEX IF NOT EXISTS sessions_start ON sessions(start);
              CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+             -- Last Steam API total per game and when it was first seen at that value (session baseline).
+             CREATE TABLE IF NOT EXISTS steam_seen (game_id INTEGER PRIMARY KEY, minutes INTEGER NOT NULL, since INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS achievement_state (
                 game_id INTEGER PRIMARY KEY, fetched INTEGER NOT NULL DEFAULT 0, schema_at INTEGER NOT NULL DEFAULT 0,
                 total INTEGER NOT NULL DEFAULT 0, unlocked INTEGER NOT NULL DEFAULT 0, error TEXT
@@ -338,29 +340,42 @@ impl Library {
         let first = tx.query_row("SELECT COUNT(*) FROM games WHERE source = 'steam'", [], |r| r.get::<_, i64>(0))? == 0;
         tx.execute("UPDATE games SET installed = 0 WHERE source = 'steam'", [])?;
         let now = if first { 0 } else { crate::now() };
-        // Playtime that grew since the last scan with Web API totals becomes a session, dated at last
-        // played. Growth larger than the time between scans (imports, first scans) isn't play.
+        // Steam totals that grew become sessions. Baseline per game: the API total and when it was first
+        // seen at that value (`steam_seen`), so a session still running during one scan counts at the next.
+        // Growth that can't fit since then (first sightings, imports) isn't play.
         let scan_at = crate::now();
-        let prev_scan: Option<i64> =
-            tx.query_row("SELECT value FROM meta WHERE key = 'steam_scan'", [], |r| r.get(0)).optional()?;
-        if let Some(prev) = prev_scan.filter(|_| !first) {
-            let mut old = tx.prepare("SELECT id, playtime_min FROM games WHERE source = 'steam' AND source_id = ?1")?;
+        {
+            let mut seen = tx.prepare("SELECT s.game_id, s.minutes, s.since FROM games g JOIN steam_seen s ON s.game_id = g.id WHERE g.source = 'steam' AND g.source_id = ?1")?;
+            let mut id_of = tx.prepare("SELECT id FROM games WHERE source = 'steam' AND source_id = ?1")?;
+            let mut set = tx.prepare("INSERT OR REPLACE INTO steam_seen (game_id, minutes, since) VALUES (?1, ?2, ?3)")?;
             let mut log = tx.prepare("INSERT INTO sessions (game_id, start, minutes, kind) VALUES (?1, ?2, ?3, 1)")?;
-            let window = (scan_at - prev) / 60 + 10;
             for e in entries {
                 let Some(new) = e.playtime_min else { continue };
-                let Some((id, was)) = old.query_row([e.appid.to_string()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).optional()? else {
-                    continue;
-                };
-                let delta = new - was;
-                if delta > 0 && delta <= window {
-                    let start = if e.last_played > 0 { e.last_played.clamp(prev, scan_at) } else { scan_at };
-                    log.execute(params![id, start, delta])?;
+                let app = e.appid.to_string();
+                match seen.query_row([&app], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).optional()? {
+                    Some((_, was, _)) if was == new => {}
+                    Some((id, was, since)) => {
+                        let delta = new - was;
+                        if delta > 0 && delta <= (scan_at - since) / 60 + 10 {
+                            // Dated at Steam's last-played time when it's plausible, else back from now.
+                            let start = match e.last_played {
+                                t if t >= since && t <= scan_at => t,
+                                _ => scan_at - delta * 60,
+                            };
+                            log.execute(params![id, start, delta])?;
+                        }
+                        set.execute(params![id, new, scan_at])?;
+                    }
+                    None => {
+                        // Not in the library yet (inserted below): seen on the next scan.
+                        if let Some(id) = id_of.query_row([&app], |r| r.get::<_, i64>(0)).optional()? {
+                            set.execute(params![id, new, scan_at])?;
+                        }
+                    }
                 }
             }
         }
         if entries.iter().any(|e| e.playtime_min.is_some()) {
-            tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('steam_scan', ?1)", [scan_at])?;
             tx.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('steam_scan_first', ?1)", [scan_at])?;
         }
         {
@@ -424,6 +439,7 @@ impl Library {
         self.conn.execute("DELETE FROM achievements WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM achievement_state WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM sessions WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM steam_seen WHERE game_id = ?1", [id])?;
         Ok(())
     }
 
@@ -982,14 +998,16 @@ world"));
         let e = |mins, last| SteamEntry { appid: 5, name: "G".into(), installed: true, install_dir: None, playtime_min: Some(mins), last_played: last };
         lib.sync_steam(&[e(10, 0)]).unwrap();
         lib.sync_steam(&[e(10, 0)]).unwrap();
-        assert!(lib.sessions_since(0).unwrap().is_empty());
-        let hour_ago = crate::now() - 3600;
-        lib.conn.execute("UPDATE meta SET value = ?1 WHERE key = 'steam_scan'", [hour_ago]).unwrap();
-        lib.sync_steam(&[e(40, hour_ago + 600)]).unwrap();
+        assert!(lib.sessions_since(0).unwrap().is_empty(), "first sightings aren't play");
         let id = lib.all().unwrap()[0].id;
-        assert_eq!(lib.sessions_since(0).unwrap(), vec![(id, hour_ago + 600, 30)]);
+        let ago = |s: i64| crate::now() - s;
+        // Total unchanged since 2 h ago; a scan 2 min ago (mid-session) saw nothing new.
+        lib.conn.execute("UPDATE steam_seen SET since = ?1", [ago(7200)]).unwrap();
+        lib.sync_steam(&[e(10, 0)]).unwrap();
+        lib.sync_steam(&[e(100, ago(5600))]).unwrap();
+        assert_eq!(lib.sessions_since(0).unwrap(), vec![(id, ago(5600), 90)], "a session spanning scans counts");
         lib.sync_steam(&[e(100_000, 0)]).unwrap();
-        assert_eq!(lib.sessions_since(0).unwrap().len(), 1, "jumps bigger than the scan gap aren't play");
+        assert_eq!(lib.sessions_since(0).unwrap().len(), 1, "jumps bigger than the time since the last change aren't play");
         assert!(lib.stats_since().unwrap().is_some());
 
         let c = lib.add_custom(&Game::new_custom("Emu".into(), None)).unwrap();

@@ -231,6 +231,8 @@ fn body(ui: &mut Ui, st: &mut Stats, games: &[Game], open: &mut Option<i64>) {
     let half = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
         ui.allocate_ui_with_layout(vec2(col, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
             ui.set_width(col);
+            // The row around the columns has no spacing; the controls inside need it back.
+            ui.spacing_mut().item_spacing.x = 8.0;
             add(ui);
         });
     };

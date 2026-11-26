@@ -98,7 +98,7 @@ impl Workers {
                     scan_at.remove(0);
                 }
                 last_scan = Instant::now();
-                scanner.run();
+                scanner.run(true);
             }
             {
                 let mut st = starting.lock().unwrap();
@@ -256,7 +256,7 @@ impl Workers {
     }
 
     pub fn rescan(&self) {
-        self.scanner().run();
+        self.scanner().run(false);
     }
 
     fn scanner(&self) -> Scanner {
@@ -283,8 +283,9 @@ struct Scanner {
 }
 
 impl Scanner {
-    /// Rescans in the background unless a scan is already running.
-    fn run(&self) {
+    /// Rescans in the background unless a scan is already running. `quiet` (automatic scans) logs
+    /// problems instead of showing them, so being offline doesn't toast every hour.
+    fn run(&self, quiet: bool) {
         if self.scanning.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -298,10 +299,15 @@ impl Scanner {
             match r {
                 Ok(warn) => {
                     let _ = tx.send(Event::LibraryChanged);
-                    if let Some(w) = warn {
-                        let _ = tx.send(Event::Info(format!("Steam library import: {w}")));
+                    match warn {
+                        Some(w) if quiet => log::warn!("Steam library import: {w}"),
+                        Some(w) => {
+                            let _ = tx.send(Event::Info(format!("Steam library import: {w}")));
+                        }
+                        None => {}
                     }
                 }
+                Err(e) if quiet => log::warn!("Steam scan failed: {e:#}"),
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("Steam scan failed: {e:#}")));
                 }
