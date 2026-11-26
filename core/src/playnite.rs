@@ -66,6 +66,7 @@ pub fn load(dir: &Path) -> Result<Vec<Item>> {
         sources: names("sources.db")?,
         tags: names("tags.db")?,
         series: names("series.db")?,
+        features: names("features.db").unwrap_or_default(),
         completion: names("completionstatuses.db")?,
         emulators: read("emulators.db")?
             .into_iter()
@@ -85,6 +86,7 @@ struct Tables {
     sources: HashMap<String, String>,
     tags: HashMap<String, String>,
     series: HashMap<String, String>,
+    features: HashMap<String, String>,
     completion: HashMap<String, String>,
     emulators: HashMap<String, Doc>,
     defs: EmuDefs,
@@ -150,6 +152,7 @@ impl Tables {
         g.genres = Self::join(&self.genres, d, "GenreIds");
         g.tags = Self::join(&self.tags, d, "TagIds");
         g.series = Self::join(&self.series, d, "SeriesIds");
+        g.specialk = specialk_override(Self::join(&self.features, d, "FeatureIds").as_deref().unwrap_or(""));
         g.platform = Self::join(&self.platforms, d, "PlatformIds");
         g.release_date = s(d, "ReleaseDate").map(normalize_date);
         g.store = s(d, "SourceId").and_then(|i| self.sources.get(i)).cloned();
@@ -570,5 +573,17 @@ mod tests {
         assert_eq!(normalize_date("2009-6-9"), "2009-06-09");
         assert_eq!(normalize_date("2009"), "2009");
         assert_eq!(dir_name("D:\\Games\\Foo\\"), "Foo");
+    }
+}
+
+/// Special K Helper's per-game features; VAC games default to never (like its "stop if VAC" option).
+fn specialk_override(features: &str) -> Option<bool> {
+    let has = |n: &str| features.split(", ").any(|f| f.eq_ignore_ascii_case(n));
+    if has("[SK] Selective Mode Enable") {
+        Some(true)
+    } else if has("[SK] Global Mode Disable") || has("Valve Anti-Cheat Enabled") {
+        Some(false)
+    } else {
+        None
     }
 }

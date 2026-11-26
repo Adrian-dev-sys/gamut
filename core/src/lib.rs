@@ -7,6 +7,7 @@ pub mod litedb;
 pub mod model;
 pub mod playnite;
 pub mod scrape;
+pub mod specialk;
 pub mod steam;
 pub mod sync;
 pub mod vdf;

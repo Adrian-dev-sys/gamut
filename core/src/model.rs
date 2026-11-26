@@ -65,6 +65,8 @@ pub struct Game {
     pub community_score: Option<i64>,
     pub tags: Option<String>,
     pub series: Option<String>,
+    /// Special K per game: None = follow the global mode, Some(true) = always, Some(false) = never.
+    pub specialk: Option<bool>,
 }
 
 impl Game {
@@ -102,6 +104,7 @@ impl Game {
             community_score: None,
             tags: None,
             series: None,
+            specialk: None,
         }
     }
 

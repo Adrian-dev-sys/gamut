@@ -23,6 +23,7 @@ pub struct Editor {
     pub exe: String,
     pub args: String,
     pub work_dir: String,
+    specialk: Option<bool>,
     pub description: String,
     developer: String,
     publisher: String,
@@ -75,6 +76,7 @@ impl Editor {
             exe: s(&g.exe),
             args: s(&g.args),
             work_dir: s(&g.work_dir),
+            specialk: g.specialk,
             description: s(&g.description),
             developer: s(&g.developer),
             publisher: s(&g.publisher),
@@ -101,6 +103,7 @@ impl Editor {
         g.exe = opt(&self.exe);
         g.args = opt(&self.args);
         g.work_dir = opt(&self.work_dir);
+        g.specialk = self.specialk;
         g.description = opt(&self.description);
         g.developer = opt(&self.developer);
         g.publisher = opt(&self.publisher);
@@ -207,12 +210,23 @@ impl Editor {
 
     fn launch(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
-        if self.source == Source::Steam {
-            ui.label(theme::hint("Steam games start through Steam; there is nothing to set here."));
-            return;
-        }
         let w = (ui.available_width() - 160.0).min(700.0);
         egui::Grid::new("ed_launch").num_columns(2).spacing([14.0, 10.0]).min_col_width(110.0).show(ui, |ui| {
+            row(ui, "Special K", |ui| {
+                const OPTS: [(Option<bool>, &str); 3] =
+                    [(None, "Use the global setting"), (Some(true), "Always inject"), (Some(false), "Never inject")];
+                egui::ComboBox::from_id_salt("ed_sk")
+                    .width(220.0)
+                    .selected_text(OPTS.iter().find(|o| o.0 == self.specialk).map_or("", |o| o.1))
+                    .show_ui(ui, |ui| {
+                        for (v, l) in OPTS {
+                            ui.selectable_value(&mut self.specialk, v, l);
+                        }
+                    });
+            });
+            if self.source == Source::Steam {
+                return;
+            }
             row(ui, "Executable", |ui| {
                 ui.horizontal(|ui| {
                     text(ui, &mut self.exe, w - 90.0, "exe, shortcut or URL");
@@ -235,6 +249,10 @@ impl Editor {
             row(ui, "Arguments", |ui| text(ui, &mut self.args, w, ""));
             row(ui, "Working folder", |ui| text(ui, &mut self.work_dir, w, "defaults to the exe's folder"));
         });
+        if self.source == Source::Steam {
+            ui.add_space(6.0);
+            ui.label(theme::hint("Steam games start through Steam; executable and arguments are set there."));
+        }
     }
 
     fn media(&mut self, ui: &mut Ui) -> Option<EditorOutcome> {

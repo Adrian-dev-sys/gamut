@@ -11,7 +11,7 @@ use egui::{
     Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui,
 };
 use gamut_core::model::state;
-use gamut_core::{images, launch, Config, Game, Library, Paths, Source};
+use gamut_core::{images, Config, Game, Library, Paths, Source};
 use std::sync::atomic::Ordering;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -327,8 +327,7 @@ impl GamutApp {
                     if self.running().contains(&id) {
                         return Ok(());
                     }
-                    let l = launch::launch(&g)?;
-                    self.workers.track(id, l);
+                    self.workers.play(g)?;
                 }
                 Action::Edit(id) => {
                     if let Some(g) = self.game(id) {
@@ -920,6 +919,32 @@ impl GamutApp {
                 });
                 ui.hyperlink_to("Get a SteamGridDB key", "https://www.steamgriddb.com/profile/preferences/api");
                 ui.label(theme::hint("Used for covers and banners Steam doesn't have."));
+                ui.add_space(12.0);
+                ui.separator();
+                theme::section(ui, "Special K");
+                let sk = &mut s.specialk;
+                egui::Grid::new("sk").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                    const MODES: [(&str, &str); 3] =
+                        [("off", "Off"), ("global", "Every game (unless turned off)"), ("selective", "Only games turned on")];
+                    const STOPS: [(&str, &str); 3] =
+                        [("injection", "Once it's in the game"), ("exit", "When the game exits"), ("never", "Never")];
+                    ui.label("Inject into");
+                    combo(ui, "sk_mode", &mut sk.mode, &MODES);
+                    ui.end_row();
+                    ui.label("Stop service");
+                    combo(ui, "sk_stop", &mut sk.stop, &STOPS);
+                    ui.end_row();
+                    ui.label("Folder");
+                    let found = gamut_core::specialk::install_dir("").map(|p| p.display().to_string());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut sk.path)
+                            .hint_text(found.map_or("not found".into(), |p| format!("auto: {p}")))
+                            .desired_width(320.0),
+                    );
+                    ui.end_row();
+                });
+                ui.checkbox(&mut sk.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
+                ui.label(theme::hint("Starts Special K's injection service before a game launches. Set a game to always/never in Edit → Launch."));
                 ui.add_space(12.0);
                 ui.separator();
                 theme::section(ui, "Playnite");
@@ -1547,4 +1572,18 @@ impl eframe::App for GamutApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_prefs();
     }
+}
+
+/// Combo box over (stored value, label) pairs.
+fn combo(ui: &mut Ui, id: &str, value: &mut String, opts: &[(&str, &str)]) {
+    egui::ComboBox::from_id_salt(id)
+        .width(320.0)
+        .selected_text(opts.iter().find(|o| o.0 == value.as_str()).map_or(value.as_str(), |o| o.1))
+        .show_ui(ui, |ui| {
+            for (v, l) in opts {
+                if ui.selectable_label(value == v, *l).clicked() {
+                    *value = v.to_string();
+                }
+            }
+        });
 }

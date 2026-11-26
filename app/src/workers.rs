@@ -1,7 +1,7 @@
 //! Background threads: Steam scan, cover + metadata scrapers, playtime tracking.
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Context;
-use gamut_core::{launch::Launched, steam, sync, Config, Library, Paths};
+use gamut_core::{launch::{self, Launched}, specialk, steam, sync, Config, Game, Library, Paths};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -216,13 +216,108 @@ impl Workers {
         });
     }
 
-    /// Adds the session's playtime when a tracked game exits.
-    pub fn track(&self, id: i64, launched: Launched) {
-        let Launched::Tracked(handle) = launched else { return };
+    /// Starts a game; with Special K on, the service is started first on a worker thread.
+    pub fn play(&self, g: Game) -> anyhow::Result<()> {
+        let sk = self.cfg.read().unwrap().specialk.clone();
+        let t = Tracker { paths: self.paths.clone(), tx: self.tx.clone(), ctx: self.ctx.clone(), running: self.running.clone() };
+        if sk.mode == "off" {
+            t.track(g.id, launch::launch(&g)?, None);
+            return Ok(());
+        }
+        // Counts as running while Special K starts, so a second click doesn't launch twice.
+        t.running.lock().unwrap().insert(g.id);
+        std::thread::spawn(move || {
+            let guard = with_specialk(&g, &sk, &t.tx);
+            match launch::launch(&g) {
+                Ok(l) => t.track(g.id, l, guard),
+                Err(e) => {
+                    t.running.lock().unwrap().remove(&g.id);
+                    let _ = t.tx.send(Event::Error(format!("Couldn't start {}: {e:#}", g.name)));
+                }
+            }
+            t.ctx.request_repaint();
+        });
+        Ok(())
+    }
+}
+
+/// What a launch needs to record playtime when the game exits.
+struct Tracker {
+    paths: Paths,
+    tx: Sender<Event>,
+    ctx: Context,
+    running: Arc<Mutex<HashSet<i64>>>,
+}
+
+/// SK's service handle plus how to release it; None when SK isn't used for this launch.
+type SkGuard = Option<(specialk::Guard, Option<specialk::InjectionSignal>, String)>;
+
+/// Starts Special K's service if this game should get it. Problems are reported, never fatal.
+fn with_specialk(g: &Game, sk: &specialk::Settings, tx: &Sender<Event>) -> SkGuard {
+    if let Err(why) = specialk::decide(g, sk) {
+        log::info!("Special K: skipping {}: {why}", g.name);
+        return None;
+    }
+    let Some(dir) = specialk::install_dir(&sk.path) else {
+        let _ = tx.send(Event::Error("Special K wasn't found. Install it, or set its folder in Settings.".into()));
+        return None;
+    };
+    // Created before the game starts so SK can signal it.
+    let signal = specialk::InjectionSignal::new();
+    match specialk::acquire(&dir) {
+        Ok(guard) => {
+            log::info!("Special K: injecting into {} (stop: {})", g.name, sk.stop);
+            Some((guard, signal, sk.stop.clone()))
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("Special K service failed to start: {e:#}")));
+            None
+        }
+    }
+}
+
+/// Releases the SK service per the stop setting; "exit" falls back to injection for launches
+/// Gamut can't follow (Steam, URLs).
+fn release_specialk(sk: SkGuard, name: String, exited: bool) {
+    let Some((guard, signal, stop)) = sk else { return };
+    match stop.as_str() {
+        "never" => std::mem::forget(guard),
+        "exit" if exited => drop(guard),
+        _ => {
+            std::thread::spawn(move || {
+                let injected = signal.is_some_and(|s| s.wait(Duration::from_secs(300)));
+                if injected {
+                    log::info!("Special K: injected into {name}");
+                } else {
+                    log::warn!("Special K: no injection reported for {name} within 5 minutes; stopping the service");
+                }
+                drop(guard);
+            });
+        }
+    }
+}
+
+impl Tracker {
+    /// Adds the session's playtime when a tracked game exits, and releases Special K.
+    fn track(&self, id: i64, launched: Launched, sk: SkGuard) {
+        let exit_stop = sk.as_ref().is_some_and(|s| s.2 == "exit");
+        let name = format!("game {id}");
+        let Launched::Tracked(handle) = launched else {
+            self.running.lock().unwrap().remove(&id);
+            release_specialk(sk, name, false);
+            return;
+        };
         let (paths, tx, ctx, running) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.running.clone());
         running.lock().unwrap().insert(id);
+        let sk = if exit_stop {
+            sk
+        } else {
+            release_specialk(sk, name.clone(), false);
+            None
+        };
         std::thread::spawn(move || {
             let r = handle.join();
+            release_specialk(sk, name, true);
             running.lock().unwrap().remove(&id);
             ctx.request_repaint();
             if let Ok(Some((mins, start))) = r {

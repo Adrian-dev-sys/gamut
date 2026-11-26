@@ -19,3 +19,4 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 
 ## Docs
 - `docs/playnite-import.md` – Playnite import: LiteDB reader, field mapping, emulator launch resolution, merge rules.
+- `docs/specialk.md` – Special K helper: service start/stop, injection signal, per-game override, anti-cheat skip.

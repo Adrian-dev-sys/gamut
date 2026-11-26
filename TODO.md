@@ -31,7 +31,7 @@
 - [ ] **Statistics** – total/recent playtime, most played, per-platform and per-genre breakdowns, completion status
 
 ## Integrations (later, once the core UI and basics are solid)
-- [ ] **Special K** – optionally inject Special K automatically when launching a game (like Playnite's Special K Helper), with per-game on/off
+- [x] **Special K** – optionally inject Special K automatically when launching a game (like Playnite's Special K Helper), with per-game on/off
 - [ ] **RetroAchievements** – show achievement progress for emulated games
 - [ ] **Achievements (Success Story-style)** – Steam and other platforms' achievements in the details view
 - [ ] **HowLongToBeat** – main/extra/completionist times in the details view
