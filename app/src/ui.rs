@@ -116,7 +116,7 @@ const BIG_TABS: [(Filter, &str); 5] =
     [(Filter::All, "All games"), (Filter::Installed, "Installed"), (Filter::Favorites, "Favorites"), (Filter::Steam, "Steam"), (Filter::Custom, "Custom")];
 
 /// A grid cursor move (keyboard or controller).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Nav {
     Left,
     Right,

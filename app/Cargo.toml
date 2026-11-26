@@ -21,3 +21,4 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graph
 avif-parse = "2.1.0"
 avif-serialize = "0.8.9"
 gilrs = "0.11.2"
+hidapi = "2"

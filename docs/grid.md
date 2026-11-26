@@ -13,12 +13,13 @@
   metadata. Refresh asks first since `requeue(force)` replaces description/developer/publisher/date/genres.
 
 ## Controller and big screen
-- `app/src/gamepad.rs`: a gilrs (Windows.Gaming.Input) thread sends `Pad` actions; the same button twice within
-  60 ms counts once (remappers show a pad twice: real + virtual Xbox). HidHide hides a DualSense from Gamut
-  unless gamut.exe is on its allow list. D-pad/left
-  stick repeat after 380 ms, every 95 ms. `GamutApp::handle_pad` ignores them while Gamut's window isn't
-  focused (a game is in front) and while dialogs are open. A = open/Play, B = back/clear, X = favorite,
-  LB/RB = filter tabs, LT/RT = page, View/Guide = big screen, Start = like A.
+- `app/src/gamepad.rs`: one thread polls PlayStation pads over HID (hidapi; DualSense/Edge/DS4, USB and BT
+  report layouts in `parse`) and everything else through gilrs. Windows.Gaming.Input (gilrs' backend) sees no
+  controller with DSX/HidHide, while HID sees DSX's virtual DualSense, like games do. The same action twice
+  within 60 ms counts once (remappers show a pad twice). D-pad/left stick repeat after 380 ms, every 95 ms.
+  `GamutApp::handle_pad` ignores input while Gamut's window isn't focused (a game is in front) and while
+  dialogs are open. A = open/Play, B = back/clear, X = favorite, LB/RB = filter tabs, LT/RT = page,
+  View/Guide = big screen, Start = like A.
 - Big screen (`toggle_big`, F11, top-bar button, View): full screen, zoom ×1.35, filter tabs instead of the
   normal bar, a button-hint footer, cursor always placed. Leaving restores zoom and windowed mode;
   `track_window` pauses meanwhile so the saved placement isn't overwritten.
