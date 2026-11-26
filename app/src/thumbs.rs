@@ -57,7 +57,7 @@ impl ThumbCache {
         for (id, img) in self.rx.try_iter() {
             match img {
                 Some(img) => {
-                    let t = ctx.load_texture(format!("thumb{id}"), img, TextureOptions::LINEAR);
+                    let t = ctx.load_texture(format!("thumb{id}"), img, TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear)));
                     self.tex.insert(id, (t, self.frame));
                 }
                 None => {

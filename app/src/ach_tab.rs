@@ -200,16 +200,16 @@ fn tile(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
 /// One unlocked achievement with its game; true when clicked.
 fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 56.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 72.0), Sense::click());
     if !ui.is_rect_visible(rect) {
         return false;
     }
     if resp.hovered() {
         ui.painter().rect_filled(rect, 6.0, CARD);
     }
-    let icon = egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(48.0, 48.0));
+    let icon = egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(64.0, 64.0));
     if a.icon.starts_with("http") {
-        let img = egui::Image::new(a.icon.as_str()).corner_radius(5);
+        let img = egui::Image::new(a.icon.as_str()).corner_radius(6);
         img.texture_options(crate::achievements::ICON_TEX).paint_at(ui, icon);
     } else {
         ui.painter().rect_filled(icon, 4.0, theme::CARD_HI);
@@ -222,8 +222,8 @@ fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
         job.wrap = egui::text::TextWrapping::truncate_at_width(max);
         p.galley(egui::pos2(x, rect.top() + y), p.layout_job(job), color);
     };
-    line(a.name.clone(), 14.0, TEXT, 10.0);
-    line(format!("{game} · {extra}"), 12.0, TEXT_DIM, 30.0);
+    line(a.name.clone(), 15.0, TEXT, 15.0);
+    line(format!("{game} · {extra}"), 12.5, TEXT_DIM, 38.0);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let resp = if a.description.is_empty() { resp } else { resp.on_hover_text(&a.description) };
     resp.clicked()
@@ -231,7 +231,7 @@ fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
 
 /// A game's cover, name and progress bar; true when clicked.
 fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCache) -> bool {
-    let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+    let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), Sense::click());
     if !ui.is_rect_visible(outer) {
         return false;
     }
@@ -239,10 +239,10 @@ fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCac
     if resp.hovered() {
         ui.painter().rect_filled(rect, 6.0, CARD);
     }
-    let cover = egui::Rect::from_min_size(rect.min + vec2(6.0, 3.0), vec2(32.0, 44.0));
+    let cover = egui::Rect::from_min_size(rect.min + vec2(6.0, 3.0), vec2(60.0, 80.0));
     match thumbs.get(g.id, g.has_cover) {
         Some(t) => {
-            egui::Image::from_texture(t).corner_radius(3).paint_at(ui, cover);
+            egui::Image::from_texture(t).corner_radius(4).paint_at(ui, cover);
         }
         None => {
             ui.painter().rect_filled(cover, 3.0, theme::CARD_HI);
@@ -258,12 +258,12 @@ fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCac
         job.wrap = egui::text::TextWrapping::truncate_at_width(bar.left() - x - 20.0);
         p.galley(egui::pos2(x, rect.top() + y), p.layout_job(job), color);
     };
-    text(g.name.clone(), 14.0, TEXT, 9.0);
+    text(g.name.clone(), 15.0, TEXT, 24.0);
     let sub = match g.source {
         gamut_core::Source::Steam => "Steam".to_string(),
         _ => g.platform.clone().unwrap_or_default(),
     };
-    text(sub, 12.0, TEXT_DIM, 29.0);
+    text(sub, 12.5, TEXT_DIM, 46.0);
     p.rect_filled(bar, 3.0, theme::CARD_HI);
     let mut fill = bar;
     fill.set_width(bar.width() * frac);
