@@ -125,6 +125,8 @@ pub struct GamutApp {
     platform_query: String,
     selected: Option<i64>,
     thumbs: ThumbCache,
+    /// Covers for the Achievements tab rows, decoded at their exact size.
+    small_thumbs: ThumbCache,
     workers: Workers,
     hero: Option<(i64, Option<TextureHandle>)>,
     hero_tx: Sender<(i64, Option<ColorImage>)>,
@@ -180,6 +182,7 @@ impl GamutApp {
         let (hero_tx, hero_rx) = unbounded();
         Ok(GamutApp {
             thumbs: ThumbCache::new(&cc.egui_ctx, paths.clone(), 3),
+            small_thumbs: ThumbCache::new(&cc.egui_ctx, paths.clone(), 2),
             paths,
             cfg,
             lib,
@@ -268,6 +271,7 @@ impl GamutApp {
             self.view_key = None;
         }
         self.thumbs.invalidate(id);
+        self.small_thumbs.invalidate(id);
         if self.hero.as_ref().is_some_and(|(h, t)| *h == id && t.is_none()) {
             self.hero = None;
         }
@@ -306,6 +310,7 @@ impl GamutApp {
                 Event::PlayniteImported(r) => {
                     // Covers were replaced in bulk.
                     self.thumbs.clear();
+                    self.small_thumbs.clear();
                     self.hero = None;
                     match r {
                         Ok(m) => self.toasts.success(m),
@@ -1805,6 +1810,7 @@ impl eframe::App for GamutApp {
             }
         }
         self.thumbs.begin_frame(&ctx);
+        self.small_thumbs.begin_frame(&ctx);
 
         let typing = ctx.memory(|m| m.focused().is_some());
         ctx.input(|i| {
@@ -1838,7 +1844,7 @@ impl eframe::App for GamutApp {
                 let clicked = match (self.ach_tab.as_mut(), self.stats_tab.as_mut()) {
                     (Some(ov), _) => {
                         let busy = !self.workers.ach_busy.lock().unwrap().is_empty();
-                        crate::ach_tab::show(ui, ov, &self.games, &mut self.thumbs, busy)
+                        crate::ach_tab::show(ui, ov, &self.games, &mut self.small_thumbs, busy)
                     }
                     (_, Some(st)) => crate::stats_tab::show(ui, st, &self.games),
                     _ => {
@@ -1953,6 +1959,7 @@ impl eframe::App for GamutApp {
             self.apply(a);
         }
         self.thumbs.end_frame();
+        self.small_thumbs.end_frame();
         self.track_window(&ctx);
         let view = (self.sort, self.filter, self.platform.clone(), self.tag.clone(), self.completion.clone());
         if self.saved_view != view {

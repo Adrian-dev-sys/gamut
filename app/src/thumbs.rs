@@ -3,6 +3,7 @@ use crossbeam_channel::{unbounded, Receiver};
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 use gamut_core::{images, Paths};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Max textures kept on the GPU (~540 KB each).
@@ -16,19 +17,22 @@ struct Queue {
 
 pub struct ThumbCache {
     queue: Arc<(Mutex<Queue>, Condvar)>,
-    rx: Receiver<(i64, Option<ColorImage>)>,
+    rx: Receiver<(i64, Option<(ColorImage, u32)>)>,
     tex: HashMap<i64, (TextureHandle, u64)>,
     missing: HashSet<i64>,
     wanted: Vec<i64>,
     frame: u64,
+    /// Decode width in pixels; small lists set their exact on-screen size so the GPU never shrinks them.
+    width: Arc<AtomicU32>,
 }
 
 impl ThumbCache {
     pub fn new(ctx: &Context, paths: Paths, threads: usize) -> Self {
+        let width = Arc::new(AtomicU32::new(images::THUMB_W));
         let queue: Arc<(Mutex<Queue>, Condvar)> = Default::default();
         let (tx, rx) = unbounded();
         for _ in 0..threads {
-            let (queue, tx, ctx, paths) = (queue.clone(), tx.clone(), ctx.clone(), paths.clone());
+            let (queue, tx, ctx, paths, width) = (queue.clone(), tx.clone(), ctx.clone(), paths.clone(), width.clone());
             std::thread::spawn(move || loop {
                 let id = {
                     let (m, cv) = &*queue;
@@ -40,15 +44,16 @@ impl ThumbCache {
                     q.in_flight.insert(id);
                     id
                 };
-                let img = load(&paths, id);
+                let w = width.load(Ordering::Relaxed);
+                let img = load(&paths, id, w);
                 queue.0.lock().unwrap().in_flight.remove(&id);
-                if tx.send((id, img)).is_err() {
+                if tx.send((id, img.map(|i| (i, w)))).is_err() {
                     break;
                 }
                 ctx.request_repaint();
             });
         }
-        ThumbCache { queue, rx, tex: HashMap::new(), missing: HashSet::new(), wanted: Vec::new(), frame: 0 }
+        ThumbCache { queue, rx, tex: HashMap::new(), missing: HashSet::new(), wanted: Vec::new(), frame: 0, width }
     }
 
     pub fn begin_frame(&mut self, ctx: &Context) {
@@ -56,8 +61,9 @@ impl ThumbCache {
         self.wanted.clear();
         for (id, img) in self.rx.try_iter() {
             match img {
-                Some(img) => {
-                    let t = ctx.load_texture(format!("thumb{id}"), img, TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear)));
+                Some((_, w)) if w != self.width.load(Ordering::Relaxed) => {} // decoded before a size change
+                Some((img, _)) => {
+                    let t = ctx.load_texture(format!("thumb{id}"), img, TextureOptions::LINEAR);
                     self.tex.insert(id, (t, self.frame));
                 }
                 None => {
@@ -113,20 +119,27 @@ impl ThumbCache {
         self.missing.clear();
     }
 
+    /// Sets the decode width (pixels), dropping textures made at another width.
+    pub fn set_width(&mut self, w: u32) {
+        if self.width.swap(w.clamp(16, images::THUMB_W), Ordering::Relaxed) != w.clamp(16, images::THUMB_W) {
+            self.clear();
+        }
+    }
+
     pub fn invalidate(&mut self, id: i64) {
         self.tex.remove(&id);
         self.missing.remove(&id);
     }
 }
 
-fn load(paths: &Paths, id: i64) -> Option<ColorImage> {
+fn load(paths: &Paths, id: i64, w: u32) -> Option<ColorImage> {
     let thumb = paths.thumb(id);
     if !thumb.exists() {
         // Rebuild a deleted thumbnail from the stored cover.
         let bytes = std::fs::read(paths.cover(id)).ok()?;
         images::store_cover(&bytes, &paths.cover(id), &thumb).ok()?;
     }
-    let img = images::decode(&thumb, images::THUMB_W).ok()?;
+    let img = images::decode(&thumb, w).ok()?;
     Some(ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.pixels))
 }
 

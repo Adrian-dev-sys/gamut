@@ -1,5 +1,6 @@
 //! The Achievements tab: overall progress across games, read from the cache.
 use crate::theme::{self, ACCENT, CARD, TEXT, TEXT_DIM};
+use egui::emath::GuiRounding;
 use egui::{vec2, Color32, CornerRadius, RichText, Sense, Ui};
 use gamut_core::achievements::Achievement;
 use gamut_core::{Game, Library};
@@ -48,6 +49,7 @@ fn pct(r: &Row) -> f32 {
 
 /// Draws the tab; returns a game the user clicked.
 pub fn show(ui: &mut Ui, ov: &mut Overview, games: &[Game], thumbs: &mut crate::thumbs::ThumbCache, busy: bool) -> Option<i64> {
+    thumbs.set_width((COVER.x * ui.ctx().pixels_per_point()).round() as u32);
     let by_id: HashMap<i64, &Game> = games.iter().filter(|g| !g.hidden).map(|g| (g.id, g)).collect();
     let rows: Vec<Row> = ov.games.iter().filter(|r| by_id.contains_key(&r.0)).copied().collect();
     if rows.is_empty() {
@@ -230,8 +232,11 @@ fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
 }
 
 /// A game's cover, name and progress bar; true when clicked.
+/// Row cover size; thumbnails are decoded at exactly this many pixels.
+const COVER: egui::Vec2 = vec2(72.0, 108.0);
+
 fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCache) -> bool {
-    let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), Sense::click());
+    let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 120.0), Sense::click());
     if !ui.is_rect_visible(outer) {
         return false;
     }
@@ -239,7 +244,10 @@ fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCac
     if resp.hovered() {
         ui.painter().rect_filled(rect, 6.0, CARD);
     }
-    let cover = egui::Rect::from_min_size(rect.min + vec2(6.0, 3.0), vec2(60.0, 80.0));
+    // Pixel-aligned at the decoded size, so the texture maps 1:1.
+    let ppp = ui.ctx().pixels_per_point();
+    let px = vec2((COVER.x * ppp).round(), (COVER.x * ppp).round() * 1.5);
+    let cover = egui::Rect::from_min_size((rect.min + vec2(6.0, 3.0)).round_to_pixels(ppp), px / ppp);
     match thumbs.get(g.id, g.has_cover) {
         Some(t) => {
             egui::Image::from_texture(t).corner_radius(4).paint_at(ui, cover);
@@ -258,12 +266,12 @@ fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCac
         job.wrap = egui::text::TextWrapping::truncate_at_width(bar.left() - x - 20.0);
         p.galley(egui::pos2(x, rect.top() + y), p.layout_job(job), color);
     };
-    text(g.name.clone(), 15.0, TEXT, 24.0);
+    text(g.name.clone(), 15.5, TEXT, 36.0);
     let sub = match g.source {
         gamut_core::Source::Steam => "Steam".to_string(),
         _ => g.platform.clone().unwrap_or_default(),
     };
-    text(sub, 12.5, TEXT_DIM, 46.0);
+    text(sub, 12.5, TEXT_DIM, 60.0);
     p.rect_filled(bar, 3.0, theme::CARD_HI);
     let mut fill = bar;
     fill.set_width(bar.width() * frac);
