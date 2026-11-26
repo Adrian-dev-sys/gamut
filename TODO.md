@@ -19,6 +19,7 @@
 - [ ] Multi-select + bulk edit (hide, favorite, refresh metadata)
 - [ ] Choose between several covers/banners per game (SteamGridDB alternatives)
 - [x] Remember window size/position and last selected filter/sort
+- [ ] Library briefly flashes behind open popups. Gamut's own frames were verified correct (pixel readback), so likely G-Sync/VRR with uneven frame pacing; try Fixed Refresh for gamut.exe, then steady repaints while a popup is open
 
 ## Metadata
 - [ ] IGDB as an additional metadata source (richer data for non-Steam games)
