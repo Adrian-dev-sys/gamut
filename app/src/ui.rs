@@ -1753,12 +1753,16 @@ fn combo(ui: &mut Ui, id: &str, value: &mut String, opts: &[(&str, &str)]) {
 
 /// Description text with its images (`[img]URL` lines kept by `scrape::strip_html`).
 fn description(ui: &mut Ui, d: &str) {
-    // Stored text has a blank line after every line (Playnite writes "<br />" plus a newline), so
-    // spacing is set here: lines sit close like Steam's paragraphs; headings and images get a gap.
+    // Markup from `scrape::strip_html`: blank line = paragraph, `## ` heading, `• ` item, `**bold**`.
+    use gamut_core::scrape::{BULLET, HEADING};
     ui.spacing_mut().item_spacing.y = 0.0;
     let body = Color32::from_rgb(196, 202, 214);
-    let mut first = true;
-    for line in d.lines().map(str::trim).filter(|l| !l.is_empty()) {
+    let (mut first, mut blank, mut prev_bullet) = (true, false, false);
+    for line in d.lines().map(str::trim) {
+        if line.is_empty() {
+            blank = true;
+            continue;
+        }
         if let Some(url) = line.strip_prefix(gamut_core::scrape::IMG_MARKER) {
             if !url.starts_with("http") {
                 continue;
@@ -1780,25 +1784,61 @@ fn description(ui: &mut Ui, d: &str) {
                     ui.add(img.fit_to_exact_size(size));
                 }
                 ui.add_space(6.0);
-                first = false;
+                (first, blank, prev_bullet) = (false, false, false);
             }
             continue;
         }
-        let heading = is_heading(line);
-        if !first {
-            ui.add_space(if heading { 20.0 } else { 6.0 });
-        }
-        let t = if heading {
-            RichText::new(line).size(15.5).strong().color(theme::TEXT)
-        } else {
-            RichText::new(line).size(14.5).line_height(Some(22.0)).color(body)
+        let (heading, bullet, text) = match (line.strip_prefix(HEADING), line.strip_prefix(BULLET)) {
+            (Some(h), _) => (true, false, h),
+            (_, Some(b)) => (false, true, b),
+            // Older stored text has no `## `; guess titles from their shape.
+            _ => (is_heading(&line.replace("**", "")), false, line),
         };
-        ui.add(egui::Label::new(t).wrap());
-        if heading {
-            ui.add_space(2.0);
+        if !first {
+            let gap = match () {
+                _ if heading => 22.0,
+                _ if bullet && prev_bullet => 8.0,
+                _ if blank => 12.0,
+                _ => 2.0,
+            };
+            ui.add_space(gap);
         }
-        first = false;
+        if heading {
+            ui.add(egui::Label::new(RichText::new(text.replace("**", "")).size(16.0).color(theme::TEXT)).wrap());
+            ui.add_space(4.0);
+        } else if bullet {
+            ui.horizontal_top(|ui| {
+                ui.add_space(8.0);
+                ui.label(RichText::new("\u{2022}").size(14.5).line_height(Some(22.0)).color(body));
+                let w = ui.available_width();
+                ui.allocate_ui_with_layout(vec2(w, 0.0), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(w);
+                    ui.add(egui::Label::new(rich_line(text, body)).wrap());
+                });
+            });
+        } else {
+            ui.add(egui::Label::new(rich_line(text, body)).wrap());
+        }
+        (first, blank, prev_bullet) = (false, false, bullet);
     }
+}
+
+/// One description line, with `**bold**` parts in the bright text color (no bold font weight).
+fn rich_line(text: &str, body: Color32) -> egui::text::LayoutJob {
+    let parts: Vec<&str> = text.split("**").collect();
+    let balanced = parts.len() % 2 == 1;
+    let mut job = egui::text::LayoutJob::default();
+    for (i, p) in parts.iter().enumerate() {
+        let bold = balanced && i % 2 == 1;
+        let fmt = egui::TextFormat {
+            font_id: FontId::proportional(14.5),
+            line_height: Some(22.0),
+            color: if bold { theme::TEXT } else { body },
+            ..Default::default()
+        };
+        job.append(p, 0.0, fmt);
+    }
+    job
 }
 
 /// Section titles in store text ("Story", "KEY FEATURES"): short, no sentence punctuation.

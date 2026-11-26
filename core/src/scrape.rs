@@ -278,11 +278,19 @@ pub const IMG_MARKER: &str = "[img]";
 /// A description's text without image lines or whitespace differences, for comparing versions.
 pub fn text_only(d: &str) -> String {
     d.lines()
-        .filter(|l| !l.trim().starts_with(IMG_MARKER))
-        .flat_map(str::split_whitespace)
+        .map(str::trim)
+        .filter(|l| !l.starts_with(IMG_MARKER))
+        .map(|l| l.trim_start_matches(HEADING).trim_start_matches(BULLET).replace(BOLD, ""))
+        .flat_map(|l| l.split_whitespace().map(str::to_string).collect::<Vec<_>>())
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+/// Light markup kept from store HTML: `## ` heading lines, `• ` list items, `**bold**`;
+/// a blank line separates paragraphs, a single newline is a `<br>`.
+pub const HEADING: &str = "## ";
+pub const BULLET: &str = "• ";
+pub const BOLD: &str = "**";
 
 pub fn strip_html(html: &str) -> String {
     let src_re = regex::Regex::new(r#"(?i)\bsrc\s*=\s*["']([^"']+)["']"#).unwrap();
@@ -297,16 +305,26 @@ pub fn strip_html(html: &str) -> String {
             }
             '>' if in_tag => {
                 in_tag = false;
-                let t = tag.trim_start_matches('/').to_ascii_lowercase();
-                if t.starts_with("img") {
-                    if let Some(c) = src_re.captures(&tag).filter(|c| c[1].starts_with("http")) {
-                        out.push_str(&format!("\n{IMG_MARKER}{}\n", &c[1]));
+                let close = tag.starts_with('/');
+                let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("").to_ascii_lowercase();
+                match name.as_str() {
+                    "img" => {
+                        if let Some(c) = src_re.captures(&tag).filter(|c| c[1].starts_with("http")) {
+                            out.push_str(&format!("\n\n{IMG_MARKER}{}\n\n", &c[1]));
+                        }
                     }
-                } else if t.starts_with("br") || t.starts_with("p") || t.starts_with("li") || t.starts_with("h") {
-                    out.push('\n');
+                    "br" => out.push('\n'),
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" if !close => out.push_str(&format!("\n\n{HEADING}")),
+                    "p" | "div" | "ul" | "ol" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => out.push_str("\n\n"),
+                    "li" if !close => out.push_str(&format!("\n{BULLET}")),
+                    "li" => out.push('\n'),
+                    "strong" | "b" => out.push_str(BOLD),
+                    _ => {}
                 }
             }
             _ if in_tag => tag.push(c),
+            // Newlines in HTML source are just whitespace.
+            '\r' | '\n' | '\t' => out.push(' '),
             _ => out.push(c),
         }
     }
@@ -317,21 +335,28 @@ pub fn strip_html(html: &str) -> String {
         .replace("&gt;", ">")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ");
-    // Collapse 3+ newlines
+    // Tidy each line, drop empty markup, and keep at most one blank line between blocks.
     let mut res = String::new();
-    let mut nl = 0;
-    for c in out.chars() {
-        if c == '\n' {
-            nl += 1;
-            if nl <= 2 {
-                res.push(c);
-            }
-        } else if c != '\r' {
-            nl = 0;
-            res.push(c);
+    let (mut blank, mut prev_bullet) = (0, false);
+    for line in out.split('\n') {
+        let mut l = line.split_whitespace().collect::<Vec<_>>().join(" ").replace("****", "");
+        if l == BOLD || l == HEADING.trim() || l == BULLET.trim() {
+            l.clear();
         }
+        if l.is_empty() {
+            blank += 1;
+            continue;
+        }
+        // List items stay on adjacent lines even when a <br> ends the previous one.
+        let bullet = l.starts_with(BULLET);
+        if !res.is_empty() {
+            res.push_str(if blank > 0 && !(bullet && prev_bullet) { "\n\n" } else { "\n" });
+        }
+        blank = 0;
+        prev_bullet = bullet;
+        res.push_str(&l);
     }
-    res.trim().to_string()
+    res
 }
 
 #[cfg(test)]
@@ -339,8 +364,25 @@ mod tests {
     use super::*;
     #[test]
     fn html_and_normalize() {
-        assert_eq!(strip_html("<h2>Hi</h2>A &amp; B<br>C"), "Hi\nA & B\nC");
-        assert_eq!(strip_html("A<img src=\"https://x/y.gif?t=1\" width=5>B"), "A\n[img]https://x/y.gif?t=1\nB");
+        assert_eq!(strip_html("<h2>Hi</h2>A &amp; B<br>C"), "## Hi\n\nA & B\nC");
+        assert_eq!(strip_html("A<img src=\"https://x/y.gif?t=1\" width=5>B"), "A\n\n[img]https://x/y.gif?t=1\n\nB");
+        // Playnite: source newlines are whitespace, <br><br> is a paragraph.
+        assert_eq!(strip_html("One.<br />\r\nTwo.<br><br>Three."), "One.\nTwo.\n\nThree.");
+        assert_eq!(
+            strip_html("Intro.<h2 class=\"bb_tag\">Key Features</h2> <ul class=\"bb_ul\"><li><strong>Horror</strong> \u{2013} text <br></li><li><b>Co-op</b> - more</li></ul>End"),
+            "Intro.\n\n## Key Features\n\n\u{2022} **Horror** \u{2013} text\n\u{2022} **Co-op** - more\n\nEnd"
+        );
+        assert_eq!(text_only("## Key\n\n\u{2022} **Horror** x"), text_only("Key\nHorror x"));
         assert_eq!(normalize("DOOM Eternal™"), "doometernal");
+    }
+}
+
+#[cfg(test)]
+mod preview {
+    /// `GAMUT_HTML=<file> cargo test -p gamut-core -- --ignored preview --nocapture`
+    #[test]
+    #[ignore]
+    fn preview() {
+        println!("{}", super::strip_html(&String::from_utf8_lossy(&std::fs::read(std::env::var("GAMUT_HTML").unwrap()).unwrap())));
     }
 }
