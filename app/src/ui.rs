@@ -1753,42 +1753,74 @@ fn combo(ui: &mut Ui, id: &str, value: &mut String, opts: &[(&str, &str)]) {
 
 /// Description text with its images (`[img]URL` lines kept by `scrape::strip_html`).
 fn description(ui: &mut Ui, d: &str) {
-    let mut text = String::new();
-    let flush = |ui: &mut Ui, text: &mut String| {
-        let t = text.trim_matches('\n');
-        if !t.is_empty() {
-            ui.add(egui::Label::new(RichText::new(t).size(14.5).line_height(Some(22.0))).wrap());
-        }
-        text.clear();
-    };
-    for line in d.lines() {
-        match line.trim().strip_prefix(gamut_core::scrape::IMG_MARKER) {
-            Some(url) if url.starts_with("http") => {
-                flush(ui, &mut text);
-                let w = ui.available_width().min(900.0);
-                let img = egui::Image::new(url.to_string()).corner_radius(6).show_loading_spinner(true);
-                // Exact size from the image itself: in a scroll area egui would otherwise fit it to the
-                // visible space left, which is zero below the fold. Broken/unsupported images are skipped.
-                let size = match img.load_for_size(ui.ctx(), egui::vec2(w, w)) {
-                    Ok(egui::load::TexturePoll::Ready { texture }) => Some(texture.size * (w / texture.size.x).min(1.0)),
-                    Ok(egui::load::TexturePoll::Pending { .. }) => Some(egui::vec2(w.min(640.0), w.min(640.0) * 9.0 / 16.0)),
-                    Err(_) => None,
-                };
-                if let Some(size) = size {
-                    ui.add_space(6.0);
-                    if crate::video::is_clip_poster(url) {
-                        crate::video::show(ui, url, img, size);
-                    } else {
-                        ui.add(img.fit_to_exact_size(size));
-                    }
-                    ui.add_space(6.0);
+    // Stored text has a blank line after every line (Playnite writes "<br />" plus a newline), so
+    // spacing is set here: lines sit close like Steam's paragraphs; headings and images get a gap.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let body = Color32::from_rgb(196, 202, 214);
+    let mut first = true;
+    for line in d.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(url) = line.strip_prefix(gamut_core::scrape::IMG_MARKER) {
+            if !url.starts_with("http") {
+                continue;
+            }
+            let w = ui.available_width().min(900.0);
+            let img = egui::Image::new(url.to_string()).corner_radius(6).show_loading_spinner(true);
+            // Exact size from the image itself: in a scroll area egui would otherwise fit it to the
+            // visible space left, which is zero below the fold. Broken/unsupported images are skipped.
+            let size = match img.load_for_size(ui.ctx(), egui::vec2(w, w)) {
+                Ok(egui::load::TexturePoll::Ready { texture }) => Some(texture.size * (w / texture.size.x).min(1.0)),
+                Ok(egui::load::TexturePoll::Pending { .. }) => Some(egui::vec2(w.min(640.0), w.min(640.0) * 9.0 / 16.0)),
+                Err(_) => None,
+            };
+            if let Some(size) = size {
+                ui.add_space(if first { 4.0 } else { 16.0 });
+                if crate::video::is_clip_poster(url) {
+                    crate::video::show(ui, url, img, size);
+                } else {
+                    ui.add(img.fit_to_exact_size(size));
                 }
+                ui.add_space(6.0);
+                first = false;
             }
-            _ => {
-                text.push_str(line);
-                text.push('\n');
-            }
+            continue;
+        }
+        let heading = is_heading(line);
+        if !first {
+            ui.add_space(if heading { 20.0 } else { 6.0 });
+        }
+        let t = if heading {
+            RichText::new(line).size(15.5).strong().color(theme::TEXT)
+        } else {
+            RichText::new(line).size(14.5).line_height(Some(22.0)).color(body)
+        };
+        ui.add(egui::Label::new(t).wrap());
+        if heading {
+            ui.add_space(2.0);
+        }
+        first = false;
+    }
+}
+
+/// Section titles in store text ("Story", "KEY FEATURES"): short, no sentence punctuation.
+fn is_heading(l: &str) -> bool {
+    let n = l.chars().count();
+    // "A Brand New Experience!" is a title; a longer line ending in "!" is a sentence.
+    n <= 48
+        && !(l.ends_with('!') && n > 36)
+        && !l.ends_with(['.', '?', ',', ';', ':', ')', '"', '\u{201d}', '…'])
+        && !l.starts_with(['-', '*', '\u{2022}'])
+        && l.chars().next().is_some_and(|c| !c.is_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn headings() {
+        for h in ["Story", "A Living World", "A Brand New Experience!", "KEY FEATURES"] {
+            assert!(super::is_heading(h), "{h}");
+        }
+        for t in ["The ultimate hunting experience awaits you in Monster Hunter Wilds.", "- Online co-op", "and thrive", "Play cards in ascending mana order to land devastating combos!"] {
+            assert!(!super::is_heading(t), "{t}");
         }
     }
-    flush(ui, &mut text);
 }
