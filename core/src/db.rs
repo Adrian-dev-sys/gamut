@@ -418,6 +418,33 @@ impl Library {
         Ok(())
     }
 
+    /// Replaces descriptions of Playnite-imported games (by Playnite id) with `new` ones, only where
+    /// the current text is empty or the same apart from images, so edits made in Gamut are kept.
+    /// Returns (updated, kept because edited).
+    pub fn refresh_descriptions(&mut self, new: &[(String, String)]) -> Result<(usize, usize)> {
+        let tx = self.conn.transaction()?;
+        let (mut updated, mut kept) = (0, 0);
+        {
+            let mut get = tx.prepare("SELECT id, description FROM games WHERE playnite_id = ?1")?;
+            let mut set = tx.prepare("UPDATE games SET description = ?2 WHERE id = ?1")?;
+            for (pid, desc) in new {
+                let Some((id, cur)) = get.query_row([pid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))).optional()? else {
+                    continue;
+                };
+                match cur {
+                    Some(c) if c == *desc => {}
+                    Some(c) if crate::scrape::text_only(&c) != crate::scrape::text_only(desc) => kept += 1,
+                    _ => {
+                        set.execute(params![id, desc])?;
+                        updated += 1;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok((updated, kept))
+    }
+
     /// Upserts Playnite games in one transaction and returns their row ids (same order).
     /// Merge: playtime/last played/play count take the max, added the min, favorite/hidden are OR'd,
     /// Playnite's metadata wins where it has a value.
@@ -568,6 +595,36 @@ mod tests {
         assert_eq!(s.completion.as_deref(), Some("Beaten"));
         assert_eq!(all.iter().find(|g| g.playnite_id.as_deref() == Some("b")).unwrap().name, "Rom (renamed)");
         drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refreshes_only_unedited_descriptions() {
+        let dir = std::env::temp_dir().join(format!("gamut-desc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lib = Library::open(&dir.join("t.db")).unwrap();
+        let g = |pid: &str, d: Option<&str>| {
+            let mut g = Game::new_custom(pid.into(), None);
+            g.playnite_id = Some(pid.into());
+            g.description = d.map(Into::into);
+            g
+        };
+        let games = [g("a", Some("Hello world")), g("b", Some("My own text")), g("c", None)];
+        lib.import_playnite(&games).unwrap();
+        let new = |pid: &str, d: &str| (pid.to_string(), d.to_string());
+        let r = lib
+            .refresh_descriptions(&[new("a", "Hello
+[img]https://x/1.png
+world"), new("b", "Store text"), new("c", "C"), new("zz", "X")])
+            .unwrap();
+        assert_eq!(r, (2, 1));
+        let all = lib.all().unwrap();
+        let d = |pid: &str| all.iter().find(|g| g.playnite_id.as_deref() == Some(pid)).unwrap().description.clone();
+        assert_eq!(d("a").as_deref(), Some("Hello
+[img]https://x/1.png
+world"));
+        assert_eq!(d("b").as_deref(), Some("My own text"));
+        assert_eq!(d("c").as_deref(), Some("C"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

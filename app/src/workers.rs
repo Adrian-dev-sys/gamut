@@ -202,6 +202,32 @@ impl Workers {
         });
     }
 
+    /// Re-reads only game descriptions from Playnite (restores their images).
+    pub fn playnite_descriptions(&self, dir: Option<std::path::PathBuf>) {
+        let (paths, tx, ctx) = (self.paths.clone(), self.tx.clone(), self.ctx.clone());
+        let _ = tx.send(Event::Info("Reading descriptions from Playnite…".into()));
+        std::thread::spawn(move || {
+            let r = (|| {
+                let dir = dir.or_else(gamut_core::playnite::default_dir).ok_or_else(|| anyhow::anyhow!("Playnite folder not found"))?;
+                let items = gamut_core::playnite::load(&dir)?;
+                let mut lib = Library::open(&paths.db)?;
+                gamut_core::playnite::refresh_descriptions(&mut lib, &items)
+            })();
+            match r {
+                Ok((n, kept)) => {
+                    let extra = if kept > 0 { format!(" Kept {kept} you edited in Gamut.") } else { String::new() };
+                    log::info!("Playnite descriptions: {n} updated, {kept} kept (edited)");
+                    let _ = tx.send(Event::LibraryChanged);
+                    let _ = tx.send(Event::Info(format!("Updated {n} descriptions from Playnite.{extra}")));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("Reading Playnite descriptions failed: {e:#}")));
+                }
+            }
+            ctx.request_repaint();
+        });
+    }
+
     pub fn rescan(&self) {
         if self.scanning.swap(true, Ordering::SeqCst) {
             return;

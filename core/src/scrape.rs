@@ -275,6 +275,15 @@ pub fn normalize(s: &str) -> String {
 /// Line prefix that keeps an image's URL in otherwise plain descriptions.
 pub const IMG_MARKER: &str = "[img]";
 
+/// A description's text without image lines or whitespace differences, for comparing versions.
+pub fn text_only(d: &str) -> String {
+    d.lines()
+        .filter(|l| !l.trim().starts_with(IMG_MARKER))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn strip_html(html: &str) -> String {
     let src_re = regex::Regex::new(r#"(?i)\bsrc\s*=\s*["']([^"']+)["']"#).unwrap();
     let mut out = String::with_capacity(html.len());

@@ -907,6 +907,7 @@ impl GamutApp {
         let mut preview: Option<Option<std::path::PathBuf>> = None;
         let mut sk_install = false;
         let mut rs_download = false;
+        let mut pn_desc = false;
         let importing = self.workers.importing.1.load(Ordering::Relaxed) > 0;
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
@@ -968,6 +969,13 @@ impl GamutApp {
                                 if let Some(d) = rfd::FileDialog::new().set_title("Playnite folder").pick_folder() {
                                     preview = Some(Some(d));
                                 }
+                            }
+                            if ui
+                                .add_enabled(!importing, egui::Button::new("Update descriptions only"))
+                                .on_hover_text("Re-reads just the descriptions (with their images) from Playnite. Nothing else changes; descriptions you edited in Gamut are kept.")
+                                .clicked()
+                            {
+                                pn_desc = true;
                             }
                         });
                         }
@@ -1076,6 +1084,9 @@ impl GamutApp {
         }
         if rs_download {
             self.workers.reshade_download(true);
+        }
+        if pn_desc {
+            self.workers.playnite_descriptions(None);
         }
         if save {
             let new = self.settings.take().unwrap();

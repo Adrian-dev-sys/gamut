@@ -31,6 +31,15 @@ pub struct Item {
     pub launch: Launch,
 }
 
+/// Pulls only descriptions (with their images) from Playnite; nothing else in the library changes.
+pub fn refresh_descriptions(lib: &mut Library, items: &[Item]) -> Result<(usize, usize)> {
+    let new: Vec<(String, String)> = items
+        .iter()
+        .filter_map(|i| Some((i.game.playnite_id.clone()?, i.game.description.clone()?)))
+        .collect();
+    lib.refresh_descriptions(&new)
+}
+
 /// Default Playnite data folder for installed (non-portable) Playnite.
 pub fn default_dir() -> Option<PathBuf> {
     let d = PathBuf::from(std::env::var_os("APPDATA")?).join("Playnite");
