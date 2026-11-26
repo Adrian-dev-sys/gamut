@@ -95,6 +95,8 @@ struct Lookup {
     busy: bool,
     error: Option<String>,
     rx: Option<Receiver<Msg>>,
+    /// The picked entry being previewed (and its IGDB id, saved as the match on fill).
+    preview: Option<(VnDetails, Option<i64>)>,
 }
 
 /// Suggestion lists taken from the library (value, count).
@@ -116,6 +118,69 @@ pub enum EditorOutcome {
 
 fn list(v: &Option<String>) -> Vec<String> {
     v.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+}
+
+/// What an entry would fill, before it touches the form. Some(true) = Fill, Some(false) = Back.
+fn preview(ui: &mut Ui, d: &VnDetails, src: &str) -> Option<bool> {
+    let m = &d.meta;
+    let desc = m.description.as_deref().unwrap_or("");
+    let images = desc.lines().filter(|l| l.trim_start().starts_with(scrape::IMG_MARKER)).count();
+    let text = scrape::text_only(desc);
+    let date = m.release_date.as_deref().map(util::release);
+    let score = |v: Option<i64>| v.map(|v| v.to_string());
+    let tags = (!d.tags.is_empty()).then(|| d.tags.join(", "));
+    let rows: [(&str, Option<String>); 8] = [
+        ("Developer", m.developer.clone()),
+        ("Publisher", m.publisher.clone()),
+        ("Release date", date),
+        ("Genres", m.genres.clone()),
+        ("Series", m.series.clone()),
+        ("Critic score", score(m.critic_score)),
+        ("Community score", score(m.community_score)),
+        ("Tags (added)", tags),
+    ];
+    let have = rows.iter().filter(|r| r.1.is_some()).count() + usize::from(!text.is_empty());
+    let mut out = None;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&d.title).strong().size(15.0));
+        ui.label(RichText::new(format!("· {src} has {have} of 9 fields")).color(TEXT_DIM));
+    });
+    ui.add_space(4.0);
+    egui::Grid::new("ed_preview").num_columns(2).spacing([14.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
+        for (label, v) in rows {
+            ui.label(RichText::new(label).color(TEXT_DIM));
+            match v {
+                Some(v) => ui.add(egui::Label::new(v).wrap()),
+                None => ui.label(RichText::new("—").color(TEXT_DIM)),
+            };
+            ui.end_row();
+        }
+        ui.label(RichText::new("Description").color(TEXT_DIM));
+        if text.is_empty() {
+            ui.label(RichText::new("—").color(TEXT_DIM));
+        } else {
+            let pics = if images > 0 { format!(", {images} images") } else { String::new() };
+            ui.label(RichText::new(format!("{} words{pics}", text.split_whitespace().count())).color(TEXT_DIM));
+        }
+        ui.end_row();
+    });
+    if !text.is_empty() {
+        egui::ScrollArea::vertical().id_salt("ed_preview_desc").max_height(120.0).show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(&text).color(TEXT)).wrap());
+        });
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let fill = egui::Button::new(RichText::new("Fill form").color(Color32::WHITE)).fill(ACCENT);
+        if ui.add(fill).on_hover_text("Replace the form's fields with these (nothing is saved until Save)").clicked() {
+            out = Some(true);
+        }
+        if ui.button("Back to results").clicked() {
+            out = Some(false);
+        }
+    });
+    out
 }
 
 /// Full details of a picked entry (IGDB hits already carry theirs).
@@ -293,9 +358,8 @@ impl Editor {
         });
     }
 
-    /// "Fill from Steam/GOG/IGDB/VNDB…": search by name, pick an entry, and its details replace the form's fields.
+    /// "Fill from Steam/GOG/IGDB/VNDB…": search by name, preview an entry, then fill the form with it.
     fn lookup_panel(&mut self, ui: &mut Ui, cfg: Option<&Config>) {
-        let mut details = None;
         if let Some(s) = self.lookup.as_mut() {
             if let Some(m) = s.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
                 s.busy = false;
@@ -303,34 +367,34 @@ impl Editor {
                 match m {
                     Msg::Results(Ok(v)) => (s.results, s.error) = (v, None),
                     Msg::Results(Err(e)) => (s.results, s.error) = (Vec::new(), Some(e)),
-                    Msg::Details(Ok(d)) => details = Some(d),
+                    Msg::Details(Ok(d)) => s.preview = Some((d, None)),
                     Msg::Details(Err(e)) => s.error = Some(e),
                 }
             }
         }
-        if let Some(d) = details {
-            let src = self.lookup.as_ref().map_or("", |l| l.src.name());
-            self.fill_details(&d, src);
-            self.lookup = None;
-        }
         let mut search = false;
         let mut fetch = None;
+        let mut fill = None;
+        let srcs = [Src::Steam, Src::Gog, Src::Igdb, Src::Vndb];
+        let hint = |src: Src| match src {
+            Src::Steam => "Steam store page (works for games you don't own there)",
+            Src::Gog => "GOG store page",
+            Src::Igdb => "IGDB, the broadest database incl. consoles",
+            Src::Vndb => "VNDB, for visual novels",
+        };
         match self.lookup.as_mut() {
             None => {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Fill from").color(TEXT_DIM));
-                    let steam = ui.button("Steam…").on_hover_text("Fill in details from the Steam store page (works for games you don't own there)");
-                    let gog = ui.button("GOG…").on_hover_text("Fill in details from the GOG store page");
-                    let igdb = ui
-                        .add_enabled(cfg.is_some(), egui::Button::new("IGDB…"))
-                        .on_hover_text("Look this game up on IGDB and fill in its details")
-                        .on_disabled_hover_text("Add IGDB credentials in Settings to look games up there.");
-                    let vndb = ui.button("VNDB…").on_hover_text("Look this visual novel up on VNDB and fill in its details");
-                    let srcs = [(steam, Src::Steam), (gog, Src::Gog), (igdb, Src::Igdb), (vndb, Src::Vndb)];
-                    for (clicked, src) in srcs.map(|(r, s)| (r.clicked(), s)) {
-                        if clicked {
+                    for src in srcs {
+                        let on = src != Src::Igdb || cfg.is_some();
+                        let r = ui
+                            .add_enabled(on, egui::Button::new(format!("{}…", src.name())))
+                            .on_hover_text(format!("Search {} and preview what it has", hint(src)))
+                            .on_disabled_hover_text("Add IGDB credentials in Settings to look games up there.");
+                        if r.clicked() {
                             let query = igdb::search_name(&self.name);
-                            self.lookup = Some(Lookup { src, query, results: Vec::new(), busy: false, error: None, rx: None });
+                            self.lookup = Some(Lookup { src, query, results: Vec::new(), busy: false, error: None, rx: None, preview: None });
                             search = true;
                         }
                     }
@@ -340,13 +404,22 @@ impl Editor {
                 });
             }
             Some(s) => {
-                let mut picked = None;
                 let mut close = false;
                 egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(s.src.name()).strong());
-                        let r = ui.add(egui::TextEdit::singleline(&mut s.query).desired_width(360.0).hint_text("Game name"));
+                        // Switching source keeps the query, so the same game can be compared across sources.
+                        for src in srcs {
+                            let on = src != Src::Igdb || cfg.is_some();
+                            let r = ui.add_enabled(on && !s.busy, egui::Button::selectable(s.src == src, src.name()));
+                            if r.on_hover_text(hint(src)).clicked() && s.src != src {
+                                (s.src, s.results, s.preview) = (src, Vec::new(), None);
+                                search = true;
+                            }
+                        }
+                        ui.separator();
+                        let r = ui.add(egui::TextEdit::singleline(&mut s.query).desired_width(300.0).hint_text("Game name"));
                         if ui.button("Search").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            s.preview = None;
                             search = true;
                         }
                         if ui.button("Close").clicked() {
@@ -358,9 +431,19 @@ impl Editor {
                     });
                     if let Some(e) = &s.error {
                         ui.label(RichText::new(e).color(theme::DANGER));
-                    } else if !s.busy && s.results.is_empty() {
+                    }
+                    if let Some((d, igdb_id)) = &s.preview {
+                        match preview(ui, d, s.src.name()) {
+                            Some(true) => fill = Some((d.clone(), *igdb_id, s.src.name())),
+                            Some(false) => s.preview = None,
+                            None => {}
+                        }
+                        return;
+                    }
+                    if s.error.is_none() && !s.busy && s.results.is_empty() {
                         ui.label(RichText::new("Nothing found. Try a shorter or different name.").color(TEXT_DIM));
                     }
+                    let mut picked = None;
                     egui::ScrollArea::vertical().id_salt("ed_lookup").max_height(220.0).show(ui, |ui| {
                         for (i, h) in s.results.iter().enumerate() {
                             let (name, year, plat) = match h {
@@ -372,24 +455,32 @@ impl Editor {
                             let year = year.map(|y| format!(" ({y})")).unwrap_or_default();
                             let text = format!("{name}{year}{}{plat}", if plat.is_empty() { "" } else { " · " });
                             let r = ui.add_enabled(!s.busy, egui::Button::selectable(false, text));
-                            if r.on_hover_text("Fill the form with this entry").clicked() {
+                            if r.on_hover_text("Preview this entry").clicked() {
                                 picked = Some(i);
                             }
                         }
                     });
-                });
-                match picked.map(|i| s.results[i].clone()) {
-                    Some(Hit::Igdb(g)) => {
-                        self.fill_from(&g);
-                        close = true;
+                    match picked.map(|i| s.results[i].clone()) {
+                        // IGDB hits already carry their details.
+                        Some(Hit::Igdb(g)) => {
+                            let id = g.id;
+                            s.preview = Some((VnDetails { title: g.name, meta: g.meta, tags: Vec::new() }, Some(id)));
+                        }
+                        Some(h) => fetch = Some(h),
+                        None => {}
                     }
-                    Some(h) => fetch = Some(h),
-                    None => {}
-                }
+                });
                 if close {
                     self.lookup = None;
                 }
             }
+        }
+        if let Some((d, igdb_id, src)) = fill {
+            self.fill_details(&d, src);
+            if igdb_id.is_some() {
+                self.igdb_pick = igdb_id;
+            }
+            self.lookup = None;
         }
         if let Some(s) = self.lookup.as_mut().filter(|_| search || fetch.is_some()) {
             let (tx, rx) = unbounded();
@@ -416,17 +507,7 @@ impl Editor {
         ui.add_space(8.0);
     }
 
-    /// Replaces the form's details with an IGDB entry's (fields IGDB lacks stay as they are).
-    fn fill_from(&mut self, g: &IgdbGame) {
-        if self.name.trim().is_empty() {
-            self.name = g.name.clone();
-        }
-        self.fill_meta(&g.meta);
-        self.igdb_pick = Some(g.id);
-        self.filled = Some(format!("Filled from IGDB: {}. Review and Save.", g.name));
-    }
-
-    /// Same for a fetched Steam/GOG/VNDB entry; its tags are added to the game's tags.
+    /// Replaces the form's details with an entry's (fields it lacks stay); its tags are added.
     fn fill_details(&mut self, d: &VnDetails, src: &str) {
         if self.name.trim().is_empty() {
             self.name = d.title.clone();

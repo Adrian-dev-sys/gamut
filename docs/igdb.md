@@ -42,5 +42,8 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
 - Editor → "Fill from GOG…" (`gog.rs`, public catalog, no account): developer, publisher, date, genres,
   rating (stars ×20) and up to 10 store tags from the catalog, description from `api.gog.com/products/{id}`.
   "Edition/bundle" marks packs. Steam/GOG/VNDB picks fetch details after the click; none is stored as a match.
+- Picking any result opens a preview first (`editor::preview`: every field, "N of 9 fields", description
+  word/image count); "Fill form" applies it, "Back to results" returns. Source tabs in the panel re-run the
+  same query, so one game can be compared across sources.
 - `gamut-cli vndb|gog|steam NAME` prints results and the first one's details.
 - `gamut-cli igdb NAME [PLATFORM]` prints search results and marks the automatic pick; `gamut-cli status` checks keys.
