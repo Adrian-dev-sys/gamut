@@ -834,7 +834,10 @@ impl GamutApp {
                 theme::section(ui, "Description");
                 ScrollArea::vertical().id_salt("desc").auto_shrink([false, true]).show(ui, |ui| {
                     match &g.description {
-                        Some(d) => ui.add(egui::Label::new(RichText::new(d).size(14.5).line_height(Some(22.0))).wrap()),
+                        Some(d) => {
+                            description(ui, d);
+                            ui.response()
+                        }
                         None if g.meta_state == state::PENDING => {
                             ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
                         }
@@ -912,9 +915,9 @@ impl GamutApp {
         let screen = ctx.content_rect();
         let size = vec2(680.0_f32.min(screen.width() - 80.0), 600.0_f32.min(screen.height() - 120.0));
         theme::dialog(ctx, "Settings", false, |ui| {
-                dialog_header(ui, "Settings", &mut open);
                 ui.set_min_size(size);
                 ui.set_max_size(size);
+                dialog_header(ui, "Settings", &mut open);
                 ui.horizontal(|ui| {
                     for (t, label) in SETTINGS_TABS.iter().enumerate() {
                         ui.selectable_value(&mut tab, t, RichText::new(*label).size(14.5));
@@ -1732,4 +1735,32 @@ fn combo(ui: &mut Ui, id: &str, value: &mut String, opts: &[(&str, &str)]) {
                 }
             }
         });
+}
+
+/// Description text with its images (`[img]URL` lines kept by `scrape::strip_html`).
+fn description(ui: &mut Ui, d: &str) {
+    let mut text = String::new();
+    let flush = |ui: &mut Ui, text: &mut String| {
+        let t = text.trim_matches('\n');
+        if !t.is_empty() {
+            ui.add(egui::Label::new(RichText::new(t).size(14.5).line_height(Some(22.0))).wrap());
+        }
+        text.clear();
+    };
+    for line in d.lines() {
+        match line.trim().strip_prefix(gamut_core::scrape::IMG_MARKER) {
+            Some(url) if url.starts_with("http") => {
+                flush(ui, &mut text);
+                ui.add_space(6.0);
+                let w = ui.available_width().min(900.0);
+                ui.add(egui::Image::new(url.to_string()).max_width(w).corner_radius(6).show_loading_spinner(true));
+                ui.add_space(6.0);
+            }
+            _ => {
+                text.push_str(line);
+                text.push('\n');
+            }
+        }
+    }
+    flush(ui, &mut text);
 }

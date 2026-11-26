@@ -9,6 +9,8 @@ anyhow = "1.0.105"
 crossbeam-channel = "0.5.17"
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "system_fonts", "glow"] }
 egui = "0.37.0"
+egui_extras = { version = "0.37.0", default-features = false, features = ["http", "image", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 gamut-core = { version = "0.1.0", path = "../core" }
 log = "0.4.35"
 open = "5.4.5"

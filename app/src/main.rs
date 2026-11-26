@@ -41,6 +41,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Gamut",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::GamutApp::new(cc, paths)?))),
+        Box::new(move |cc| {
+            // Loaders for images in game descriptions (http URLs).
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(ui::GamutApp::new(cc, paths)?))
+        }),
     )
 }

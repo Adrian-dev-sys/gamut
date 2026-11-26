@@ -272,7 +272,11 @@ pub fn normalize(s: &str) -> String {
 }
 
 /// Crude HTML → text for Steam descriptions.
+/// Line prefix that keeps an image's URL in otherwise plain descriptions.
+pub const IMG_MARKER: &str = "[img]";
+
 pub fn strip_html(html: &str) -> String {
+    let src_re = regex::Regex::new(r#"(?i)\bsrc\s*=\s*["']([^"']+)["']"#).unwrap();
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
     let mut tag = String::new();
@@ -285,7 +289,11 @@ pub fn strip_html(html: &str) -> String {
             '>' if in_tag => {
                 in_tag = false;
                 let t = tag.trim_start_matches('/').to_ascii_lowercase();
-                if t.starts_with("br") || t.starts_with("p") || t.starts_with("li") || t.starts_with("h") {
+                if t.starts_with("img") {
+                    if let Some(c) = src_re.captures(&tag).filter(|c| c[1].starts_with("http")) {
+                        out.push_str(&format!("\n{IMG_MARKER}{}\n", &c[1]));
+                    }
+                } else if t.starts_with("br") || t.starts_with("p") || t.starts_with("li") || t.starts_with("h") {
                     out.push('\n');
                 }
             }
@@ -323,6 +331,7 @@ mod tests {
     #[test]
     fn html_and_normalize() {
         assert_eq!(strip_html("<h2>Hi</h2>A &amp; B<br>C"), "Hi\nA & B\nC");
+        assert_eq!(strip_html("A<img src=\"https://x/y.gif?t=1\" width=5>B"), "A\n[img]https://x/y.gif?t=1\nB");
         assert_eq!(normalize("DOOM Eternal™"), "doometernal");
     }
 }
