@@ -22,12 +22,31 @@ Playnite feature names map to the per-game override:
 - `[SK] Global Mode Disable` → never;
 - `Valve Anti-Cheat Enabled` → never.
 
-## Not ported
-These Playnite helper features were not ported:
-- writing `Global\default_SpecialK.ini`;
-- ReShade presets;
-- `steam_appid.txt` creation;
-- Steam Big Picture overlay env var;
-- the SK updater.
+## Per-launch files (`specialk/profile.rs`)
+These run when SK is injected into a game (`specialk::prepare`). Every file is written only when something changed, and the rest of the file is kept as it was.
+- **`Global\default_SpecialK.ini`** is the template SK copies into each new profile. Gamut sets these keys from the Settings checkboxes:
+  - `[Steam.System] PreLoadSteamOverlay`;
+  - for ReShade: `[Import.ReShade64/32]` (Filename is emptied when ReShade is off), `SleeplessRenderThread=false` and `ShowInVideoCapture=false`;
+  - `[Render.FrameRate] TargetFPS`;
+  - `[Compatibility.General] DisableBloatWare_NVIDIA`;
+  - `[Render.DXGI] UseFlipDiscard`.
 
-Gamut leaves the user's SK config alone.
+  It also removes the bogus `AppID=steamId` that Playnite's helper wrote.
+- **ReShade**, when `PlugIns\ThirdParty\ReShade` exists:
+  - `reshade-presets\<id>.ini` is created once per game. `<id>` is the Playnite GUID, so presets made under Playnite are reused, else `gamut-<id>`.
+  - The preset's techniques come from `reshade-shaders\Shaders\**\*.fx`; if there are none, the built-in list is used.
+  - `ReShade.ini` gets `[GENERAL] PresetPath` and `[APP] Force*=0`.
+- **`steam_appid.txt`** is written in a non-Steam game's install (or exe) folder, only when it's missing and the game has a matched Steam appid (`source_id`). Gamut doesn't search Steam by name.
+
+## Big Picture overlay
+When the option is on and Steam's "Steam Big Picture Mode" window exists, non-Steam executables are launched with `SteamTenfoot=1`. Only directly started executables get it, not shortcuts or URLs.
+
+## Updates (`specialk/update.rs`)
+- **Check:** at start, every 6 h, and when the channel changes, Gamut reads `https://sk-data.special-k.info/repository.json`. It takes the first version whose `Branches` contains the channel (Website / Discord / Ancient) and compares it with `SpecialK64.dll`'s file version.
+- **Notify:** a toast announces a newer release, and Settings shows an "Install update" button.
+- **Install:**
+  1. download the installer;
+  2. check its SHA-256 against the feed;
+  3. stop all SK services;
+  4. run the installer interactively and wait for it to exit;
+  5. delete the downloaded installer.

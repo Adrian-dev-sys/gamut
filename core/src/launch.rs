@@ -12,6 +12,11 @@ pub enum Launched {
 
 /// Starts a game. For tracked processes the handle yields (minutes, start_unix) on exit.
 pub fn launch(g: &Game) -> Result<Launched> {
+    launch_with(g, &[])
+}
+
+/// Like [`launch`], with extra environment variables for directly started executables.
+pub fn launch_with(g: &Game, env: &[(String, String)]) -> Result<Launched> {
     match g.source {
         Source::Steam => {
             let verb = if g.installed { "rungameid" } else { "install" };
@@ -33,6 +38,7 @@ pub fn launch(g: &Game) -> Result<Launched> {
                 return Ok(Launched::External);
             }
             let mut cmd = Command::new(path);
+            cmd.envs(env.iter().map(|(k, v)| (k, v)));
             if let Some(a) = g.args.as_deref().filter(|a| !a.trim().is_empty()) {
                 #[cfg(windows)]
                 {

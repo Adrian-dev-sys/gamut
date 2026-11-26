@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+pub mod profile;
+pub mod update;
+
 /// User settings, stored as `[specialk]` in config.toml.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -19,11 +22,36 @@ pub struct Settings {
     pub skip_anticheat: bool,
     /// Special K folder; empty = read from the registry.
     pub path: String,
+    /// Defaults written to Global\default_SpecialK.ini for new profiles.
+    pub steam_overlay: bool,
+    pub reshade: bool,
+    pub flip_model: bool,
+    /// Frame rate limit for new profiles; 0 = none.
+    pub fps_limit: f32,
+    pub disable_nvidia_bloat: bool,
+    /// Let non-Steam games use the Big Picture overlay while Steam runs in Big Picture.
+    pub bpm_overlay: bool,
+    pub check_updates: bool,
+    /// Update channel: "Website", "Discord" or "Ancient".
+    pub channel: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { mode: "off".into(), stop: "injection".into(), skip_anticheat: true, path: String::new() }
+        Settings {
+            mode: "off".into(),
+            stop: "injection".into(),
+            skip_anticheat: true,
+            path: String::new(),
+            steam_overlay: true,
+            reshade: true,
+            flip_model: true,
+            fps_limit: 0.0,
+            disable_nvidia_bloat: false,
+            bpm_overlay: false,
+            check_updates: true,
+            channel: "Website".into(),
+        }
     }
 }
 
@@ -83,6 +111,48 @@ pub fn install_dir(custom: &str) -> Option<PathBuf> {
         if p.is_file() { p.parent()?.to_path_buf() } else { p }
     };
     p.join("Servlet").is_dir().then_some(p)
+}
+
+/// Writes SK's per-launch files for `g`; failures are logged, never fatal.
+pub fn prepare(sk_dir: &Path, s: &Settings, g: &Game) {
+    match profile::write_defaults(sk_dir, s) {
+        Ok(true) => log::info!("Special K: updated default_SpecialK.ini"),
+        Ok(false) => {}
+        Err(e) => log::warn!("Special K: writing default_SpecialK.ini failed: {e:#}"),
+    }
+    if s.reshade {
+        if let Err(e) = profile::reshade_preset(sk_dir, g) {
+            log::warn!("Special K: ReShade preset failed: {e:#}");
+        }
+    }
+    if s.steam_overlay {
+        if let Err(e) = profile::steam_appid(g) {
+            log::warn!("Special K: writing steam_appid.txt failed: {e:#}");
+        }
+    }
+}
+
+/// Environment for the game process: `SteamTenfoot=1` puts the Big Picture overlay into non-Steam
+/// games while Steam runs in Big Picture.
+pub fn game_env(s: &Settings, g: &Game) -> Vec<(String, String)> {
+    if s.bpm_overlay && g.source != crate::model::Source::Steam && sys::bpm_running() {
+        vec![("SteamTenfoot".into(), "1".into())]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Stops every running SK service (before an update).
+pub fn stop_all(sk_dir: &Path) {
+    let servlet = sk_dir.join("Servlet");
+    for svc in SERVICES {
+        if sys::process_running(svc) {
+            let _ = std::process::Command::new(servlet.join(format!("{svc}.exe"))).arg("Stop").current_dir(&servlet).status();
+        }
+    }
+    if let Some(st) = STATE.lock().unwrap().as_mut() {
+        st.owned.clear();
+    }
 }
 
 /// Services Gamut started (and so may stop) and how many launches still need them.
@@ -174,7 +244,43 @@ mod sys {
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW};
     use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// "a.b.c.d" from a file's version resource.
+    pub fn file_version(path: &std::path::Path) -> Option<String> {
+        let p = wide(&path.to_string_lossy());
+        unsafe {
+            let n = GetFileVersionInfoSizeW(p.as_ptr(), std::ptr::null_mut());
+            if n == 0 {
+                return None;
+            }
+            let mut buf = vec![0u8; n as usize];
+            if GetFileVersionInfoW(p.as_ptr(), 0, n, buf.as_mut_ptr().cast()) == 0 {
+                return None;
+            }
+            let mut info: *mut core::ffi::c_void = std::ptr::null_mut();
+            let mut len = 0u32;
+            let root = wide("\\");
+            if VerQueryValueW(buf.as_ptr().cast(), root.as_ptr(), &mut info, &mut len) == 0 || info.is_null() {
+                return None;
+            }
+            let f = &*(info as *const VS_FIXEDFILEINFO);
+            let (ms, ls) = (f.dwFileVersionMS, f.dwFileVersionLS);
+            Some(format!("{}.{}.{}.{}", ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff))
+        }
+    }
+
+    /// Steam's Big Picture window is open.
+    pub fn bpm_running() -> bool {
+        let t = wide("Steam Big Picture Mode");
+        unsafe { !FindWindowW(std::ptr::null(), t.as_ptr()).is_null() }
+    }
 
     /// Whether a process named `name` (without .exe) is running.
     pub fn process_running(name: &str) -> bool {
@@ -208,7 +314,7 @@ mod sys {
     impl Event {
         /// Creates (or opens) a named auto-reset event.
         pub fn open(name: &str) -> Option<Event> {
-            let w: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            let w = wide(name);
             let h = unsafe { CreateEventW(std::ptr::null(), 0, 0, w.as_ptr()) };
             (!h.is_null()).then_some(Event(h))
         }
@@ -228,6 +334,12 @@ mod sys {
 mod sys {
     use std::time::Duration;
     pub fn process_running(_: &str) -> bool {
+        false
+    }
+    pub fn file_version(_: &std::path::Path) -> Option<String> {
+        None
+    }
+    pub fn bpm_running() -> bool {
         false
     }
     pub struct Event;

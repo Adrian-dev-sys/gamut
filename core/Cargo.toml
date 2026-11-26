@@ -11,6 +11,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 log = "0.4.35"
 open = "5.4.5"
 regex = "1.13.2"
+sha2 = "0.10"
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -19,4 +20,4 @@ ureq = { version = "3.5.2", features = ["json"] }
 winreg = "0.56.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }

@@ -205,6 +205,11 @@ impl GamutApp {
     fn running(&self) -> HashSet<i64> {
         let mut set = self.workers.running.lock().unwrap().clone();
         let steam = self.workers.steam_running.load(Ordering::Relaxed);
+        let starting = self.workers.steam_starting.lock().unwrap();
+        if !starting.is_empty() {
+            set.extend(self.games.iter().filter(|g| g.source == Source::Steam && g.steam_appid().is_some_and(|a| starting.contains_key(&a))).map(|g| g.id));
+        }
+        drop(starting);
         if steam != 0 {
             set.extend(self.games.iter().filter(|g| g.steam_appid() == Some(steam)).map(|g| g.id));
         }
@@ -887,6 +892,7 @@ impl GamutApp {
         let mut open = true;
         let mut save = false;
         let mut preview: Option<Option<std::path::PathBuf>> = None;
+        let mut sk_install = false;
         let importing = self.workers.importing.1.load(Ordering::Relaxed) > 0;
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
@@ -945,6 +951,38 @@ impl GamutApp {
                 });
                 ui.checkbox(&mut sk.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
                 ui.label(theme::hint("Starts Special K's injection service before a game launches. Set a game to always/never in Edit → Launch."));
+                ui.add_space(6.0);
+                ui.label(RichText::new("Defaults for new game profiles").strong());
+                ui.checkbox(&mut sk.steam_overlay, "Load the Steam overlay (writes steam_appid.txt for non-Steam games)");
+                ui.checkbox(&mut sk.reshade, "Enable ReShade (with a preset per game)");
+                ui.checkbox(&mut sk.flip_model, "Use the flip model presentation");
+                ui.checkbox(&mut sk.disable_nvidia_bloat, "Disable NVIDIA bloatware (overlay, telemetry)");
+                ui.horizontal(|ui| {
+                    ui.label("Frame rate limit");
+                    ui.add(egui::DragValue::new(&mut sk.fps_limit).range(0.0..=1000.0).speed(1.0).suffix(" fps"));
+                    ui.label(theme::hint("0 = none"));
+                });
+                ui.checkbox(&mut sk.bpm_overlay, "Big Picture overlay for non-Steam games while Steam is in Big Picture");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut sk.check_updates, "Check for updates on");
+                    let mut ch = sk.channel.clone();
+                    let chans: Vec<(&str, &str)> = gamut_core::specialk::update::CHANNELS.iter().map(|c| (*c, *c)).collect();
+                    combo(ui, "sk_chan", &mut ch, &chans);
+                    sk.channel = ch;
+                });
+                let installing = self.workers.sk_installing.load(Ordering::Relaxed);
+                if let Some(u) = self.workers.sk_update.lock().unwrap().clone() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Special K {} is available (installed {}).", u.latest, u.current));
+                        let b = ui
+                            .add_enabled(!installing, egui::Button::new(if installing { "Installing…" } else { "Install update" }))
+                            .on_hover_text(u.notes.chars().take(1500).collect::<String>());
+                        if b.clicked() {
+                            sk_install = true;
+                        }
+                    });
+                }
                 ui.add_space(12.0);
                 ui.separator();
                 theme::section(ui, "Playnite");
@@ -980,6 +1018,9 @@ impl GamutApp {
             });
         if let Some(dir) = preview {
             self.workers.playnite_preview(dir);
+        }
+        if sk_install {
+            self.workers.install_sk_update();
         }
         if save {
             let new = self.settings.take().unwrap();

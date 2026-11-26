@@ -2,10 +2,10 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Context;
 use gamut_core::{launch::{self, Launched}, specialk, steam, sync, Config, Game, Library, Paths};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub enum Event {
     LibraryChanged,
@@ -32,6 +32,11 @@ pub struct Workers {
     pub running: Arc<Mutex<HashSet<i64>>>,
     /// Steam's currently running app id (0 = none).
     pub steam_running: Arc<AtomicU32>,
+    /// Steam apps Gamut asked Steam to start, until Steam reports them running (or 90 s pass).
+    pub steam_starting: Arc<Mutex<HashMap<u32, Instant>>>,
+    /// Newer Special K release, when one was found; true while it installs.
+    pub sk_update: Arc<Mutex<Option<specialk::update::Update>>>,
+    pub sk_installing: Arc<AtomicBool>,
     cfg: Arc<RwLock<Config>>,
     paths: Paths,
     ctx: Context,
@@ -53,6 +58,9 @@ impl Workers {
             importing: Default::default(),
             running: Default::default(),
             steam_running: Default::default(),
+            steam_starting: Default::default(),
+            sk_update: Default::default(),
+            sk_installing: Default::default(),
             cfg,
             paths,
             ctx: ctx.clone(),
@@ -61,9 +69,18 @@ impl Workers {
         std::thread::spawn(move || prune_orphan_art(&paths));
         w.spawn_scraper(kc_rx, w.pending_cover.clone(), false);
         w.spawn_scraper(km_rx, w.pending_meta.clone(), true);
-        let (steam, ctx) = (w.steam_running.clone(), w.ctx.clone());
+        w.spawn_sk_update_check();
+        let (steam, ctx, starting) = (w.steam_running.clone(), w.ctx.clone(), w.steam_starting.clone());
         std::thread::spawn(move || loop {
             let id = steam::running_appid().unwrap_or(0);
+            {
+                let mut st = starting.lock().unwrap();
+                let n = st.len();
+                st.retain(|&app, t| app != id && t.elapsed() < Duration::from_secs(90));
+                if st.len() != n {
+                    ctx.request_repaint();
+                }
+            }
             if steam.swap(id, Ordering::Relaxed) != id {
                 ctx.request_repaint();
             }
@@ -219,16 +236,21 @@ impl Workers {
     /// Starts a game; with Special K on, the service is started first on a worker thread.
     pub fn play(&self, g: Game) -> anyhow::Result<()> {
         let sk = self.cfg.read().unwrap().specialk.clone();
+        if g.installed {
+            if let (gamut_core::Source::Steam, Some(app)) = (g.source, g.steam_appid()) {
+                self.steam_starting.lock().unwrap().insert(app, Instant::now());
+            }
+        }
         let t = Tracker { paths: self.paths.clone(), tx: self.tx.clone(), ctx: self.ctx.clone(), running: self.running.clone() };
         if sk.mode == "off" {
-            t.track(g.id, launch::launch(&g)?, None);
+            t.track(g.id, launch::launch_with(&g, &specialk::game_env(&sk, &g))?, None);
             return Ok(());
         }
         // Counts as running while Special K starts, so a second click doesn't launch twice.
         t.running.lock().unwrap().insert(g.id);
         std::thread::spawn(move || {
             let guard = with_specialk(&g, &sk, &t.tx);
-            match launch::launch(&g) {
+            match launch::launch_with(&g, &specialk::game_env(&sk, &g)) {
                 Ok(l) => t.track(g.id, l, guard),
                 Err(e) => {
                     t.running.lock().unwrap().remove(&g.id);
@@ -238,6 +260,68 @@ impl Workers {
             t.ctx.request_repaint();
         });
         Ok(())
+    }
+}
+
+impl Workers {
+    /// Checks SK's update feed at start, every 6 hours, and when the channel changes.
+    fn spawn_sk_update_check(&self) {
+        let (cfg, tx, ctx, slot) = (self.cfg.clone(), self.tx.clone(), self.ctx.clone(), self.sk_update.clone());
+        std::thread::spawn(move || {
+            let mut last: Option<(Instant, String)> = None;
+            let mut told = String::new();
+            loop {
+                let sk = cfg.read().unwrap().specialk.clone();
+                let due = last.as_ref().is_none_or(|(t, ch)| *ch != sk.channel || t.elapsed() > Duration::from_secs(6 * 3600));
+                if let (true, true, Some(dir)) = (sk.check_updates, due, specialk::install_dir(&sk.path)) {
+                    last = Some((Instant::now(), sk.channel.clone()));
+                    match specialk::update::check(&dir, &sk.channel) {
+                        Ok(u) => {
+                            if let Some(u) = &u {
+                                if told != u.latest {
+                                    told = u.latest.clone();
+                                    log::info!("Special K update available: {} -> {}", u.current, u.latest);
+                                    let _ = tx.send(Event::Info(format!(
+                                        "Special K {} is available (you have {}). Install it from Settings → Special K.",
+                                        u.latest, u.current
+                                    )));
+                                }
+                            }
+                            *slot.lock().unwrap() = u;
+                            ctx.request_repaint();
+                        }
+                        Err(e) => log::warn!("Special K update check failed: {e:#}"),
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(300));
+            }
+        });
+    }
+
+    /// Downloads, verifies and runs the Special K installer.
+    pub fn install_sk_update(&self) {
+        let Some(u) = self.sk_update.lock().unwrap().clone() else { return };
+        let sk = self.cfg.read().unwrap().specialk.clone();
+        let Some(dir) = specialk::install_dir(&sk.path) else { return };
+        if self.sk_installing.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (tx, ctx, slot, busy) = (self.tx.clone(), self.ctx.clone(), self.sk_update.clone(), self.sk_installing.clone());
+        std::thread::spawn(move || {
+            match specialk::update::install(&dir, &u) {
+                Ok(()) => {
+                    let now = specialk::update::installed_version(&dir).unwrap_or_default();
+                    log::info!("Special K updated to {now}");
+                    *slot.lock().unwrap() = None;
+                    let _ = tx.send(Event::Info(format!("Special K updated ({now}).")));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("Special K update failed: {e:#}")));
+                }
+            }
+            busy.store(false, Ordering::SeqCst);
+            ctx.request_repaint();
+        });
     }
 }
 
@@ -266,6 +350,7 @@ fn with_specialk(g: &Game, sk: &specialk::Settings, tx: &Sender<Event>) -> SkGua
     let signal = specialk::InjectionSignal::new();
     match specialk::acquire(&dir) {
         Ok(guard) => {
+            specialk::prepare(&dir, sk, g);
             log::info!("Special K: injecting into {} (stop: {})", g.name, sk.stop);
             Some((guard, signal, sk.stop.clone()))
         }
