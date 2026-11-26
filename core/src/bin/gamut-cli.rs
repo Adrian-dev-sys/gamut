@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -64,14 +64,24 @@ fn main() -> anyhow::Result<()> {
                 println!("{mark} {:>7}  {}  ({})  main={}  [{}]", g.id, g.name, g.year.unwrap_or(0), g.main, g.platforms.join(", "));
             }
             if let Some(g) = list.iter().find(|g| Some(g.id) == pick) {
-                println!("
-{:#?}
-cover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
+                println!("\n{:#?}\ncover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
+            }
+        }
+        // vndb NAME: search results, then the first one's details.
+        Some("vndb") if args.len() >= 2 => {
+            use gamut_core::vndb;
+            let list = vndb::search(&args[1])?;
+            for v in &list {
+                println!("{:>8}  {}  ({})  [{}]", v.id, v.title, v.year().unwrap_or(0), v.platforms.join(", "));
+            }
+            if let Some(v) = list.first() {
+                let d = vndb::details(&v.id)?;
+                println!("\n{:#?}\ntags: {}", d.meta, d.tags.join(", "));
             }
         }
         _ => {}
     }
-    if matches!(args.first().map(String::as_str), Some("status" | "igdb")) {
+    if matches!(args.first().map(String::as_str), Some("status" | "igdb" | "vndb")) {
         return Ok(());
     }
     // Writing commands must not run alongside the app.
@@ -179,7 +189,7 @@ cover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
             let id = lib.add_custom(&Game::new_custom(args[1].clone(), Some(args[2].clone())))?;
             println!("added #{id}");
         }
-        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
+        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
     }
     Ok(())
 }

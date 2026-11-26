@@ -5,6 +5,7 @@ use crate::util::{self, opt};
 use egui::{vec2, Color32, CornerRadius, RichText, Stroke, Ui};
 use crossbeam_channel::{unbounded, Receiver};
 use gamut_core::igdb::{self, IgdbGame};
+use gamut_core::vndb::{self, Vn, VnDetails};
 use gamut_core::{Config, Game, Source};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -48,17 +49,45 @@ pub struct Editor {
     pub cover_file: Option<std::path::PathBuf>,
     /// IGDB entry picked with "Fill from IGDB", saved as the game's match.
     pub igdb_pick: Option<i64>,
-    igdb: Option<IgdbSearch>,
+    lookup: Option<Lookup>,
     filled: Option<String>,
 }
 
-/// The "Fill from IGDB" panel: a name search and its results.
-struct IgdbSearch {
+#[derive(Clone, Copy, PartialEq)]
+enum Src {
+    Igdb,
+    Vndb,
+}
+
+impl Src {
+    fn name(self) -> &'static str {
+        match self {
+            Src::Igdb => "IGDB",
+            Src::Vndb => "VNDB",
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Hit {
+    Igdb(IgdbGame),
+    Vndb(Vn),
+}
+
+enum Msg {
+    Results(Result<Vec<Hit>, String>),
+    /// A picked VNDB entry's details (fetched after the pick).
+    Details(Result<VnDetails, String>),
+}
+
+/// The "Fill from IGDB/VNDB" panel: a name search and its results.
+struct Lookup {
+    src: Src,
     query: String,
-    results: Vec<IgdbGame>,
+    results: Vec<Hit>,
     busy: bool,
     error: Option<String>,
-    rx: Option<Receiver<Result<Vec<IgdbGame>, String>>>,
+    rx: Option<Receiver<Msg>>,
 }
 
 /// Suggestion lists taken from the library (value, count).
@@ -119,7 +148,7 @@ impl Editor {
             tag_input: String::new(),
             cover_file: None,
             igdb_pick: None,
-            igdb: None,
+            lookup: None,
             filled: None,
         }
     }
@@ -203,7 +232,7 @@ impl Editor {
         let col_w = (ui.available_width() - 40.0) / 2.0;
         let field_w = col_w - 130.0;
         ui.add_space(4.0);
-        self.igdb_panel(ui, lists.igdb);
+        self.lookup_panel(ui, lists.igdb);
         ui.columns(2, |cols| {
             let grid = |ui: &mut Ui, id: &str, f: &mut dyn FnMut(&mut Ui)| {
                 egui::Grid::new(id).num_columns(2).spacing([14.0, 10.0]).min_col_width(110.0).show(ui, |ui| f(ui));
@@ -240,31 +269,41 @@ impl Editor {
         });
     }
 
-    /// "Fill from IGDB…": search by name, pick an entry, and its details replace the form's fields.
-    fn igdb_panel(&mut self, ui: &mut Ui, cfg: Option<&Config>) {
-        if let Some(s) = self.igdb.as_mut() {
-            if let Some(r) = s.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+    /// "Fill from IGDB/VNDB…": search by name, pick an entry, and its details replace the form's fields.
+    fn lookup_panel(&mut self, ui: &mut Ui, cfg: Option<&Config>) {
+        let mut details = None;
+        if let Some(s) = self.lookup.as_mut() {
+            if let Some(m) = s.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
                 s.busy = false;
                 s.rx = None;
-                match r {
-                    Ok(v) => (s.results, s.error) = (v, None),
-                    Err(e) => (s.results, s.error) = (Vec::new(), Some(e)),
+                match m {
+                    Msg::Results(Ok(v)) => (s.results, s.error) = (v, None),
+                    Msg::Results(Err(e)) => (s.results, s.error) = (Vec::new(), Some(e)),
+                    Msg::Details(Ok(d)) => details = Some(d),
+                    Msg::Details(Err(e)) => s.error = Some(e),
                 }
             }
         }
-        let Some(cfg) = cfg else {
-            ui.add_enabled(false, egui::Button::new("Fill from IGDB…"))
-                .on_disabled_hover_text("Add IGDB credentials in Settings to look games up there.");
-            ui.add_space(8.0);
-            return;
-        };
+        if let Some(d) = details {
+            self.fill_vndb(&d);
+            self.lookup = None;
+        }
         let mut search = false;
-        match self.igdb.as_mut() {
+        let mut fetch = None;
+        match self.lookup.as_mut() {
             None => {
                 ui.horizontal(|ui| {
-                    if ui.button("Fill from IGDB…").on_hover_text("Look this game up on IGDB and fill in its details").clicked() {
-                        self.igdb = Some(IgdbSearch { query: self.name.clone(), results: Vec::new(), busy: false, error: None, rx: None });
-                        search = true;
+                    let igdb = ui
+                        .add_enabled(cfg.is_some(), egui::Button::new("Fill from IGDB…"))
+                        .on_hover_text("Look this game up on IGDB and fill in its details")
+                        .on_disabled_hover_text("Add IGDB credentials in Settings to look games up there.");
+                    let vndb = ui.button("Fill from VNDB…").on_hover_text("Look this visual novel up on VNDB and fill in its details");
+                    for (clicked, src) in [(igdb.clicked(), Src::Igdb), (vndb.clicked(), Src::Vndb)] {
+                        if clicked {
+                            let query = igdb::search_name(&self.name);
+                            self.lookup = Some(Lookup { src, query, results: Vec::new(), busy: false, error: None, rx: None });
+                            search = true;
+                        }
                     }
                     if let Some(f) = &self.filled {
                         ui.label(RichText::new(f).color(TEXT_DIM));
@@ -276,6 +315,7 @@ impl Editor {
                 let mut close = false;
                 egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.label(RichText::new(s.src.name()).strong());
                         let r = ui.add(egui::TextEdit::singleline(&mut s.query).desired_width(360.0).hint_text("Game name"));
                         if ui.button("Search").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                             search = true;
@@ -292,33 +332,49 @@ impl Editor {
                     } else if !s.busy && s.results.is_empty() {
                         ui.label(RichText::new("Nothing found. Try a shorter or different name.").color(TEXT_DIM));
                     }
-                    egui::ScrollArea::vertical().id_salt("ed_igdb").max_height(220.0).show(ui, |ui| {
-                        for (i, g) in s.results.iter().enumerate() {
-                            let year = g.year.map(|y| format!(" ({y})")).unwrap_or_default();
-                            let plat = g.platforms.join(", ");
-                            let text = format!("{}{year}{}{plat}", g.name, if plat.is_empty() { "" } else { " · " });
-                            if ui.selectable_label(false, text).on_hover_text("Fill the form with this entry").clicked() {
+                    egui::ScrollArea::vertical().id_salt("ed_lookup").max_height(220.0).show(ui, |ui| {
+                        for (i, h) in s.results.iter().enumerate() {
+                            let (name, year, plat) = match h {
+                                Hit::Igdb(g) => (g.name.as_str(), g.year, g.platforms.join(", ")),
+                                Hit::Vndb(v) => (v.title.as_str(), v.year(), v.platforms.join(", ").to_uppercase()),
+                            };
+                            let year = year.map(|y| format!(" ({y})")).unwrap_or_default();
+                            let text = format!("{name}{year}{}{plat}", if plat.is_empty() { "" } else { " · " });
+                            let r = ui.add_enabled(!s.busy, egui::Button::selectable(false, text));
+                            if r.on_hover_text("Fill the form with this entry").clicked() {
                                 picked = Some(i);
                             }
                         }
                     });
                 });
-                if let Some(i) = picked {
-                    let g = s.results[i].clone();
-                    self.fill_from(&g);
-                    close = true;
+                match picked.map(|i| s.results[i].clone()) {
+                    Some(Hit::Igdb(g)) => {
+                        self.fill_from(&g);
+                        close = true;
+                    }
+                    Some(Hit::Vndb(v)) => fetch = Some(v.id),
+                    None => {}
                 }
                 if close {
-                    self.igdb = None;
+                    self.lookup = None;
                 }
             }
         }
-        if let (true, Some(s)) = (search, self.igdb.as_mut()) {
+        if let Some(s) = self.lookup.as_mut().filter(|_| search || fetch.is_some()) {
             let (tx, rx) = unbounded();
-            let (cfg, q, ctx) = (cfg.clone(), s.query.trim().to_string(), ui.ctx().clone());
+            let (cfg, q, src, ctx) = (cfg.cloned(), s.query.trim().to_string(), s.src, ui.ctx().clone());
             (s.busy, s.error, s.rx) = (true, None, Some(rx));
             std::thread::spawn(move || {
-                let _ = tx.send(igdb::search(&cfg, &q).map_err(|e| format!("{e:#}")));
+                let err = |e: anyhow::Error| format!("{e:#}");
+                let msg = match (fetch, src) {
+                    (Some(id), _) => Msg::Details(vndb::details(&id).map_err(err)),
+                    (None, Src::Vndb) => Msg::Results(vndb::search(&q).map_err(err).map(|v| v.into_iter().map(Hit::Vndb).collect())),
+                    (None, Src::Igdb) => Msg::Results(match &cfg {
+                        Some(c) => igdb::search(c, &q).map_err(err).map(|v| v.into_iter().map(Hit::Igdb).collect()),
+                        None => Err("IGDB isn't set up".into()),
+                    }),
+                };
+                let _ = tx.send(msg);
                 ctx.request_repaint();
             });
         }
@@ -327,15 +383,34 @@ impl Editor {
 
     /// Replaces the form's details with an IGDB entry's (fields IGDB lacks stay as they are).
     fn fill_from(&mut self, g: &IgdbGame) {
-        let m = &g.meta;
+        if self.name.trim().is_empty() {
+            self.name = g.name.clone();
+        }
+        self.fill_meta(&g.meta);
+        self.igdb_pick = Some(g.id);
+        self.filled = Some(format!("Filled from IGDB: {}. Review and Save.", g.name));
+    }
+
+    /// Same for a VNDB entry; its content tags are added to the game's tags.
+    fn fill_vndb(&mut self, d: &VnDetails) {
+        if self.name.trim().is_empty() {
+            self.name = d.title.clone();
+        }
+        self.fill_meta(&d.meta);
+        for t in &d.tags {
+            if !self.tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                self.tags.push(t.clone());
+            }
+        }
+        self.filled = Some(format!("Filled from VNDB: {}. Review and Save.", d.title));
+    }
+
+    fn fill_meta(&mut self, m: &gamut_core::model::Metadata) {
         let set = |field: &mut String, v: &Option<String>| {
             if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) {
                 *field = v.to_string();
             }
         };
-        if self.name.trim().is_empty() {
-            self.name = g.name.clone();
-        }
         set(&mut self.description, &m.description);
         set(&mut self.developer, &m.developer);
         set(&mut self.publisher, &m.publisher);
@@ -352,8 +427,6 @@ impl Editor {
         if m.genres.is_some() {
             self.genres = list(&m.genres);
         }
-        self.igdb_pick = Some(g.id);
-        self.filled = Some(format!("Filled from IGDB: {}. Review and Save.", g.name));
     }
 
     fn launch(&mut self, ui: &mut Ui) {

@@ -34,4 +34,8 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
 - Cover/banner picker lists IGDB matches next to SteamGridDB and VNDB.
 - Editor → "Fill from IGDB…": search, pick, and the entry's details replace the form's fields (unsaved until
   Save). Save stores the pick as the match and queues its cover if the game has none.
+- Editor → "Fill from VNDB…" (no key needed, `vndb::details`): description (BBCode stripped, spoilers
+  dropped), developers, most frequent official publisher, full release date, genre "Visual Novel", VNDB
+  rating as community score, and up to 10 non-spoiler content tags added to the game's tags. Not stored as a match.
+- `gamut-cli vndb NAME` prints VNDB results and the first one's details.
 - `gamut-cli igdb NAME [PLATFORM]` prints search results and marks the automatic pick; `gamut-cli status` checks keys.
