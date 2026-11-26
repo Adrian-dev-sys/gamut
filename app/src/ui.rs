@@ -65,7 +65,7 @@ const SORT_LABELS: [(Sort, &str); 9] = [
     (Sort::Name, "Name"),
     (Sort::LastPlayed, "Last played"),
     (Sort::Playtime, "Playtime"),
-    (Sort::PlayCount, "Most played"),
+    (Sort::PlayCount, "Play count"),
     (Sort::Added, "Recently added"),
     (Sort::Released, "Release date"),
     (Sort::CriticScore, "Critic score"),
@@ -747,7 +747,7 @@ impl GamutApp {
                         let status = if is_running { "Running" } else { status };
                         stat(ui, "LAST PLAYED", &util::date(g.last_played));
                         stat(ui, "TIME PLAYED", &util::playtime(g.playtime_min));
-                        stat(ui, "ADDED", &util::date(g.added));
+                        stat(ui, "ADDED", &if g.added > 0 { util::date(g.added) } else { "Unknown".into() });
                         stat(ui, "STATUS", status);
                         if let Some(c) = &g.completion {
                             stat(ui, "COMPLETION", c);

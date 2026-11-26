@@ -85,7 +85,7 @@ impl Library {
             Ok(ADDED_COLS.iter().copied().filter(|(n, _)| !have.iter().any(|h| h == n)).collect())
         };
         let version = |c: &Connection| c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0));
-        if missing(&self.conn)?.is_empty() && version(&self.conn)? >= 2 {
+        if missing(&self.conn)?.is_empty() && version(&self.conn)? >= 3 {
             return Ok(());
         }
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -100,6 +100,16 @@ impl Library {
             // v2: games with a cover but no banner go back to the art queue once, for a banner only.
             tx.execute("UPDATE games SET cover_state = 0 WHERE has_cover = 1 AND has_hero = 0 AND cover_state = 1", [])?;
             tx.execute("PRAGMA user_version = 2", [])?;
+        }
+        if version(&tx)? < 3 {
+            // v3: Steam games from the library's first day were stamped with scan time, not a real
+            // added date; mark them unknown so they don't bury actual new games.
+            tx.execute(
+                "UPDATE games SET added = 0 WHERE source = 'steam' AND playnite_id IS NULL AND added < 86400 +
+                 (SELECT MIN(added) FROM games WHERE source = 'steam' AND playnite_id IS NULL AND added > 0)",
+                [],
+            )?;
+            tx.execute("PRAGMA user_version = 3", [])?;
         }
         tx.commit()?;
         Ok(())
@@ -295,8 +305,10 @@ impl Library {
     /// Merges a Steam scan. Games missing from `entries` keep their row but are marked uninstalled.
     pub fn sync_steam(&mut self, entries: &[SteamEntry]) -> Result<usize> {
         let tx = self.conn.transaction()?;
+        // The first scan finds the whole existing library: no real added date for those.
+        let first = tx.query_row("SELECT COUNT(*) FROM games WHERE source = 'steam'", [], |r| r.get::<_, i64>(0))? == 0;
         tx.execute("UPDATE games SET installed = 0 WHERE source = 'steam'", [])?;
-        let now = crate::now();
+        let now = if first { 0 } else { crate::now() };
         {
             let mut st = tx.prepare(
                 "INSERT INTO games (source, source_id, name, installed, install_dir, playtime_min, last_played, added)
@@ -551,6 +563,23 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_steam_scan_has_no_added_date() {
+        let dir = std::env::temp_dir().join(format!("gamut-added-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let mut lib = Library::open(&path).unwrap();
+        let e = |appid, name: &str| SteamEntry { appid, name: name.into(), installed: true, install_dir: None, playtime_min: None, last_played: 0 };
+        lib.sync_steam(&[e(1, "Old")]).unwrap();
+        lib.sync_steam(&[e(1, "Old"), e(2, "New")]).unwrap();
+        let added = |n: &str| lib.conn.query_row("SELECT added FROM games WHERE name = ?1", [n], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(added("Old"), 0);
+        assert!(added("New") > 0);
+        drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn migrates_old_schema_and_merges_playnite() {
