@@ -14,6 +14,8 @@ pub const TEXT_DIM: Color32 = Color32::from_rgb(146, 154, 178);
 pub const GOOD: Color32 = Color32::from_rgb(56, 180, 112);
 /// Dim layer behind every dialog.
 pub const BACKDROP: Color32 = Color32::from_black_alpha(160);
+/// Extra dim for a popup stacked on another (art picker over details).
+pub const STACKED: Color32 = Color32::from_black_alpha(110);
 
 pub fn apply(ctx: &Context) {
     let mut v = egui::Visuals::dark();
@@ -119,8 +121,9 @@ pub fn logo(ui: &mut egui::Ui) {
     ui.label(job);
 }
 
-/// Centered dialog over a dimmed backdrop; every popup uses this so they look and behave alike.
-pub fn dialog<R>(ctx: &Context, id: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
+/// Centered dialog; every popup uses this so they look and behave alike. The dim layer itself is
+/// [`paint_backdrop`], drawn outside the popup so it survives egui's invisible first (sizing) frame.
+pub fn dialog<R>(ctx: &Context, id: &str, stacked: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
     let frame = egui::Frame::new()
         .fill(PANEL)
         .stroke(Stroke::new(1.0, BORDER))
@@ -128,7 +131,8 @@ pub fn dialog<R>(ctx: &Context, id: &str, add: impl FnOnce(&mut egui::Ui) -> R) 
         .inner_margin(Margin::same(18))
         .shadow(ctx.global_style().visuals.window_shadow);
     let id = egui::Id::unique(id);
-    egui::Modal::new(id).area(no_fade(id)).frame(frame).backdrop_color(BACKDROP).show(ctx, add)
+    let dim = if stacked { STACKED } else { Color32::TRANSPARENT };
+    egui::Modal::new(id).area(no_fade(id)).frame(frame).backdrop_color(dim).show(ctx, add)
 }
 
 /// Modal area without egui's fade-in: switching dialogs (details -> edit) would blink the backdrop.
@@ -160,4 +164,10 @@ fn paint_x(ui: &egui::Ui, r: &egui::Response) {
     let st = Stroke::new(1.5, if r.hovered() { Color32::WHITE } else { TEXT_DIM });
     ui.painter().line_segment([c + egui::vec2(-h, -h), c + egui::vec2(h, h)], st);
     ui.painter().line_segment([c + egui::vec2(-h, h), c + egui::vec2(h, -h)], st);
+}
+
+/// Dims the library under popups, on its own layer between the panels and the popups.
+pub fn paint_backdrop(ctx: &Context) {
+    let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::unique("gamut_backdrop"));
+    ctx.layer_painter(layer).rect_filled(ctx.content_rect(), 0.0, BACKDROP);
 }

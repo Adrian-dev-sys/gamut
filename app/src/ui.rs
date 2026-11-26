@@ -892,7 +892,7 @@ impl GamutApp {
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
             .unwrap_or_default();
-        theme::dialog(ctx, "Settings", |ui| {
+        theme::dialog(ctx, "Settings", false, |ui| {
                 ui.set_width(460.0);
                 dialog_header(ui, "Settings", &mut open);
                 theme::section(ui, "Steam");
@@ -976,7 +976,7 @@ impl GamutApp {
         let Some(id) = self.confirm_remove else { return };
         let name = self.game(id).map(|g| g.name.clone()).unwrap_or_default();
         let (mut close, mut open) = (false, true);
-        theme::dialog(ctx, "Remove game", |ui| {
+        theme::dialog(ctx, "Remove game", false, |ui| {
                 ui.set_max_width(460.0);
                 dialog_header(ui, "Remove game", &mut open);
                 ui.label(format!("Remove \"{name}\" from the library? The game's files aren't touched."));
@@ -1009,7 +1009,7 @@ impl GamutApp {
         let Some((dir, sum)) = self.playnite.as_ref() else { return };
         let mut open = true;
         let (mut go, mut cancel) = (false, false);
-        theme::dialog(ctx, "Import from Playnite", |ui| {
+        theme::dialog(ctx, "Import from Playnite", false, |ui| {
                 ui.set_width(520.0);
                 dialog_header(ui, "Import from Playnite", &mut open);
                 ui.label(theme::hint(&dir.display().to_string()));
@@ -1465,6 +1465,15 @@ impl eframe::App for GamutApp {
                 self.startup = None;
             }
         }
+        let any_popup = self.selected.is_some()
+            || self.editor.is_some()
+            || self.settings.is_some()
+            || self.confirm_remove.is_some()
+            || self.playnite.is_some()
+            || self.picker.is_some();
+        if any_popup {
+            theme::paint_backdrop(&ctx);
+        }
         // Other dialogs would sit under the modal, so it steps aside while they are open.
         let dialog_open =
             self.editor.is_some()
@@ -1482,7 +1491,7 @@ impl eframe::App for GamutApp {
             let resp = egui::Modal::new(egui::Id::unique("details_modal"))
                 .area(theme::no_fade(egui::Id::unique("details_modal")))
                 .frame(frame)
-                .backdrop_color(theme::BACKDROP)
+                .backdrop_color(Color32::TRANSPARENT)
                 .show(&ctx, |ui| {
                     ui.set_min_size(size);
                     ui.set_max_size(size);

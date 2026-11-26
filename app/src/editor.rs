@@ -121,7 +121,7 @@ impl Editor {
         let mut open = true;
         let mut out = EditorOutcome::Open;
         let title = if self.id == 0 { "Add game" } else { "Edit game" };
-        theme::dialog(ctx, "editor", |ui| {
+        theme::dialog(ctx, "editor", false, |ui| {
                 ui.set_min_size(size);
                 ui.set_max_size(size);
                 crate::ui::dialog_header(ui, title, &mut open);

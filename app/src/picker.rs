@@ -376,7 +376,7 @@ impl Picker {
         let size = vec2((screen.width() * 0.8).min(1100.0), (screen.height() * 0.88).min(980.0));
         let mut close = false;
         let what = if self.kind == ArtKind::Cover { "cover" } else { "banner" };
-        let resp = theme::dialog(ctx, "art_picker", |ui| {
+        let resp = theme::dialog(ctx, "art_picker", true, |ui| {
             ui.set_width(size.x);
             let top = ui.cursor().top();
             ui.horizontal(|ui| {
