@@ -30,3 +30,10 @@ reread (at most every 5 s) when the library, a game or achievements change.
 ## Game page
 - Sessions tab (`app/src/sessions_view.rs`, `Library::game_sessions`): tiles (count, recorded, average, longest, last 30 days)
   and sessions newest first; Steam ones show an approximate start. Reloaded when the game or library changes.
+
+## Play count and manual edits
+- `play_count` goes up by one per launch from Gamut (`Library::count_launch`, after a successful start), and is
+  shown on the game page even at 0. Playnite imports bring their own count.
+- Editor → General: "Time played" (h/m) and "Play count" are editable (`Library::set_play_stats`, only when
+  changed). They change the totals only, never the sessions table. Steam games' time is read-only: Steam scans
+  overwrite it and would log the difference as a session.

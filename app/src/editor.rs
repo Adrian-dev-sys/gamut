@@ -52,6 +52,12 @@ pub struct Editor {
     pub igdb_pick: Option<i64>,
     lookup: Option<Lookup>,
     compare: Option<Compare>,
+    play_h: String,
+    play_m: String,
+    play_count: String,
+    /// Cover and banner files, for the Media tab's previews.
+    pub art_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    art: Option<Art>,
     filled: Option<String>,
 }
 
@@ -71,6 +77,13 @@ struct Lookup {
     rx: Option<Receiver<Msg>>,
     /// The picked entry being previewed (and its IGDB id, saved as the match on fill).
     preview: Option<(VnDetails, Option<i64>)>,
+}
+
+/// Current cover/banner textures, decoded off the UI thread.
+struct Art {
+    rx: Receiver<(bool, Option<egui::ColorImage>)>,
+    cover: Option<Option<egui::TextureHandle>>,
+    hero: Option<Option<egui::TextureHandle>>,
 }
 
 /// Suggestion lists taken from the library (value, count).
@@ -196,6 +209,11 @@ impl Editor {
             igdb_pick: None,
             lookup: None,
             compare: None,
+            play_h: (g.playtime_min / 60).to_string(),
+            play_m: (g.playtime_min % 60).to_string(),
+            play_count: g.play_count.to_string(),
+            art_paths: None,
+            art: None,
             filled: None,
         }
     }
@@ -223,6 +241,25 @@ impl Editor {
         g.community_score = score(&self.community);
         g.genres = join(&self.genres);
         g.tags = join(&self.tags);
+    }
+
+    /// Edited (playtime minutes, play count), when they differ from the game as opened.
+    /// Steam reports its own playtime, so only the count is kept for Steam games.
+    pub fn play_stats(&self) -> Option<(i64, i64)> {
+        let n = |s: &str| s.trim().parse::<i64>().ok().filter(|v| *v >= 0);
+        let mins = match self.source {
+            Source::Steam => self.orig.playtime_min,
+            _ => match (n(&self.play_h), n(&self.play_m)) {
+                (Some(h), Some(m)) => h * 60 + m,
+                _ => self.orig.playtime_min,
+            },
+        };
+        let count = n(&self.play_count).unwrap_or(self.orig.play_count);
+        (mins != self.orig.playtime_min || count != self.orig.play_count).then_some((mins, count))
+    }
+
+    pub fn reload_art(&mut self) {
+        self.art = None;
     }
 
     pub fn show(&mut self, ctx: &egui::Context, lists: &Lists) -> EditorOutcome {
@@ -290,6 +327,19 @@ impl Editor {
                 row(ui, "Store", |ui| text(ui, &mut self.store, field_w, "e.g. GOG, PlayStation"));
                 row(ui, "Developer", |ui| text(ui, &mut self.developer, field_w, ""));
                 row(ui, "Publisher", |ui| text(ui, &mut self.publisher, field_w, ""));
+                let steam = self.source == Source::Steam;
+                row(ui, "Time played", |ui| {
+                    ui.add_enabled_ui(!steam, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.play_h).desired_width(50.0));
+                            ui.label(RichText::new("h").color(TEXT_DIM));
+                            ui.add(egui::TextEdit::singleline(&mut self.play_m).desired_width(36.0));
+                            ui.label(RichText::new("m").color(TEXT_DIM));
+                        });
+                    })
+                    .response
+                    .on_disabled_hover_text("Steam keeps this game's playtime; Gamut takes it from Steam.");
+                });
             });
             grid(&mut cols[1], "ed_right", &mut |ui| {
                 row(ui, "Release date", |ui| text(ui, &mut self.release, field_w, "DD/MM/YYYY"));
@@ -297,6 +347,7 @@ impl Editor {
                 row(ui, "Completion", |ui| completion(ui, &mut self.completion, lists.completions, field_w));
                 row(ui, "Critic score", |ui| text(ui, &mut self.critic, 60.0, "0–100"));
                 row(ui, "Community score", |ui| text(ui, &mut self.community, 60.0, "0–100"));
+                row(ui, "Play count", |ui| text(ui, &mut self.play_count, 60.0, "0"));
             });
         });
         ui.add_space(10.0);
@@ -606,17 +657,78 @@ impl Editor {
             });
             return None;
         }
-        ui.label(theme::hint("Search SteamGridDB, VNDB and Steam, or use a file from your PC."));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if ui.button("Change cover…").clicked() {
-                out = Some(EditorOutcome::PickArt(self.id, ArtKind::Cover));
-            }
-            if ui.button("Change banner…").clicked() {
-                out = Some(EditorOutcome::PickArt(self.id, ArtKind::Banner));
-            }
+        ui.label(theme::hint("Search SteamGridDB, IGDB, VNDB and Steam, or use a file from your PC."));
+        ui.add_space(8.0);
+        self.poll_art(ui.ctx());
+        let art = self.art.as_ref();
+        let cover_h = 300.0;
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                theme::section(ui, "Cover");
+                art_box(ui, art.and_then(|a| a.cover.as_ref()), vec2(cover_h * 2.0 / 3.0, cover_h), "No cover yet");
+                ui.add_space(6.0);
+                if ui.button("Change cover…").clicked() {
+                    out = Some(EditorOutcome::PickArt(self.id, ArtKind::Cover));
+                }
+            });
+            ui.add_space(24.0);
+            ui.vertical(|ui| {
+                theme::section(ui, "Banner");
+                let w = (ui.available_width() - 8.0).clamp(320.0, 760.0);
+                art_box(ui, art.and_then(|a| a.hero.as_ref()), vec2(w, w * 620.0 / 1920.0), "No banner yet (the cover is used)");
+                ui.add_space(6.0);
+                if ui.button("Change banner…").clicked() {
+                    out = Some(EditorOutcome::PickArt(self.id, ArtKind::Banner));
+                }
+            });
         });
         out
+    }
+
+    /// Starts decoding the art files once, then turns finished images into textures.
+    fn poll_art(&mut self, ctx: &egui::Context) {
+        if self.art.is_none() {
+            let Some((cover, hero)) = self.art_paths.clone() else { return };
+            let (tx, rx) = unbounded();
+            let c = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send((true, cover.exists().then(|| crate::thumbs::load_large(&cover, 600)).flatten()));
+                let _ = tx.send((false, hero.exists().then(|| crate::thumbs::load_large(&hero, 1600)).flatten()));
+                c.request_repaint();
+            });
+            self.art = Some(Art { rx, cover: None, hero: None });
+        }
+        let Some(a) = self.art.as_mut() else { return };
+        while let Ok((is_cover, img)) = a.rx.try_recv() {
+            let name = if is_cover { "ed_cover" } else { "ed_hero" };
+            let tex = img.map(|i| ctx.load_texture(name, i, egui::TextureOptions::LINEAR));
+            if is_cover {
+                a.cover = Some(tex);
+            } else {
+                a.hero = Some(tex);
+            }
+        }
+    }
+}
+
+/// An art preview: the image fitted into `size`, a spinner while it loads, or a placeholder.
+fn art_box(ui: &mut Ui, tex: Option<&Option<egui::TextureHandle>>, size: egui::Vec2, empty: &str) {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(8), CARD);
+    match tex {
+        Some(Some(t)) => {
+            // Fit inside the box, keeping the image's aspect ratio.
+            let s = t.size_vec2();
+            let k = (size.x / s.x).min(size.y / s.y);
+            let r = egui::Rect::from_center_size(rect.center(), s * k);
+            egui::Image::new(t).corner_radius(CornerRadius::same(8)).paint_at(ui, r);
+        }
+        Some(None) => {
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, empty, egui::FontId::proportional(13.0), TEXT_DIM);
+        }
+        None => {
+            ui.put(egui::Rect::from_center_size(rect.center(), vec2(18.0, 18.0)), egui::Spinner::new());
+        }
     }
 }
 

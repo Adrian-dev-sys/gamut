@@ -466,7 +466,15 @@ impl Workers {
             with_reshade(&g, &rs, &cache, &t.tx);
             let guard = if sk.mode == "off" && g.specialk != Some(true) { None } else { with_specialk(&g, &sk, &t.tx) };
             match launch::launch_with(&g, &specialk::game_env(&sk, &g)) {
-                Ok(l) => t.track(&g, l, guard, hdr),
+                Ok(l) => {
+                    match Library::open(&t.paths.db).and_then(|lib| lib.count_launch(g.id)) {
+                        Ok(()) => {
+                            let _ = t.tx.send(Event::GameUpdated(g.id));
+                        }
+                        Err(e) => log::warn!("couldn't count the launch of {}: {e:#}", g.name),
+                    }
+                    t.track(&g, l, guard, hdr)
+                }
                 Err(e) => {
                     t.running.lock().unwrap().remove(&g.id);
                     let _ = t.tx.send(Event::Error(format!("Couldn't start {}: {e:#}", g.name)));

@@ -273,6 +273,10 @@ impl GamutApp {
         }
         self.thumbs.invalidate(id);
         self.small_thumbs.invalidate(id);
+        // New art from the picker shows in the editor's Media tab.
+        if let Some(ed) = self.editor.as_mut().filter(|e| e.id == id) {
+            ed.reload_art();
+        }
         if self.hero.as_ref().is_some_and(|(h, t)| *h == id && t.is_none()) {
             self.hero = None;
         }
@@ -391,7 +395,9 @@ impl GamutApp {
                 }
                 Action::Edit(id) => {
                     if let Some(g) = self.game(id) {
-                        self.editor = Some(Editor::from_game(g));
+                        let mut ed = Editor::from_game(g);
+                        ed.art_paths = Some((self.paths.cover(id), self.paths.hero(id)));
+                        self.editor = Some(ed);
                         self.ed_lists = editor_facets(&self.games);
                     }
                 }
@@ -835,9 +841,7 @@ impl GamutApp {
                         if let Some(c) = &g.completion {
                             stat(ui, "COMPLETION", c);
                         }
-                        if g.play_count > 0 {
-                            stat(ui, "PLAY COUNT", &g.play_count.to_string());
-                        }
+                        stat(ui, "PLAY COUNT", &g.play_count.to_string());
                         if let Some(t) = self.ach.as_ref().filter(|a| steam_ach && a.id == id).and_then(crate::achievements::tile) {
                             stat(ui, "ACHIEVEMENTS", &t);
                         }
@@ -1018,6 +1022,9 @@ impl GamutApp {
         let Some(mut g) = self.lib.get(id)? else { return Ok(()) };
         ed.apply_to(&mut g);
         self.lib.update_user_fields(&g)?;
+        if let Some((mins, count)) = ed.play_stats() {
+            self.lib.set_play_stats(id, mins, count)?;
+        }
         self.toasts.success(format!("Saved {}.", g.name));
         // New tags/platforms should show up in the filters right away.
         self.reload_one(id);

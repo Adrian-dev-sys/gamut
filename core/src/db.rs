@@ -623,6 +623,21 @@ impl Library {
         Ok(())
     }
 
+    /// One more launch from Gamut.
+    pub fn count_launch(&self, id: i64) -> Result<()> {
+        self.conn.execute("UPDATE games SET play_count = play_count + 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Hand-edited totals (no session rows: these aren't plays).
+    pub fn set_play_stats(&self, id: i64, playtime_min: i64, play_count: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE games SET playtime_min = ?2, play_count = ?3 WHERE id = ?1",
+            params![id, playtime_min.max(0), play_count.max(0)],
+        )?;
+        Ok(())
+    }
+
     pub fn set_hidden(&self, id: i64, hidden: bool) -> Result<()> {
         self.conn.execute("UPDATE games SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
         Ok(())
