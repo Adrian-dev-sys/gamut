@@ -106,6 +106,10 @@ pub fn is_clip_poster(url: &str) -> bool {
     !clip_urls(url).is_empty()
 }
 
+pub fn is_gif(url: &str) -> bool {
+    url.split('?').next().is_some_and(|p| p.to_ascii_lowercase().ends_with(".gif"))
+}
+
 const MAX_PLAYING: usize = 3;
 /// A clip stops decoding this long after it was last on screen.
 const IDLE: Duration = Duration::from_millis(1500);
@@ -115,46 +119,88 @@ struct Clip {
     seen: Mutex<Option<Instant>>,
     frame: Mutex<Option<egui::ColorImage>>,
     tex: Mutex<Option<egui::TextureHandle>>,
+    /// Pixel size, once known (GIFs: from the header, before any frame).
+    dims: Mutex<Option<egui::Vec2>>,
     running: AtomicBool,
     failed: AtomicBool,
+    /// Single-frame GIF already shown; nothing left to play.
+    still: AtomicBool,
 }
 
 static PLAYING: AtomicUsize = AtomicUsize::new(0);
 
-fn clip_for(poster: &str) -> Arc<Clip> {
+fn clip_for(key: &str) -> Arc<Clip> {
     static CLIPS: OnceLock<Mutex<HashMap<String, Arc<Clip>>>> = OnceLock::new();
-    CLIPS.get_or_init(Default::default).lock().unwrap().entry(poster.to_string()).or_default().clone()
+    CLIPS.get_or_init(Default::default).lock().unwrap().entry(key.to_string()).or_default().clone()
+}
+
+/// A GIF's pixel size once its header has been read; None while unknown.
+pub fn gif_dims(url: &str) -> Option<egui::Vec2> {
+    *clip_for(url).dims.lock().unwrap()
+}
+
+pub fn gif_failed(url: &str) -> bool {
+    clip_for(url).failed.load(Relaxed)
 }
 
 /// Draws a description clip at `size`: the poster until frames arrive, then the looping video.
 pub fn show(ui: &mut egui::Ui, poster_url: &str, poster: egui::Image, size: egui::Vec2) {
+    let rect = run(ui, poster_url, size);
+    if !paint_frame(ui, poster_url, rect) {
+        poster.paint_at(ui, rect);
+    }
+}
+
+/// Draws an animated GIF at `size`, decoded a frame at a time (egui's loader decodes every frame
+/// up front on the UI thread and keeps them all, hundreds of MB for big store GIFs).
+pub fn show_gif(ui: &mut egui::Ui, url: &str, size: egui::Vec2) {
+    let rect = run(ui, url, size);
+    if !paint_frame(ui, url, rect) {
+        ui.painter().rect_filled(rect, 6.0, crate::theme::CARD);
+        ui.put(egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)), egui::Spinner::new().size(22.0));
+    }
+}
+
+/// Allocates the clip's rect and keeps its decoder running while it's on screen.
+fn run(ui: &mut egui::Ui, key: &str, size: egui::Vec2) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let c = clip_for(poster_url);
+    let c = clip_for(key);
     if ui.is_rect_visible(rect) {
         *c.seen.lock().unwrap() = Some(Instant::now());
-        if !c.failed.load(Relaxed) && !c.running.load(Relaxed) && PLAYING.load(Relaxed) < MAX_PLAYING {
-            start(c.clone(), poster_url.to_string(), ui.ctx().clone());
+        let idle = !c.failed.load(Relaxed) && !c.still.load(Relaxed) && !c.running.load(Relaxed);
+        if idle && PLAYING.load(Relaxed) < MAX_PLAYING {
+            start(c.clone(), key.to_string(), ui.ctx().clone());
         }
     }
+    rect
+}
+
+/// Uploads the newest frame and paints the current one; false if there's none yet.
+fn paint_frame(ui: &mut egui::Ui, key: &str, rect: egui::Rect) -> bool {
+    let c = clip_for(key);
     if let Some(img) = c.frame.lock().unwrap().take() {
         let mut t = c.tex.lock().unwrap();
         match t.as_mut() {
             Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-            None => *t = Some(ui.ctx().load_texture(format!("clip {poster_url}"), img, egui::TextureOptions::LINEAR)),
+            None => *t = Some(ui.ctx().load_texture(format!("clip {key}"), img, egui::TextureOptions::LINEAR)),
         }
     }
     match c.tex.lock().unwrap().as_ref() {
-        Some(t) => egui::Image::from_texture(egui::load::SizedTexture::from_handle(t)).corner_radius(6).paint_at(ui, rect),
-        None => poster.paint_at(ui, rect),
+        Some(t) => {
+            egui::Image::from_texture(egui::load::SizedTexture::from_handle(t)).corner_radius(6).paint_at(ui, rect);
+            true
+        }
+        None => false,
     }
 }
 
-fn start(c: Arc<Clip>, poster: String, ctx: egui::Context) {
+fn start(c: Arc<Clip>, key: String, ctx: egui::Context) {
     c.running.store(true, Relaxed);
     PLAYING.fetch_add(1, Relaxed);
     std::thread::spawn(move || {
-        if let Err(e) = play(&c, &poster, &ctx) {
-            log::warn!("Description clip for {poster} can't play: {e:#}");
+        let r = if is_gif(&key) { play_gif(&c, &key, &ctx) } else { play(&c, &key, &ctx) };
+        if let Err(e) = r {
+            log::warn!("Description clip {key} can't play: {e:#}");
             c.failed.store(true, Relaxed);
         }
         PLAYING.fetch_sub(1, Relaxed);
@@ -163,13 +209,25 @@ fn start(c: Arc<Clip>, poster: String, ctx: egui::Context) {
     });
 }
 
-/// Downloads (cached) and plays the clip in a loop, paced by frame timestamps, until it's off screen.
+fn idle(c: &Clip) -> bool {
+    c.seen.lock().unwrap().is_none_or(|t| t.elapsed() > IDLE)
+}
+
+/// Sleeps until `due`, then hands the frame to the UI.
+fn present(c: &Clip, ctx: &egui::Context, due: Instant, img: egui::ColorImage) {
+    if let Some(wait) = due.checked_duration_since(Instant::now()) {
+        std::thread::sleep(wait);
+    }
+    *c.frame.lock().unwrap() = Some(img);
+    ctx.request_repaint();
+}
+
+/// Streams the clip into memory and plays it in a loop, paced by frame timestamps, until it's off screen.
 fn play(c: &Clip, poster: &str, ctx: &egui::Context) -> Result<()> {
-    let idle = || c.seen.lock().unwrap().is_none_or(|t| t.elapsed() > IDLE);
     let mut errors = Vec::new();
     for url in clip_urls(poster) {
         let mime = if url.split('?').next().is_some_and(|p| p.ends_with(".webm")) { "video/webm" } else { "video/mp4" };
-        // Streamed into memory only while the clip plays; nothing is kept on disk.
+        // Kept in memory only while the clip plays; nothing is written to disk.
         let bytes = match gamut_core::http::get_bytes(&url) {
             Ok(b) => b,
             Err(e) => {
@@ -188,15 +246,11 @@ fn play(c: &Clip, poster: &str, ctx: &egui::Context) -> Result<()> {
             let t0 = Instant::now();
             let mut frames = 0;
             while let Some((ts, px)) = r.next()? {
-                if idle() {
+                if idle(c) {
                     return Ok(());
                 }
-                let due = t0 + Duration::from_secs_f64(ts.max(0.0));
-                if let Some(wait) = due.checked_duration_since(Instant::now()) {
-                    std::thread::sleep(wait);
-                }
-                *c.frame.lock().unwrap() = Some(egui::ColorImage::from_rgba_unmultiplied([r.w as usize, r.h as usize], &px));
-                ctx.request_repaint();
+                let img = egui::ColorImage::from_rgba_unmultiplied([r.w as usize, r.h as usize], &px);
+                present(c, ctx, t0 + Duration::from_secs_f64(ts.max(0.0)), img);
                 frames += 1;
             }
             anyhow::ensure!(frames > 0, "no frames decoded");
@@ -204,6 +258,38 @@ fn play(c: &Clip, poster: &str, ctx: &egui::Context) -> Result<()> {
         }
     }
     anyhow::bail!("{}", errors.join("; "))
+}
+
+/// Downloads the GIF and decodes it lazily in a loop, one frame in memory at a time.
+fn play_gif(c: &Clip, url: &str, ctx: &egui::Context) -> Result<()> {
+    use image::AnimationDecoder;
+    let bytes = gamut_core::http::get_bytes(url)?;
+    anyhow::ensure!(bytes.len() >= 10 && bytes.starts_with(b"GIF"), "not a GIF");
+    let (w, h) = (u16::from_le_bytes([bytes[6], bytes[7]]), u16::from_le_bytes([bytes[8], bytes[9]]));
+    *c.dims.lock().unwrap() = Some(egui::vec2(w as f32, h as f32));
+    ctx.request_repaint();
+    loop {
+        let dec = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&bytes[..]))?;
+        let mut due = Instant::now();
+        let mut frames = 0;
+        for f in dec.into_frames() {
+            if idle(c) {
+                return Ok(());
+            }
+            let f = f?;
+            let delay = Duration::from(f.delay());
+            let b = f.into_buffer();
+            present(c, ctx, due, egui::ColorImage::from_rgba_unmultiplied([b.width() as usize, b.height() as usize], b.as_raw()));
+            // Browsers treat tiny delays as 100 ms; so do we.
+            due += if delay < Duration::from_millis(20) { Duration::from_millis(100) } else { delay };
+            frames += 1;
+        }
+        anyhow::ensure!(frames > 0, "no frames decoded");
+        if frames == 1 {
+            c.still.store(true, Relaxed);
+            return Ok(());
+        }
+    }
 }
 
 /// Older builds cached clips in %TEMP%\gamut-clips; clips are streamed now, so drop that folder.
@@ -239,3 +325,4 @@ mod tests {
         assert!(n > 0);
     }
 }
+

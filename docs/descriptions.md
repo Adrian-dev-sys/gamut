@@ -15,3 +15,4 @@ Descriptions are stored as plain text with light markup from `scrape::strip_html
   - The page scrolls as a whole (`details`), so the description is not boxed into the space under the banner.
   - Only on-screen clips play, at most 3 at a time; a clip stops 1.5 s after it was last drawn.
   - The poster shows until the first frame arrives, or for good if the clip can't play (logged once).
+- **GIFs** use the same player (`video::show_gif`). Frames are decoded lazily on a thread and paced by their delays (under 20 ms counts as 100 ms, like browsers). Only the current frame is kept. The size comes from the GIF header, and single-frame GIFs stop after one frame. egui_extras' GIF loader is not used: it decodes every frame up front on the UI thread and keeps them all, which stalls and uses hundreds of MB, and it didn't animate in the description.

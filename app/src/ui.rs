@@ -1799,12 +1799,23 @@ fn description(ui: &mut Ui, d: &str) {
                 continue;
             }
             let w = ui.available_width().min(900.0);
+            let placeholder = egui::vec2(w.min(640.0), w.min(640.0) * 9.0 / 16.0);
+            if crate::video::is_gif(url) {
+                if !crate::video::gif_failed(url) {
+                    let size = crate::video::gif_dims(url).map_or(placeholder, |s| s * (w / s.x).min(1.0));
+                    ui.add_space(if first { 4.0 } else { 16.0 });
+                    crate::video::show_gif(ui, url, size);
+                    ui.add_space(6.0);
+                    (first, blank, prev_bullet) = (false, false, false);
+                }
+                continue;
+            }
             let img = egui::Image::new(url.to_string()).corner_radius(6);
             // Exact size from the image itself: in a scroll area egui would otherwise fit it to the
             // visible space left, which is zero below the fold. Broken/unsupported images are skipped.
             let (size, ready) = match img.load_for_size(ui.ctx(), egui::vec2(w, w)) {
                 Ok(egui::load::TexturePoll::Ready { texture }) => (Some(texture.size * (w / texture.size.x).min(1.0)), true),
-                Ok(egui::load::TexturePoll::Pending { .. }) => (Some(egui::vec2(w.min(640.0), w.min(640.0) * 9.0 / 16.0)), false),
+                Ok(egui::load::TexturePoll::Pending { .. }) => (Some(placeholder), false),
                 Err(_) => (None, false),
             };
             if let Some(size) = size {
