@@ -25,3 +25,4 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 - `docs/launching.md` – launch pipeline, exit detection, close/force-close, auto HDR.
 - `docs/descriptions.md` – description images (AVIF via WIC, alpha) and Steam clips (Media Foundation playback).
 - `docs/achievements.md` – achievement cache, Steam + RetroAchievements fetching and title matching, refresh rules, Achievements tab.
+- `docs/statistics.md` – Statistics tab, play session logging (Gamut-timed + Steam scan deltas), Steam as playtime master.

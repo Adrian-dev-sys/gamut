@@ -135,7 +135,12 @@ pub fn title_key(t: &str) -> String {
         })
         .collect();
     // RA writes "Legend of Zelda, The: ..."; drop articles wherever they ended up.
-    s.split_whitespace().filter(|w| !matches!(*w, "the" | "a" | "an")).collect::<Vec<_>>().join(" ")
+    let mut words: Vec<&str> = s.split_whitespace().filter(|w| !matches!(*w, "the" | "a" | "an")).collect();
+    // "Pokémon FireRed Version" is "Pokémon FireRed" elsewhere.
+    if words.len() > 1 && words.last() == Some(&"version") {
+        words.pop();
+    }
+    words.join(" ")
 }
 
 /// RA game whose title matches `name` exactly after normalizing; skips hacks, homebrew and subsets.
@@ -246,6 +251,7 @@ mod tests {
         assert_eq!(find("Pokémon Emerald Version (USA, Europe)", &g), Some(3));
         assert_eq!(find("Super Mario World", &g), Some(5));
         assert_eq!(find("Pokemon Blue Version", &g), Some(6));
+        assert_eq!(find("Pokémon Emerald", &g), Some(3), "RA's \"Version\" suffix is optional");
         assert_eq!(find("Super Mario World: The Lost Levels", &g), None, "hacks are skipped");
         assert_eq!(find("Chrono Trigger", &g), None);
     }

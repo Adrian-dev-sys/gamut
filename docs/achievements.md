@@ -35,3 +35,8 @@ CLI: `gamut-cli --data <dir> achievements APPID` prints what Steam returns, with
 - Switch next to the logo (Library / Achievements). Reads only the cache: `achievement_progress` (per-game totals) and `unlocked_achievements` (recent / rarest).
 - Totals (unlocked, perfect games, average completion over started games, RA points), recent and rarest unlocks, "Almost there" (60%+), and every game with a sort. Hidden games are left out; clicking opens the game.
 - Worker updates mark it dirty; it rereads at most every 3 s.
+
+## Details page and Settings
+- The game page has About / Achievements tabs (the choice sticks while browsing games); the header tile shows the count.
+- Settings shows a live Status line per key (`app/src/keycheck.rs` + `core/src/status.rs`): checked on open and 1 s after an edit. Steam: GetPlayerSummaries (persona, profile visibility); SteamGridDB: an autocomplete call; RA: API_GetUserProfile. `gamut-cli status` runs the same checks.
+- RA systems with no achievement sets yet (empty game list: Wii U, 3DS, PS3) count as unsupported; a "Version" suffix is optional when matching titles.

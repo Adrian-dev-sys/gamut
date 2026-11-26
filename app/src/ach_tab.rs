@@ -74,10 +74,38 @@ pub fn show(ui: &mut Ui, ov: &mut Overview, games: &[Game], thumbs: &mut crate::
     let mut open = None;
 
     egui::ScrollArea::vertical().id_salt("ach_tab").auto_shrink([false, false]).show(ui, |ui| {
-        let pad = 8.0;
-        ui.add_space(6.0);
+        page(ui, |ui| body(ui, ov, &rows, &by_id, thumbs, busy, (unlocked, perfect, avg, started, points), &mut open));
+    });
+    open
+}
+
+/// Centers `add` in a column at most 1200 px wide, so wide windows don't stretch rows apart.
+pub fn page(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    let full = ui.available_width();
+    let w = full.min(1200.0) - 16.0;
+    ui.horizontal_top(|ui| {
+        ui.add_space(((full - w) / 2.0).max(0.0));
+        ui.allocate_ui_with_layout(vec2(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(w);
+            add(ui);
+        });
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn body(
+    ui: &mut Ui,
+    ov: &mut Overview,
+    rows: &[Row],
+    by_id: &HashMap<i64, &Game>,
+    thumbs: &mut crate::thumbs::ThumbCache,
+    busy: bool,
+    (unlocked, perfect, avg, started, points): (i64, usize, f32, usize, i64),
+    open: &mut Option<i64>,
+) {
+    {
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
-            ui.add_space(pad);
             tile(ui, "UNLOCKED", &unlocked.to_string());
             tile(ui, "PERFECT GAMES", &perfect.to_string());
             tile(ui, "AVERAGE COMPLETION", &format!("{:.0}%", avg * 100.0)).on_hover_text("Across games with at least one unlock");
@@ -91,10 +119,14 @@ pub fn show(ui: &mut Ui, ov: &mut Overview, games: &[Game], thumbs: &mut crate::
         });
         ui.add_space(20.0);
 
-        let col = ((ui.available_width() - pad * 2.0 - 32.0) / 2.0).max(260.0);
+        let gap = 32.0;
+        let col = (ui.available_width() - gap) / 2.0;
         ui.horizontal_top(|ui| {
-            ui.add_space(pad);
-            for (title, list, rare) in [("Recent unlocks", &ov.recent, false), ("Rarest unlocks", &ov.rarest, true)] {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (i, (title, list, rare)) in [("Recent unlocks", &ov.recent, false), ("Rarest unlocks", &ov.rarest, true)].into_iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(gap);
+                }
                 ui.allocate_ui_with_layout(vec2(col, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.set_width(col);
                     theme::section(ui, title);
@@ -105,11 +137,10 @@ pub fn show(ui: &mut Ui, ov: &mut Overview, games: &[Game], thumbs: &mut crate::
                             crate::util::date(a.unlocked)
                         };
                         if unlock_row(ui, a, &by_id[gid].name, &extra) {
-                            open = Some(*gid);
+                            *open = Some(*gid);
                         }
                     }
                 });
-                ui.add_space(32.0);
             }
         });
 
@@ -117,20 +148,16 @@ pub fn show(ui: &mut Ui, ov: &mut Overview, games: &[Game], thumbs: &mut crate::
         near.sort_by(|a, b| pct(b).total_cmp(&pct(a)));
         if !near.is_empty() {
             ui.add_space(16.0);
-            ui.horizontal(|ui| {
-                ui.add_space(pad);
-                theme::section(ui, "Almost there");
-            });
+            theme::section(ui, "Almost there");
             for r in near.into_iter().take(6) {
                 if game_row(ui, by_id[&r.0], r, thumbs) {
-                    open = Some(r.0);
+                    *open = Some(r.0);
                 }
             }
         }
 
         ui.add_space(16.0);
         ui.horizontal(|ui| {
-            ui.add_space(pad);
             theme::section(ui, "All games");
             ui.add_space(16.0);
             for (i, s) in SORTS.iter().enumerate() {
@@ -147,12 +174,11 @@ pub fn show(ui: &mut Ui, ov: &mut Overview, games: &[Game], thumbs: &mut crate::
         }
         for r in list {
             if game_row(ui, by_id[&r.0], r, thumbs) {
-                open = Some(r.0);
+                *open = Some(r.0);
             }
         }
         ui.add_space(20.0);
-    });
-    open
+    }
 }
 
 fn tile(ui: &mut Ui, label: &str, value: &str) -> egui::Response {

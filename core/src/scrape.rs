@@ -147,6 +147,17 @@ fn sgdb_get<T: serde::de::DeserializeOwned>(key: &str, path: &str) -> Result<T> 
     }
 }
 
+/// Errors when SteamGridDB rejects the key or can't be reached.
+pub fn sgdb_check(key: &str) -> Result<()> {
+    sgdb_get::<serde_json::Value>(key, "/search/autocomplete/portal").map(|_| ()).map_err(|e| {
+        match e.downcast_ref::<ureq::Error>() {
+            Some(ureq::Error::StatusCode(c)) => anyhow::anyhow!("SteamGridDB answered HTTP {c}"),
+            None if e.to_string().contains("401") => e,
+            _ => anyhow::anyhow!("Couldn't reach SteamGridDB"),
+        }
+    })
+}
+
 /// Which game a SteamGridDB lookup refers to.
 pub enum SgdbRef<'a> {
     Steam(u32),

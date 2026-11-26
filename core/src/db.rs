@@ -83,6 +83,13 @@ impl Library {
                 percent REAL, points INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (game_id, key)
              );
+             -- Play sessions for statistics. kind 0 = timed by Gamut, 1 = Steam total grew between scans.
+             CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, start INTEGER NOT NULL,
+                minutes INTEGER NOT NULL, kind INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS sessions_start ON sessions(start);
+             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS achievement_state (
                 game_id INTEGER PRIMARY KEY, fetched INTEGER NOT NULL DEFAULT 0, schema_at INTEGER NOT NULL DEFAULT 0,
                 total INTEGER NOT NULL DEFAULT 0, unlocked INTEGER NOT NULL DEFAULT 0, error TEXT
@@ -101,7 +108,7 @@ impl Library {
             Ok(ADDED_COLS.iter().copied().filter(|(n, _)| !have.iter().any(|h| h == n)).collect())
         };
         let version = |c: &Connection| c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0));
-        if missing(&self.conn)?.is_empty() && version(&self.conn)? >= 3 {
+        if missing(&self.conn)?.is_empty() && version(&self.conn)? >= 4 {
             return Ok(());
         }
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -126,6 +133,11 @@ impl Library {
                 [],
             )?;
             tx.execute("PRAGMA user_version = 3", [])?;
+        }
+        if version(&tx)? < 4 {
+            // v4: title matching learned RA's "Version" suffix; look unmatched games up again.
+            tx.execute("UPDATE games SET ra_id = NULL WHERE ra_id = 0", [])?;
+            tx.execute("PRAGMA user_version = 4", [])?;
         }
         tx.commit()?;
         Ok(())
@@ -326,6 +338,31 @@ impl Library {
         let first = tx.query_row("SELECT COUNT(*) FROM games WHERE source = 'steam'", [], |r| r.get::<_, i64>(0))? == 0;
         tx.execute("UPDATE games SET installed = 0 WHERE source = 'steam'", [])?;
         let now = if first { 0 } else { crate::now() };
+        // Playtime that grew since the last scan with Web API totals becomes a session, dated at last
+        // played. Growth larger than the time between scans (imports, first scans) isn't play.
+        let scan_at = crate::now();
+        let prev_scan: Option<i64> =
+            tx.query_row("SELECT value FROM meta WHERE key = 'steam_scan'", [], |r| r.get(0)).optional()?;
+        if let Some(prev) = prev_scan.filter(|_| !first) {
+            let mut old = tx.prepare("SELECT id, playtime_min FROM games WHERE source = 'steam' AND source_id = ?1")?;
+            let mut log = tx.prepare("INSERT INTO sessions (game_id, start, minutes, kind) VALUES (?1, ?2, ?3, 1)")?;
+            let window = (scan_at - prev) / 60 + 10;
+            for e in entries {
+                let Some(new) = e.playtime_min else { continue };
+                let Some((id, was)) = old.query_row([e.appid.to_string()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).optional()? else {
+                    continue;
+                };
+                let delta = new - was;
+                if delta > 0 && delta <= window {
+                    let start = if e.last_played > 0 { e.last_played.clamp(prev, scan_at) } else { scan_at };
+                    log.execute(params![id, start, delta])?;
+                }
+            }
+        }
+        if entries.iter().any(|e| e.playtime_min.is_some()) {
+            tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('steam_scan', ?1)", [scan_at])?;
+            tx.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('steam_scan_first', ?1)", [scan_at])?;
+        }
         {
             let mut st = tx.prepare(
                 "INSERT INTO games (source, source_id, name, installed, install_dir, playtime_min, last_played, added)
@@ -386,6 +423,7 @@ impl Library {
         // Ids get reused; a new game must not inherit these.
         self.conn.execute("DELETE FROM achievements WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM achievement_state WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM sessions WHERE game_id = ?1", [id])?;
         Ok(())
     }
 
@@ -569,7 +607,36 @@ impl Library {
             "UPDATE games SET playtime_min = playtime_min + ?2, last_played = MAX(last_played, ?3) WHERE id = ?1",
             params![id, minutes, when],
         )?;
+        if minutes > 0 {
+            self.conn.execute(
+                "INSERT INTO sessions (game_id, start, minutes, kind) VALUES (?1, ?2, ?3, 0)",
+                params![id, when, minutes],
+            )?;
+        }
         Ok(())
+    }
+
+    /// Play sessions starting at or after `since`: (game id, start, minutes).
+    pub fn sessions_since(&self, since: i64) -> Result<Vec<(i64, i64, i64)>> {
+        let mut st = self.conn.prepare("SELECT game_id, start, minutes FROM sessions WHERE start >= ?1 ORDER BY start")?;
+        let rows = st.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// When session logging began (first session or first API scan), if it has.
+    pub fn stats_since(&self) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT MIN(t) FROM (SELECT MIN(start) AS t FROM sessions UNION ALL SELECT value FROM meta WHERE key = 'steam_scan_first')",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Every unlock time: (game id, unix time).
+    pub fn unlock_times(&self) -> Result<Vec<(i64, i64)>> {
+        let mut st = self.conn.prepare("SELECT game_id, unlocked FROM achievements WHERE unlocked > 1")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Re-queues a game for scraping. `force` also clears scraped fields.
@@ -904,6 +971,32 @@ world"));
         assert_eq!(lib.get(id).unwrap().unwrap().ra_id, Some(77), "other edits keep the match");
         lib.update_user_fields(&Game { id, platform: Some("Nintendo 64".into()), ..g }).unwrap();
         assert_eq!(lib.get(id).unwrap().unwrap().ra_id, None);
+        drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn steam_playtime_growth_becomes_sessions() {
+        let dir = std::env::temp_dir().join(format!("gamut-sess-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lib = Library::open(&dir.join("t.db")).unwrap();
+        let e = |mins, last| SteamEntry { appid: 5, name: "G".into(), installed: true, install_dir: None, playtime_min: Some(mins), last_played: last };
+        lib.sync_steam(&[e(10, 0)]).unwrap();
+        lib.sync_steam(&[e(10, 0)]).unwrap();
+        assert!(lib.sessions_since(0).unwrap().is_empty());
+        let hour_ago = crate::now() - 3600;
+        lib.conn.execute("UPDATE meta SET value = ?1 WHERE key = 'steam_scan'", [hour_ago]).unwrap();
+        lib.sync_steam(&[e(40, hour_ago + 600)]).unwrap();
+        let id = lib.all().unwrap()[0].id;
+        assert_eq!(lib.sessions_since(0).unwrap(), vec![(id, hour_ago + 600, 30)]);
+        lib.sync_steam(&[e(100_000, 0)]).unwrap();
+        assert_eq!(lib.sessions_since(0).unwrap().len(), 1, "jumps bigger than the scan gap aren't play");
+        assert!(lib.stats_since().unwrap().is_some());
+
+        let c = lib.add_custom(&Game::new_custom("Emu".into(), None)).unwrap();
+        lib.add_playtime(c, 25, 1000).unwrap();
+        assert_eq!(lib.sessions_since(900).unwrap()[0], (c, 1000, 25));
+        lib.delete(c).unwrap();
+        assert!(lib.sessions_since(900).unwrap().iter().all(|s| s.0 != c));
         drop(lib);
         let _ = std::fs::remove_dir_all(&dir);
     }

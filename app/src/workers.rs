@@ -81,8 +81,25 @@ impl Workers {
         w.spawn_sk_update_check();
         w.spawn_achievements(ach_rx);
         let (steam, ctx, starting) = (w.steam_running.clone(), w.ctx.clone(), w.steam_starting.clone());
+        let scanner = w.scanner();
+        // Steam is the source of truth for Steam playtime: when any Steam game closes (started from Gamut or
+        // Steam), rescan after 30 s and again after 3 min (the Web API can lag), plus hourly.
+        let (mut scan_at, mut last_scan) = (Vec::<Instant>::new(), Instant::now());
         std::thread::spawn(move || loop {
             let id = steam::running_appid().unwrap_or(0);
+            let was = steam.load(Ordering::Relaxed);
+            if was != 0 && id != was {
+                let now = Instant::now();
+                scan_at = vec![now + Duration::from_secs(30), now + Duration::from_secs(180)];
+            }
+            let due = scan_at.first().is_some_and(|t| Instant::now() >= *t);
+            if due || last_scan.elapsed() > Duration::from_secs(3600) {
+                if due {
+                    scan_at.remove(0);
+                }
+                last_scan = Instant::now();
+                scanner.run();
+            }
             {
                 let mut st = starting.lock().unwrap();
                 let n = st.len();
@@ -239,12 +256,39 @@ impl Workers {
     }
 
     pub fn rescan(&self) {
+        self.scanner().run();
+    }
+
+    fn scanner(&self) -> Scanner {
+        Scanner {
+            paths: self.paths.clone(),
+            cfg: self.cfg.clone(),
+            tx: self.tx.clone(),
+            ctx: self.ctx.clone(),
+            scanning: self.scanning.clone(),
+            kicks: (self.kick_cover.clone(), self.kick_meta.clone(), self.ach_tx.clone()),
+        }
+    }
+}
+
+/// What a Steam library scan needs; cheap to clone into other threads.
+#[derive(Clone)]
+struct Scanner {
+    paths: Paths,
+    cfg: Arc<RwLock<Config>>,
+    tx: Sender<Event>,
+    ctx: Context,
+    scanning: Arc<AtomicBool>,
+    kicks: (Sender<()>, Sender<()>, Sender<i64>),
+}
+
+impl Scanner {
+    /// Rescans in the background unless a scan is already running.
+    fn run(&self) {
         if self.scanning.swap(true, Ordering::SeqCst) {
             return;
         }
-        let (paths, cfg, tx, ctx, scanning) =
-            (self.paths.clone(), self.cfg.clone(), self.tx.clone(), self.ctx.clone(), self.scanning.clone());
-        let (kc, km, ach) = (self.kick_cover.clone(), self.kick_meta.clone(), self.ach_tx.clone());
+        let Scanner { paths, cfg, tx, ctx, scanning, kicks: (kc, km, ach) } = self.clone();
         std::thread::spawn(move || {
             let c = cfg.read().unwrap().clone();
             let r = steam::scan(&c).and_then(|(entries, warn)| {
@@ -269,7 +313,9 @@ impl Workers {
             ctx.request_repaint();
         });
     }
+}
 
+impl Workers {
     /// Queues an achievement refresh for one game (0 = resume the background sweep).
     pub fn achievements(&self, id: i64) {
         let _ = self.ach_tx.send(id);
@@ -516,7 +562,11 @@ fn fetch_retro_achievements(
         let consoles = retro::consoles(key, cache)?;
         let found = match g.platform.as_deref().and_then(|p| retro::console_for(p, &consoles)) {
             None => retro::UNSUPPORTED,
-            Some(c) => retro::find(&g.name, &retro::games(key, c, cache)?).unwrap_or(retro::NOT_FOUND),
+            Some(c) => match retro::games(key, c, cache)? {
+                // Systems RA lists but has no sets for yet (Wii U, 3DS, PS3).
+                list if list.is_empty() => retro::UNSUPPORTED,
+                list => retro::find(&g.name, &list).unwrap_or(retro::NOT_FOUND),
+            },
         };
         lib.set_ra_id(g.id, found)?;
         // The first sweep looks up hundreds of games; only reload ones the page shows or that matched.

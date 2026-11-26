@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|import-playnite [DIR] [--dry-run] [--verbose]>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -84,6 +84,13 @@ fn main() -> anyhow::Result<()> {
                     g.name
                 );
             }
+        }
+        Some("status") => {
+            use gamut_core::status;
+            let show = |r: anyhow::Result<String>| r.unwrap_or_else(|e| format!("error: {e:#}"));
+            println!("Steam:             {}", show(status::steam(&cfg)));
+            println!("SteamGridDB:       {}", show(status::steamgriddb(&cfg.steamgriddb_key)));
+            println!("RetroAchievements: {}", show(status::retro(&cfg.ra_user, &cfg.ra_api_key)));
         }
         Some("achievements") if args.len() >= 2 => {
             use gamut_core::achievements::{steam, Fetched};

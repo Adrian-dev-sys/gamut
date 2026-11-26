@@ -14,6 +14,7 @@ pub mod retro;
 pub mod scrape;
 pub mod specialk;
 pub mod steam;
+pub mod status;
 pub mod sync;
 pub mod vdf;
 pub mod vndb;
@@ -89,6 +90,21 @@ impl Paths {
 
 /// Released when dropped (or when the process exits).
 pub struct InstanceLock(#[allow(dead_code)] std::fs::File);
+
+/// Seconds to add to UTC for local time right now (DST included; past dates use today's offset).
+pub fn utc_offset() -> i64 {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+        let mut tz: TIME_ZONE_INFORMATION = std::mem::zeroed();
+        let id = GetTimeZoneInformation(&mut tz);
+        // 2 = TIME_ZONE_ID_DAYLIGHT; Bias is minutes to add to local time to get UTC.
+        let bias = tz.Bias + if id == 2 { tz.DaylightBias } else { tz.StandardBias };
+        return -(bias as i64) * 60;
+    }
+    #[allow(unreachable_code)]
+    0
+}
 
 pub fn now() -> i64 {
     std::time::SystemTime::now()

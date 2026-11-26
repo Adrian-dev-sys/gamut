@@ -156,6 +156,10 @@ pub struct GamutApp {
     ra_pick: Option<crate::achievements::RetroPick>,
     /// The Achievements tab, while it's the one shown.
     ach_tab: Option<crate::ach_tab::Overview>,
+    stats_tab: Option<crate::stats_tab::Stats>,
+    /// Details page tab: 0 = About, 1 = Achievements (kept while browsing games).
+    detail_tab: usize,
+    key_checks: crate::keycheck::KeyChecks,
 }
 
 impl GamutApp {
@@ -217,6 +221,9 @@ impl GamutApp {
             ach: None,
             ra_pick: None,
             ach_tab: None,
+            stats_tab: None,
+            detail_tab: 0,
+            key_checks: Default::default(),
         })
     }
 
@@ -266,6 +273,9 @@ impl GamutApp {
 
     fn handle_events(&mut self) {
         while let Ok(ev) = self.workers.rx.try_recv() {
+            if let (Some(st), Event::LibraryChanged | Event::GameUpdated(_) | Event::Achievements(_)) = (self.stats_tab.as_mut(), &ev) {
+                st.dirty = true;
+            }
             match ev {
                 Event::LibraryChanged => self.reload_all(),
                 Event::GameUpdated(id) => self.reload_one(id),
@@ -406,16 +416,20 @@ impl GamutApp {
         ui.horizontal(|ui| {
             theme::logo(ui);
             ui.add_space(14.0);
-            let lib_tab = ui.selectable_label(self.ach_tab.is_none(), RichText::new("Library").size(15.0));
-            let ach_tab = ui.selectable_label(self.ach_tab.is_some(), RichText::new("Achievements").size(15.0));
-            if lib_tab.clicked() {
-                self.ach_tab = None;
+            let library = self.ach_tab.is_none() && self.stats_tab.is_none();
+            let now = ui.input(|i| i.time);
+            let tab = |ui: &mut Ui, on: bool, label: &str| ui.selectable_label(on, RichText::new(label).size(15.0)).clicked();
+            if tab(ui, library, "Library") {
+                (self.ach_tab, self.stats_tab) = (None, None);
             }
-            if ach_tab.clicked() && self.ach_tab.is_none() {
-                self.ach_tab = Some(crate::ach_tab::Overview::load(&self.lib, ui.input(|i| i.time)));
+            if tab(ui, self.ach_tab.is_some(), "Achievements") && self.ach_tab.is_none() {
+                (self.ach_tab, self.stats_tab) = (Some(crate::ach_tab::Overview::load(&self.lib, now)), None);
+            }
+            if tab(ui, self.stats_tab.is_some(), "Statistics") && self.stats_tab.is_none() {
+                (self.ach_tab, self.stats_tab) = (None, Some(crate::stats_tab::Stats::load(&self.lib, now)));
             }
             ui.add_space(14.0);
-            if self.ach_tab.is_none() {
+            if library {
                 self.grid_controls(ui);
             }
 
@@ -829,7 +843,28 @@ impl GamutApp {
             }
             ui.add_space(20.0);
 
-            // Lower area: details on the left, description on the right; the whole page scrolls.
+            // About / Achievements tabs, so achievements don't sit below a long description.
+            let show_ach = ach_src.is_some() && self.detail_tab == 1;
+            if ach_src.is_some() {
+                let count = self.ach.as_ref().filter(|a| a.id == id).and_then(crate::achievements::tile);
+                ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    let ach_label = match count {
+                        Some(c) => format!("Achievements  {c}"),
+                        None => "Achievements".into(),
+                    };
+                    for (i, label) in [(0, "About".to_string()), (1, ach_label)] {
+                        let on = self.detail_tab == i;
+                        let text = RichText::new(label).size(15.0).color(if on { theme::TEXT } else { TEXT_DIM });
+                        if ui.add(egui::Button::selectable(on, text).min_size(vec2(0.0, 30.0))).clicked() {
+                            self.detail_tab = i;
+                        }
+                    }
+                });
+                ui.add_space(14.0);
+            }
+
+            // Lower area: details on the left, description (or achievements) on the right; the whole page scrolls.
             ui.horizontal_top(|ui| {
                 ui.add_space(pad);
                 let left_w = cover_w + 40.0;
@@ -891,21 +926,22 @@ impl GamutApp {
                 let right_w = ui.available_width() - pad;
                 ui.allocate_ui_with_layout(vec2(right_w, 0.0), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(right_w);
-                    theme::section(ui, "Description");
-                    ui.vertical(|ui| {
-                        match &g.description {
-                            Some(d) => {
-                                description(ui, d);
-                                ui.response()
-                            }
-                            None if g.meta_state == state::PENDING => {
-                                ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
-                            }
-                            None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
-                        };
-                    });
-                    if let (Some(a), Some(src)) = (self.ach.as_mut().filter(|a| a.id == id), ach_src) {
-                        ui.add_space(28.0);
+                    if !show_ach {
+                        theme::section(ui, "Description");
+                        ui.vertical(|ui| {
+                            match &g.description {
+                                Some(d) => {
+                                    description(ui, d);
+                                    ui.response()
+                                }
+                                None if g.meta_state == state::PENDING => {
+                                    ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
+                                }
+                                None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
+                            };
+                        });
+                    }
+                    if let (Some(a), Some(src), true) = (self.ach.as_mut().filter(|a| a.id == id), ach_src, show_ach) {
                         let busy = self.workers.ach_busy.lock().unwrap().contains(&id);
                         if let Some(crate::achievements::Ask::PickRetroGame) = crate::achievements::section(ui, a, src, busy) {
                             let cfg = self.cfg.read().unwrap().clone();
@@ -985,6 +1021,8 @@ impl GamutApp {
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
             .unwrap_or_default();
         let mut tab = self.settings_tab;
+        self.key_checks.update(s, ctx);
+        let checks = &self.key_checks;
         let screen = ctx.content_rect();
         let size = vec2(680.0_f32.min(screen.width() - 80.0), 600.0_f32.min(screen.height() - 120.0));
         theme::dialog(ctx, "Settings", false, |ui| {
@@ -1013,6 +1051,7 @@ impl GamutApp {
                                     .desired_width(420.0),
                             );
                             ui.end_row();
+                            checks.row(ui, crate::keycheck::STEAM);
                         });
                         ui.hyperlink_to("Get a Steam Web API key", "https://steamcommunity.com/dev/apikey");
                         ui.label(theme::hint("Your profile's game details must be public, or the key must belong to this account."));
@@ -1023,6 +1062,7 @@ impl GamutApp {
                             ui.label("API key");
                             ui.add(egui::TextEdit::singleline(&mut s.steamgriddb_key).password(true).desired_width(420.0));
                             ui.end_row();
+                            checks.row(ui, crate::keycheck::SGDB);
                         });
                         ui.hyperlink_to("Get a SteamGridDB key", "https://www.steamgriddb.com/profile/preferences/api");
                         ui.label(theme::hint("Used for covers and banners Steam doesn't have."));
@@ -1036,6 +1076,7 @@ impl GamutApp {
                             ui.label("Web API key");
                             ui.add(egui::TextEdit::singleline(&mut s.ra_api_key).password(true).desired_width(420.0));
                             ui.end_row();
+                            checks.row(ui, crate::keycheck::RETRO);
                         });
                         ui.hyperlink_to("Get your RetroAchievements key", "https://retroachievements.org/settings");
                         ui.label(theme::hint("Achievements for emulated games, matched by platform and title."));
@@ -1186,6 +1227,10 @@ impl GamutApp {
             self.workers.rescan();
         } else if !open {
             self.settings = None;
+        }
+        if self.settings.is_none() {
+            // Next open checks again.
+            self.key_checks.reset();
         }
     }
 
@@ -1732,6 +1777,14 @@ impl eframe::App for GamutApp {
                 ctx.request_repaint_after(std::time::Duration::from_secs(3));
             }
         }
+        if let Some(st) = self.stats_tab.as_mut().filter(|s| s.dirty) {
+            let now = ctx.input(|i| i.time);
+            if now - st.loaded > 5.0 {
+                st.refresh(&self.lib, now);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs(5));
+            }
+        }
         self.thumbs.begin_frame(&ctx);
 
         let typing = ctx.memory(|m| m.focused().is_some());
@@ -1762,15 +1815,22 @@ impl eframe::App for GamutApp {
             .show(ui, |ui| self.status_bar(ui));
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
-            .show(ui, |ui| match self.ach_tab.as_mut() {
-                Some(ov) => {
-                    let busy = !self.workers.ach_busy.lock().unwrap().is_empty();
-                    if let Some(id) = crate::ach_tab::show(ui, ov, &self.games, &mut self.thumbs, busy) {
-                        self.selected = Some(id);
-                        self.opened_at = ui.input(|i| i.time);
+            .show(ui, |ui| {
+                let clicked = match (self.ach_tab.as_mut(), self.stats_tab.as_mut()) {
+                    (Some(ov), _) => {
+                        let busy = !self.workers.ach_busy.lock().unwrap().is_empty();
+                        crate::ach_tab::show(ui, ov, &self.games, &mut self.thumbs, busy)
                     }
+                    (_, Some(st)) => crate::stats_tab::show(ui, st, &self.games),
+                    _ => {
+                        self.grid(ui, &mut actions);
+                        None
+                    }
+                };
+                if let Some(id) = clicked {
+                    self.selected = Some(id);
+                    self.opened_at = ui.input(|i| i.time);
                 }
-                None => self.grid(ui, &mut actions),
             });
 
         if let Some(s) = self.startup.as_mut() {
