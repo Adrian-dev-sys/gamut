@@ -13,7 +13,9 @@
   metadata. Refresh asks first since `requeue(force)` replaces description/developer/publisher/date/genres.
 
 ## Controller and big screen
-- `app/src/gamepad.rs`: a gilrs thread (XInput, DualShock/DualSense, …) sends `Pad` actions; D-pad/left
+- `app/src/gamepad.rs`: a gilrs (Windows.Gaming.Input) thread sends `Pad` actions; the same button twice within
+  60 ms counts once (remappers show a pad twice: real + virtual Xbox). HidHide hides a DualSense from Gamut
+  unless gamut.exe is on its allow list. D-pad/left
   stick repeat after 380 ms, every 95 ms. `GamutApp::handle_pad` ignores them while Gamut's window isn't
   focused (a game is in front) and while dialogs are open. A = open/Play, B = back/clear, X = favorite,
   LB/RB = filter tabs, LT/RT = page, View/Guide = big screen, Start = like A.

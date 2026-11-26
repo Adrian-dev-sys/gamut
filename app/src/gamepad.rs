@@ -43,7 +43,16 @@ fn run(tx: Sender<Pad>, ctx: egui::Context) {
             return;
         }
     };
-    let send = |p: Pad| {
+    // A remapper (DS4Windows, DSX, Steam) can show one controller twice: real + virtual Xbox pad.
+    // The same button within 60 ms counts once.
+    let mut last: Option<(std::mem::Discriminant<Pad>, Instant)> = None;
+    let mut send = |p: Pad| {
+        let (key, now) = (std::mem::discriminant(&p), Instant::now());
+        // Held-direction repeats are 95 ms apart, so they pass.
+        if last.is_some_and(|(k, t)| k == key && now - t < Duration::from_millis(60)) {
+            return;
+        }
+        last = Some((key, now));
         let _ = tx.send(p);
         ctx.request_repaint();
     };
