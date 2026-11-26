@@ -23,3 +23,10 @@
 - Big screen (`toggle_big`, F11, top-bar button, View): full screen, zoom ×1.35, filter tabs instead of the
   normal bar, a button-hint footer, cursor always placed. Leaving restores zoom and windowed mode;
   `track_window` pauses meanwhile so the saved placement isn't overwritten.
+- Details popup with controller: `raw_input_hook` turns D-pad/A into arrow/Enter key events while it's open,
+  so egui's own focus moves between its buttons/tabs and Enter clicks the focused one. Opening a game from the
+  controller or keyboard focuses Play (`focus_play`); the focused widget gets a white border (`kb_focus`).
+  L2/R2 scroll the page (`detail_scroll`).
+- Search: Y/Triangle focuses the search box; in big screen it opens `search_pop.rs`, a centered on-screen
+  keyboard (A types, X deletes, B/Y close) that filters the grid live.
+- The grid keeps `GRID_MARGIN` above the first row and below the last so the cursor outline isn't clipped.

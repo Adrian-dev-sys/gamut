@@ -111,6 +111,9 @@ enum Bulk {
     Refresh,
 }
 
+/// Space above the first grid row and below the last.
+const GRID_MARGIN: f32 = 12.0;
+
 /// Filters reachable from big screen tabs and LB/RB, with their labels.
 const BIG_TABS: [(Filter, &str); 5] =
     [(Filter::All, "All games"), (Filter::Installed, "Installed"), (Filter::Favorites, "Favorites"), (Filter::Steam, "Steam"), (Filter::Custom, "Custom")];
@@ -165,6 +168,14 @@ pub struct GamutApp {
     scroll_to: Option<f32>,
     confirm_refresh: Option<Vec<i64>>,
     pad: Receiver<crate::gamepad::Pad>,
+    /// Controller input left for `handle_pad` (some becomes arrow/Enter keys in `raw_input_hook`).
+    pad_buf: Vec<crate::gamepad::Pad>,
+    /// Focus the details page's main button next frame (opened from controller/keyboard).
+    focus_play: bool,
+    /// Details page scroll: pending change, and the offset last frame.
+    detail_scroll: Option<f32>,
+    detail_off: f32,
+    search_pop: Option<crate::search_pop::SearchPop>,
     /// Big screen mode: the zoom factor to restore when leaving it.
     big: Option<f32>,
     thumbs: ThumbCache,
@@ -257,6 +268,11 @@ impl GamutApp {
             scroll_to: None,
             confirm_refresh: None,
             pad: crate::gamepad::start(cc.egui_ctx.clone()),
+            pad_buf: Vec::new(),
+            focus_play: false,
+            detail_scroll: None,
+            detail_off: 0.0,
+            search_pop: None,
             big: None,
             workers,
             hero: None,
@@ -576,6 +592,14 @@ impl GamutApp {
                 }
                 ui.add_space(4.0);
             }
+            ui.add_space(16.0);
+            let label = if self.search.is_empty() { "Search  (Y)".to_string() } else { format!("Search: {}", self.search) };
+            if ui.button(RichText::new(label).size(15.0)).clicked() {
+                self.search_pop = Some(crate::search_pop::SearchPop::new());
+            }
+            if !self.search.is_empty() && ui.button(RichText::new("Clear").size(15.0)).clicked() {
+                self.search.clear();
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button(RichText::new("Exit big screen").size(15.0)).clicked() {
                     let ctx = ui.ctx().clone();
@@ -589,8 +613,19 @@ impl GamutApp {
     /// Controller buttons; ignored while Gamut isn't the focused window (e.g. a game is being played).
     fn handle_pad(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         use crate::gamepad::Pad;
-        let events: Vec<Pad> = self.pad.try_iter().collect();
+        let events: Vec<Pad> = std::mem::take(&mut self.pad_buf);
         if events.is_empty() || !ctx.input(|i| i.focused) {
+            return;
+        }
+        if self.search_pop.is_some() {
+            for p in events {
+                if matches!(p, Pad::BigScreen) {
+                    self.toggle_big(ctx);
+                } else if self.search_pop.as_mut().is_some_and(|sp| sp.pad(p, &mut self.search)) {
+                    self.close_search();
+                    return;
+                }
+            }
             return;
         }
         let dialog = self.editor.is_some()
@@ -607,13 +642,26 @@ impl GamutApp {
                 Pad::BigScreen => self.toggle_big(ctx),
                 _ if dialog => {}
                 Pad::Nav(n) if self.selected.is_none() && grid => self.nav(n, false),
+                // Details: L2/R2 page through the description.
+                Pad::Nav(Nav::PageUp) if self.selected.is_some() => self.detail_scroll = Some(-420.0),
+                Pad::Nav(Nav::PageDown) if self.selected.is_some() => self.detail_scroll = Some(420.0),
                 Pad::Nav(_) => {}
+                Pad::Search if self.selected.is_none() => {
+                    (self.ach_tab, self.stats_tab) = (None, None);
+                    if self.big.is_some() {
+                        self.search_pop = Some(crate::search_pop::SearchPop::new());
+                    } else {
+                        self.focus_search = true;
+                    }
+                }
+                Pad::Search => {}
                 Pad::Confirm | Pad::Start => match self.selected {
                     Some(id) => actions.push(Action::Play(id)),
                     None if grid => match self.cursor.filter(|_| self.kb_focus) {
                         Some(id) => {
                             self.selected = Some(id);
                             self.opened_at = ctx.input(|i| i.time);
+                            self.focus_play = true;
                         }
                         None => self.nav(Nav::Home, false),
                     },
@@ -644,6 +692,24 @@ impl GamutApp {
             }
             self.kb_focus = true;
         }
+    }
+
+    fn close_search(&mut self) {
+        self.search_pop = None;
+        self.cursor = None;
+        self.scroll_to = Some(0.0);
+    }
+
+    fn any_dialog(&self) -> bool {
+        self.editor.is_some()
+            || self.settings.is_some()
+            || self.confirm_remove.is_some()
+            || self.confirm_refresh.is_some()
+            || self.confirm_stop.is_some()
+            || self.playnite.is_some()
+            || self.picker.is_some()
+            || self.ra_pick.is_some()
+            || self.search_pop.is_some()
     }
 
     /// Search, filters, sort and cover size for the library grid.
@@ -838,8 +904,8 @@ impl GamutApp {
         let (off, h) = self.grid_scroll;
         if top < off {
             self.scroll_to = Some(top);
-        } else if top + pitch > off + h {
-            self.scroll_to = Some(top + pitch - h);
+        } else if top + pitch + GRID_MARGIN > off + h {
+            self.scroll_to = Some(top + pitch + GRID_MARGIN - h);
         }
     }
 
@@ -882,6 +948,7 @@ impl GamutApp {
             if enter {
                 self.selected = Some(id);
                 self.opened_at = ctx.input(|i| i.time);
+                self.focus_play = true;
             }
         }
     }
@@ -922,6 +989,9 @@ impl GamutApp {
             area = area.vertical_scroll_offset(y);
         }
         let out = area.show_rows(ui, row_h, rows, |ui, range| {
+            // Room for the cursor outline, glow and hover lift above the first row and below the last.
+            ui.add_space(GRID_MARGIN);
+            let last = range.end == rows;
             for row in range {
                 let (row_rect, _) = ui.allocate_exact_size(vec2(avail, row_h), Sense::hover());
                 for c in 0..cols {
@@ -1017,6 +1087,9 @@ impl GamutApp {
                     }
                 }
             }
+            if last {
+                ui.add_space(GRID_MARGIN);
+            }
         });
         self.grid_scroll = (out.state.clamped_offset().y, out.inner_rect.height());
         for (id, m, _) in clicks {
@@ -1078,7 +1151,18 @@ impl GamutApp {
         }
 
         // One scroll for the whole page, so long descriptions and clips get the full height.
-        ScrollArea::vertical().id_salt(("details", id)).auto_shrink([false, false]).show(ui, |ui| {
+        if self.kb_focus {
+            // Controller/keyboard: make the focused button obvious.
+            let w = &mut ui.visuals_mut().widgets;
+            w.active.bg_stroke = Stroke::new(3.0, Color32::WHITE);
+            w.active.weak_bg_fill = ACCENT.gamma_multiply(0.45);
+        }
+        let mut area = ScrollArea::vertical().id_salt(("details", id)).auto_shrink([false, false]);
+        if let Some(d) = self.detail_scroll.take() {
+            area = area.vertical_scroll_offset((self.detail_off + d).max(0.0));
+        }
+        let focus_play = std::mem::take(&mut self.focus_play);
+        let out = area.show(ui, |ui| {
             let pad = 28.0;
             let w = ui.available_width();
             let banner_h = (w * 0.30).clamp(200.0, 380.0);
@@ -1160,6 +1244,9 @@ impl GamutApp {
                                 .min_size(vec2(150.0, 38.0));
                             let can_play = g.source == Source::Steam || g.exe.is_some();
                             let r = ui.add_enabled(can_play, play).on_disabled_hover_text("No way to start this game on this PC");
+                            if focus_play && can_play {
+                                r.request_focus();
+                            }
                             if r.clicked() {
                                 actions.push(Action::Play(id));
                             }
@@ -1334,6 +1421,7 @@ impl GamutApp {
             });
             ui.add_space(28.0);
         });
+        self.detail_off = out.state.clamped_offset().y;
         if let Some(t) = pick_tag {
             self.tag = t;
             self.selected = None;
@@ -1928,7 +2016,7 @@ fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
 /// Big screen footer: what the controller buttons do.
 fn big_hints(ui: &mut Ui) {
     ui.horizontal(|ui| {
-        for (k, v) in [("A", "Open / Play"), ("B", "Back"), ("X", "Favorite"), ("LB/RB", "Filter"), ("LT/RT", "Page"), ("View", "Exit big screen")] {
+        for (k, v) in [("A", "Open / Play"), ("B", "Back"), ("X", "Favorite"), ("Y", "Search"), ("LB/RB", "Filter"), ("LT/RT", "Page"), ("View", "Exit big screen")] {
             egui::Frame::new()
                 .fill(CARD_HI)
                 .corner_radius(CornerRadius::same(4))
@@ -2258,6 +2346,41 @@ pub(crate) fn cover_uv(img: f32, rect: f32) -> Rect {
 }
 
 impl eframe::App for GamutApp {
+    /// Moves controller input into `pad_buf`; inside the details popup, D-pad and A become arrow/Enter
+    /// keys so egui moves focus between its buttons and presses the focused one.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        use crate::gamepad::Pad;
+        let details = self.selected.is_some() && !self.any_dialog();
+        let has_focus = ctx.memory(|m| m.focused().is_some());
+        for p in self.pad.try_iter().collect::<Vec<_>>() {
+            if !raw.focused {
+                continue;
+            }
+            let key = match p {
+                Pad::Nav(Nav::Up) => Some(Key::ArrowUp),
+                Pad::Nav(Nav::Down) => Some(Key::ArrowDown),
+                Pad::Nav(Nav::Left) => Some(Key::ArrowLeft),
+                Pad::Nav(Nav::Right) => Some(Key::ArrowRight),
+                Pad::Confirm if has_focus => Some(Key::Enter),
+                _ => None,
+            };
+            match key.filter(|_| details) {
+                // Nothing focused yet (opened with the mouse): the first move lands on Play.
+                Some(_) if !has_focus => {
+                    self.focus_play = true;
+                    self.kb_focus = true;
+                }
+                Some(key) => {
+                    for pressed in [true, false] {
+                        raw.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Default::default() });
+                    }
+                    self.kb_focus = true;
+                }
+                None => self.pad_buf.push(p),
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events();
@@ -2290,15 +2413,7 @@ impl eframe::App for GamutApp {
         });
         let mut actions = Vec::new();
         let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none();
-        let blocked = self.selected.is_some()
-            || self.editor.is_some()
-            || self.settings.is_some()
-            || self.confirm_remove.is_some()
-            || self.confirm_refresh.is_some()
-            || self.confirm_stop.is_some()
-            || self.playnite.is_some()
-            || self.picker.is_some()
-            || self.ra_pick.is_some();
+        let blocked = self.selected.is_some() || self.any_dialog();
         if ctx.input(|i| i.key_pressed(Key::F11)) {
             self.toggle_big(&ctx);
         }
@@ -2352,15 +2467,7 @@ impl eframe::App for GamutApp {
                 self.startup = None;
             }
         }
-        let any_popup = self.selected.is_some()
-            || self.editor.is_some()
-            || self.settings.is_some()
-            || self.confirm_remove.is_some()
-            || self.confirm_refresh.is_some()
-            || self.confirm_stop.is_some()
-            || self.playnite.is_some()
-            || self.picker.is_some()
-            || self.ra_pick.is_some();
+        let any_popup = self.selected.is_some() || self.any_dialog();
         if any_popup {
             theme::paint_backdrop(&ctx);
         }
@@ -2437,6 +2544,12 @@ impl eframe::App for GamutApp {
                     self.ach = None;
                     self.workers.achievements(id);
                 }
+            }
+        }
+        if let Some(sp) = self.search_pop.as_mut() {
+            let n = self.view.len();
+            if sp.show(&ctx, &mut self.search, n) {
+                self.close_search();
             }
         }
         self.editor_window(&ctx);

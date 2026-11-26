@@ -22,6 +22,8 @@ pub enum Pad {
     /// View/Select (Create) or Guide (PS): toggle big screen.
     BigScreen,
     Start,
+    /// North (Y / Triangle).
+    Search,
 }
 
 /// Held-direction repeat: first repeat after `DELAY`, then every `RATE`.
@@ -46,12 +48,12 @@ pub fn start(ctx: egui::Context) -> Receiver<Pad> {
 /// Pressed buttons that map to actions, plus the direction a pad is pushing.
 #[derive(Default, Clone, Copy, PartialEq)]
 struct PadState {
-    buttons: [bool; 10],
+    buttons: [bool; 11],
     dir: Option<Nav>,
 }
 
 /// Order of `PadState::buttons`.
-const ACTIONS: [Pad; 10] = [
+const ACTIONS: [Pad; 11] = [
     Pad::Confirm,
     Pad::Back,
     Pad::Favorite,
@@ -62,6 +64,7 @@ const ACTIONS: [Pad; 10] = [
     Pad::BigScreen,
     Pad::BigScreen,
     Pad::Start,
+    Pad::Search,
 ];
 
 struct HidPad {
@@ -164,6 +167,7 @@ fn gilrs_action(b: Button) -> Option<Pad> {
         Button::South => Pad::Confirm,
         Button::East => Pad::Back,
         Button::West => Pad::Favorite,
+        Button::North => Pad::Search,
         Button::LeftTrigger => Pad::PrevTab,
         Button::RightTrigger => Pad::NextTab,
         Button::LeftTrigger2 => Pad::Nav(Nav::PageUp),
@@ -257,6 +261,7 @@ fn parse(r: &[u8], dualsense: bool) -> Option<PadState> {
         shoulder & 0x10 != 0, // Create / Share
         ps & 0x01 != 0,       // PS
         shoulder & 0x20 != 0, // Options
+        face & 0x80 != 0,     // Triangle
     ];
     Some(PadState { buttons, dir })
 }
