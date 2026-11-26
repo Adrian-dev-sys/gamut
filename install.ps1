@@ -9,7 +9,9 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\Gamut'
 New-Item -ItemType Directory -Force $dir | Out-Null
 if (Get-Process gamut -ErrorAction SilentlyContinue) { throw "Gamut is running - close it and run this again." }
-Copy-Item 'target\release\gamut.exe' (Join-Path $dir 'gamut.exe') -Force
+# Honor CARGO_TARGET_DIR, else a stale target\release exe gets installed.
+$target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
+Copy-Item (Join-Path $target 'release\gamut.exe') (Join-Path $dir 'gamut.exe') -Force
 
 $shell = New-Object -ComObject WScript.Shell
 $targets = @(

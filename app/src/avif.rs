@@ -77,4 +77,22 @@ mod tests {
         let img = image::load_from_memory(&bytes).unwrap();
         assert!(img.width() > 0 && img.height() > 0);
     }
+
+    /// Full egui path: http fetch -> ImageCrateLoader -> hook. Needs network.
+    #[test]
+    #[ignore]
+    fn egui_loads_steam_avif() {
+        super::register();
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let url = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3265700/extras/a299aff2fbc72e320fc259435c5330ef.poster.avif?t=1776925935";
+        for _ in 0..200 {
+            match ctx.try_load_image(url, egui::SizeHint::default()) {
+                Ok(egui::load::ImagePoll::Ready { image }) => return assert!(image.width() > 0),
+                Ok(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(e) => panic!("{e}"),
+            }
+        }
+        panic!("timed out");
+    }
 }
