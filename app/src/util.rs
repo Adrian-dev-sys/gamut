@@ -60,8 +60,46 @@ pub fn opt(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
+/// Part of a natural sort key: digit runs compare as numbers, so "#56" sorts before "#556".
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum NatPart {
+    Num(u128),
+    Text(String),
+}
+
+/// Case-insensitive natural sort key for a name.
+pub fn nat_key(s: &str) -> Vec<NatPart> {
+    let mut out = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            let mut n: u128 = 0;
+            while let Some(d) = chars.peek().and_then(|c| c.to_digit(10)) {
+                n = n.saturating_mul(10).saturating_add(d as u128);
+                chars.next();
+            }
+            out.push(NatPart::Num(n));
+        } else {
+            let mut t = String::new();
+            while let Some(&c) = chars.peek().filter(|c| !c.is_ascii_digit()) {
+                t.extend(c.to_lowercase());
+                chars.next();
+            }
+            out.push(NatPart::Text(t));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn natural_order() {
+        let mut v = vec!["Game #556", "game #56", "Game #9", "Game", "Game 2: Rise", "Game 10"];
+        v.sort_by_key(|s| super::nat_key(s));
+        assert_eq!(v, ["Game", "Game 2: Rise", "Game 10", "Game #9", "game #56", "Game #556"]);
+    }
+
     #[test]
     fn release_round_trip() {
         assert_eq!(super::release_input("27/09/2022"), "2022-09-27");

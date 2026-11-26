@@ -100,6 +100,28 @@ enum Action {
     PickArt(i64, ArtKind),
     /// Ask to close a running game.
     Stop(i64),
+    /// Applies to every selected game.
+    Bulk(Bulk),
+}
+
+#[derive(Clone, Copy)]
+enum Bulk {
+    Fav(bool),
+    Hide(bool),
+    Refresh,
+}
+
+/// A grid cursor move (keyboard or controller).
+#[derive(Clone, Copy)]
+pub(crate) enum Nav {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
 }
 
 
@@ -124,6 +146,20 @@ pub struct GamutApp {
     tag_query: String,
     platform_query: String,
     selected: Option<i64>,
+    /// Keyboard/controller cursor in the grid, and whether to draw it (mouse use hides it).
+    cursor: Option<i64>,
+    kb_focus: bool,
+    /// Multi-selection and the Shift range anchor.
+    multi: HashSet<i64>,
+    anchor: Option<i64>,
+    /// Grid layout from the last frame, for cursor moves: columns, rows per page, row pitch,
+    /// (scroll offset, viewport height), and a pending scroll.
+    grid_cols: usize,
+    grid_page: usize,
+    grid_pitch: f32,
+    grid_scroll: (f32, f32),
+    scroll_to: Option<f32>,
+    confirm_refresh: Option<Vec<i64>>,
     thumbs: ThumbCache,
     /// Covers for the Achievements tab rows, decoded at their exact size.
     small_thumbs: ThumbCache,
@@ -203,6 +239,16 @@ impl GamutApp {
             tag_query: String::new(),
             platform_query: String::new(),
             selected: None,
+            cursor: None,
+            kb_focus: false,
+            multi: HashSet::new(),
+            anchor: None,
+            grid_cols: 1,
+            grid_page: 1,
+            grid_pitch: 1.0,
+            grid_scroll: (0.0, 0.0),
+            scroll_to: None,
+            confirm_refresh: None,
             workers,
             hero: None,
             hero_tx,
@@ -361,24 +407,27 @@ impl GamutApp {
             .collect();
         let gs = &self.games;
         match self.sort {
-            Sort::Name => v.sort_by_cached_key(|&i| gs[i].name.to_lowercase()),
+            Sort::Name => v.sort_by_cached_key(|&i| util::nat_key(&gs[i].name)),
             Sort::LastPlayed => v.sort_by_key(|&i| std::cmp::Reverse(gs[i].last_played)),
             Sort::Playtime => v.sort_by_key(|&i| std::cmp::Reverse(gs[i].playtime_min)),
             Sort::Added => v.sort_by_key(|&i| std::cmp::Reverse((gs[i].added, gs[i].id))),
             // Highest first; games without a value go last, then by name.
             Sort::Released => v.sort_by_cached_key(|&i| {
                 let d = gs[i].release_date.as_deref().map(sortable_date).unwrap_or_default();
-                (d.is_empty(), std::cmp::Reverse(d), gs[i].name.to_lowercase())
+                (d.is_empty(), std::cmp::Reverse(d), util::nat_key(&gs[i].name))
             }),
-            Sort::CriticScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].critic_score), gs[i].name.to_lowercase())),
-            Sort::CommunityScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].community_score), gs[i].name.to_lowercase())),
+            Sort::CriticScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].critic_score), util::nat_key(&gs[i].name))),
+            Sort::CommunityScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].community_score), util::nat_key(&gs[i].name))),
             Sort::PlayCount => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].play_count), std::cmp::Reverse(gs[i].playtime_min))),
             Sort::Completion => v.sort_by_cached_key(|&i| {
                 let c = completion_of(&gs[i]);
                 let rank = COMPLETION_ORDER.iter().position(|s| *s == c).unwrap_or(COMPLETION_ORDER.len());
-                (rank, c.to_string(), gs[i].name.to_lowercase())
+                (rank, c.to_string(), util::nat_key(&gs[i].name))
             }),
         }
+        // Selected games that left the view (filtered, hidden) drop out of the selection.
+        let ids: HashSet<i64> = v.iter().map(|&i| gs[i].id).collect();
+        self.multi.retain(|id| ids.contains(id));
         self.view = v;
         self.view_key = Some(key);
     }
@@ -418,6 +467,18 @@ impl GamutApp {
                 }
                 Action::Remove(id) => self.confirm_remove = Some(id),
                 Action::Stop(id) => self.confirm_stop = Some(id),
+                Action::Bulk(op) => {
+                    let ids: Vec<i64> = self.view.iter().map(|&i| self.games[i].id).filter(|id| self.multi.contains(id)).collect();
+                    match op {
+                        Bulk::Fav(on) => ids.iter().try_for_each(|&id| self.lib.set_favorite(id, on))?,
+                        Bulk::Hide(on) => ids.iter().try_for_each(|&id| self.lib.set_hidden(id, on))?,
+                        Bulk::Refresh => {
+                            self.confirm_refresh = Some(ids);
+                            return Ok(());
+                        }
+                    }
+                    self.reload_all();
+                }
                 Action::PickArt(id, kind) => {
                     if let Some(g) = self.game(id) {
                         let cfg = self.cfg.read().unwrap().clone();
@@ -571,7 +632,148 @@ impl GamutApp {
         });
     }
 
+    /// Selection bar shown while several games are selected.
+    fn bulk_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        if self.multi.is_empty() {
+            return;
+        }
+        egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+            theme::raised_widgets(ui);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{} selected", self.multi.len())).strong());
+                ui.separator();
+                for (label, op) in [
+                    ("Favorite", Bulk::Fav(true)),
+                    ("Unfavorite", Bulk::Fav(false)),
+                    ("Hide", Bulk::Hide(true)),
+                    ("Unhide", Bulk::Hide(false)),
+                    ("Refresh metadata…", Bulk::Refresh),
+                ] {
+                    if ui.button(label).clicked() {
+                        actions.push(Action::Bulk(op));
+                    }
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Clear").on_hover_text("Esc").clicked() {
+                        self.multi.clear();
+                    }
+                    if ui.button("Select all").on_hover_text("Ctrl+A").clicked() {
+                        self.select_all();
+                    }
+                    ui.label(RichText::new("Ctrl+click to add, Shift+click for a range").color(TEXT_DIM).size(12.0));
+                });
+            });
+        });
+        ui.add_space(8.0);
+    }
+
+    fn select_all(&mut self) {
+        self.multi = self.view.iter().map(|&i| self.games[i].id).collect();
+    }
+
+    fn view_pos(&self, id: i64) -> Option<usize> {
+        self.view.iter().position(|&i| self.games[i].id == id)
+    }
+
+    /// Adds the games between the anchor and `id` (view order) to the selection.
+    fn select_range(&mut self, id: i64) {
+        let to = self.view_pos(id);
+        let from = self.anchor.and_then(|a| self.view_pos(a)).or(to);
+        if let (Some(a), Some(b)) = (from, to) {
+            for &gi in &self.view[a.min(b)..=a.max(b)] {
+                self.multi.insert(self.games[gi].id);
+            }
+        }
+    }
+
+    /// Moves the grid cursor; shift extends the selection; keeps the cursor's row in view.
+    pub(crate) fn nav(&mut self, nav: Nav, shift: bool) {
+        let n = self.view.len();
+        if n == 0 {
+            return;
+        }
+        let cols = self.grid_cols.max(1) as isize;
+        let page = self.grid_page.max(1) as isize * cols;
+        let pos = self.cursor.and_then(|c| self.view_pos(c));
+        let new = match (pos, nav) {
+            (None, _) => 0,
+            (Some(_), Nav::Home) => 0,
+            (Some(_), Nav::End) => n - 1,
+            (Some(p), _) => {
+                let d = match nav {
+                    Nav::Left => -1,
+                    Nav::Right => 1,
+                    Nav::Up => -cols,
+                    Nav::Down => cols,
+                    Nav::PageUp => -page,
+                    _ => page,
+                };
+                (p as isize + d).clamp(0, n as isize - 1) as usize
+            }
+        };
+        let id = self.games[self.view[new]].id;
+        self.cursor = Some(id);
+        self.kb_focus = true;
+        if shift {
+            self.select_range(id);
+        } else {
+            self.anchor = Some(id);
+        }
+        let pitch = self.grid_pitch.max(1.0);
+        let top = (new / cols as usize) as f32 * pitch;
+        let (off, h) = self.grid_scroll;
+        if top < off {
+            self.scroll_to = Some(top);
+        } else if top + pitch > off + h {
+            self.scroll_to = Some(top + pitch - h);
+        }
+    }
+
+    /// Grid keys: arrows/Home/End/PageUp/PageDown move, Enter opens, Space toggles, Ctrl+A all, Esc clears.
+    fn grid_keys(&mut self, ctx: &egui::Context) {
+        let (moves, shift, enter, space, all, esc) = ctx.input(|i| {
+            let keys = [
+                (Key::ArrowLeft, Nav::Left),
+                (Key::ArrowRight, Nav::Right),
+                (Key::ArrowUp, Nav::Up),
+                (Key::ArrowDown, Nav::Down),
+                (Key::PageUp, Nav::PageUp),
+                (Key::PageDown, Nav::PageDown),
+                (Key::Home, Nav::Home),
+                (Key::End, Nav::End),
+            ];
+            let moves: Vec<Nav> = keys.iter().filter(|(k, _)| i.key_pressed(*k)).map(|(_, n)| *n).collect();
+            (
+                moves,
+                i.modifiers.shift,
+                i.key_pressed(Key::Enter),
+                i.key_pressed(Key::Space),
+                i.modifiers.command && i.key_pressed(Key::A),
+                i.key_pressed(Key::Escape),
+            )
+        });
+        for m in moves {
+            self.nav(m, shift);
+        }
+        if all {
+            self.select_all();
+        }
+        if esc {
+            self.multi.clear();
+        }
+        if let Some(id) = self.cursor.filter(|_| self.kb_focus) {
+            if space && !self.multi.remove(&id) {
+                self.multi.insert(id);
+            }
+            if enter {
+                self.selected = Some(id);
+                self.opened_at = ctx.input(|i| i.time);
+            }
+        }
+    }
+
     fn grid(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        self.bulk_bar(ui, actions);
         let card_w = self.cfg.read().unwrap().card_width;
         let card_h = (card_w * 1.5).round();
         let title_h = 24.0;
@@ -582,6 +784,9 @@ impl GamutApp {
         let rows = self.view.len().div_ceil(cols);
         let used = cols as f32 * card_w + (cols - 1) as f32 * gap;
         let pad = ((avail - used) / 2.0).max(0.0);
+        self.grid_cols = cols;
+        self.grid_pitch = row_h + gap;
+        self.grid_page = ((ui.available_height() / (row_h + gap)).floor() as usize).max(1);
 
         if self.view.is_empty() {
             ui.centered_and_justified(|ui| {
@@ -594,11 +799,15 @@ impl GamutApp {
         let games = &self.games;
         let view = &self.view;
         let thumbs = &mut self.thumbs;
-        let selected = &mut self.selected;
-        let opened_at = &mut self.opened_at;
+        let multi = &self.multi;
+        let cursor = self.cursor.filter(|_| self.kb_focus);
+        let mut clicks: Vec<(i64, egui::Modifiers, bool)> = Vec::new();
         ui.spacing_mut().item_spacing.y = gap;
-        ScrollArea::vertical().auto_shrink([false; 2]).show_rows(ui, row_h, rows, |ui, range| {
-            ui.add_space(4.0);
+        let mut area = ScrollArea::vertical().auto_shrink([false; 2]);
+        if let Some(y) = self.scroll_to.take() {
+            area = area.vertical_scroll_offset(y);
+        }
+        let out = area.show_rows(ui, row_h, rows, |ui, range| {
             for row in range {
                 let (row_rect, _) = ui.allocate_exact_size(vec2(avail, row_h), Sense::hover());
                 for c in 0..cols {
@@ -612,7 +821,8 @@ impl GamutApp {
                     if hovered {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    let is_sel = *selected == Some(g.id);
+                    let in_multi = multi.contains(&g.id);
+                    let is_sel = in_multi || cursor == Some(g.id);
                     let painter = ui.painter();
                     let r = CornerRadius::same(6);
 
@@ -640,6 +850,9 @@ impl GamutApp {
                             painter.galley(p, galley, Color32::WHITE);
                         }
                     }
+                    if in_multi {
+                        painter.rect_filled(cover, r, ACCENT.gamma_multiply(0.18));
+                    }
                     if g.favorite {
                         let c = cover.right_top() + vec2(-16.0, 16.0);
                         painter.circle_filled(c, 13.0, Color32::from_black_alpha(140));
@@ -648,7 +861,12 @@ impl GamutApp {
                     if running.contains(&g.id) {
                         badge(painter, cover.left_top() + vec2(8.0, 8.0), "RUNNING", GOOD);
                     }
-                    if is_sel || hovered {
+                    if in_multi {
+                        paint_check(painter, cover.left_bottom() + vec2(16.0, -16.0));
+                    }
+                    if cursor == Some(g.id) {
+                        painter.rect_stroke(cover, r, Stroke::new(3.0, Color32::WHITE), StrokeKind::Outside);
+                    } else if is_sel || hovered {
                         let s = if is_sel { Stroke::new(2.5, ACCENT) } else { Stroke::new(1.5, ACCENT.gamma_multiply(0.8)) };
                         painter.rect_stroke(cover, r, s, StrokeKind::Outside);
                     }
@@ -673,16 +891,37 @@ impl GamutApp {
                     painter.galley(pos2(x, cover.bottom() + 6.0), galley, Color32::WHITE);
 
                     if resp.clicked() {
-                        *selected = Some(g.id);
-                        *opened_at = ui.input(|i| i.time);
+                        clicks.push((g.id, ui.input(|i| i.modifiers), false));
                     }
                     if resp.double_clicked() {
                         actions.push(Action::Play(g.id));
                     }
-                    resp.context_menu(|ui| context_menu(ui, g, actions));
+                    if in_multi && multi.len() > 1 {
+                        resp.context_menu(|ui| bulk_menu(ui, multi.len(), actions));
+                    } else {
+                        resp.context_menu(|ui| context_menu(ui, g, actions));
+                    }
                 }
             }
         });
+        self.grid_scroll = (out.state.clamped_offset().y, out.inner_rect.height());
+        for (id, m, _) in clicks {
+            self.kb_focus = false;
+            self.cursor = Some(id);
+            if m.command {
+                if !self.multi.remove(&id) {
+                    self.multi.insert(id);
+                }
+                self.anchor = Some(id);
+            } else if m.shift {
+                self.select_range(id);
+            } else {
+                self.multi.clear();
+                self.anchor = Some(id);
+                self.selected = Some(id);
+                self.opened_at = ui.input(|i| i.time);
+            }
+        }
     }
 
     fn details(&mut self, ui: &mut Ui, id: i64, actions: &mut Vec<Action>) {
@@ -1328,6 +1567,40 @@ impl GamutApp {
         }
     }
 
+    /// Confirms "Refresh metadata" for the selected games (it replaces their fetched fields).
+    fn refresh_window(&mut self, ctx: &egui::Context) {
+        let Some(ids) = self.confirm_refresh.clone() else { return };
+        let (mut close, mut open) = (false, true);
+        theme::dialog(ctx, "Refresh metadata", false, |ui| {
+            ui.set_max_width(480.0);
+            dialog_header(ui, "Refresh metadata", &mut open);
+            ui.label(format!(
+                "Fetch covers and metadata again for {} games? Their description, developer, publisher, \
+                 release date and genres are replaced, including edits you made to those.",
+                ids.len()
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("Refresh").clicked() {
+                    let r = ids.iter().try_for_each(|&id| self.lib.requeue(id, true));
+                    match r {
+                        Ok(()) => self.toasts.success(format!("Refreshing {} games.", ids.len())),
+                        Err(e) => self.toasts.error(format!("{e:#}")),
+                    }
+                    self.hero = None;
+                    self.reload_all();
+                    self.workers.kick();
+                    close = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || !open {
+            self.confirm_refresh = None;
+        }
+    }
+
     /// "Close game?" for a running game: politely (WM_CLOSE) or by force.
     fn stop_window(&mut self, ctx: &egui::Context) {
         let Some(id) = self.confirm_stop else { return };
@@ -1535,6 +1808,33 @@ fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
         ui.separator();
         item(ui, "Remove…", Action::Remove(id));
     }
+}
+
+/// Right-click menu on a multi-selection.
+fn bulk_menu(ui: &mut Ui, n: usize, actions: &mut Vec<Action>) {
+    ui.label(RichText::new(format!("{n} selected")).color(TEXT_DIM));
+    ui.separator();
+    for (label, op) in [
+        ("Favorite", Bulk::Fav(true)),
+        ("Unfavorite", Bulk::Fav(false)),
+        ("Hide", Bulk::Hide(true)),
+        ("Unhide", Bulk::Hide(false)),
+        ("Refresh metadata…", Bulk::Refresh),
+    ] {
+        if ui.button(label).clicked() {
+            actions.push(Action::Bulk(op));
+            ui.close();
+        }
+    }
+}
+
+/// Round accent badge with a check mark (multi-selected card).
+fn paint_check(p: &egui::Painter, c: egui::Pos2) {
+    p.circle_filled(c, 11.0, ACCENT);
+    p.circle_stroke(c, 11.0, Stroke::new(1.5, Color32::WHITE));
+    let s = Stroke::new(2.2, Color32::WHITE);
+    p.line_segment([c + vec2(-5.0, 0.0), c + vec2(-1.5, 3.5)], s);
+    p.line_segment([c + vec2(-1.5, 3.5), c + vec2(5.0, -3.5)], s);
 }
 
 /// Five-point star: gold fill when on, dim outline when off (emoji fonts ignore tint).
@@ -1856,7 +2156,19 @@ impl eframe::App for GamutApp {
             }
         });
         let mut actions = Vec::new();
-        if !typing && self.editor.is_none() {
+        let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none();
+        let blocked = self.selected.is_some()
+            || self.editor.is_some()
+            || self.settings.is_some()
+            || self.confirm_remove.is_some()
+            || self.confirm_refresh.is_some()
+            || self.confirm_stop.is_some()
+            || self.playnite.is_some()
+            || self.picker.is_some()
+            || self.ra_pick.is_some();
+        if !typing && grid_shown && !blocked {
+            self.grid_keys(&ctx);
+        } else if !typing && self.editor.is_none() {
             if let Some(id) = self.selected {
                 if ctx.input(|i| i.key_pressed(Key::Enter)) {
                     actions.push(Action::Play(id));
@@ -1904,6 +2216,7 @@ impl eframe::App for GamutApp {
             || self.editor.is_some()
             || self.settings.is_some()
             || self.confirm_remove.is_some()
+            || self.confirm_refresh.is_some()
             || self.confirm_stop.is_some()
             || self.playnite.is_some()
             || self.picker.is_some()
@@ -1916,6 +2229,7 @@ impl eframe::App for GamutApp {
             self.editor.is_some()
             || self.settings.is_some()
             || self.confirm_remove.is_some()
+            || self.confirm_refresh.is_some()
             || self.confirm_stop.is_some()
             || self.playnite.is_some();
         if let (Some(id), false) = (self.selected, dialog_open) {
@@ -1988,6 +2302,7 @@ impl eframe::App for GamutApp {
         self.editor_window(&ctx);
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
+        self.refresh_window(&ctx);
         self.stop_window(&ctx);
         self.playnite_window(&ctx);
         self.toasts.show(&ctx);

@@ -12,11 +12,11 @@
 - [ ] Battle.net, EA app, Ubisoft Connect
 
 ## Library & UI
-- [ ] Keyboard navigation in the grid (arrow keys, Home/End, PageUp/PageDown)
-- [ ] Natural sort order ("#56" before "#556")
+- [x] Keyboard navigation in the grid (arrow keys, Home/End, PageUp/PageDown)
+- [x] Natural sort order ("#56" before "#556")
 - [ ] List view and a compact/details view alongside the grid
 - [ ] Tags/categories and user collections
-- [ ] Multi-select + bulk edit (hide, favorite, refresh metadata)
+- [x] Multi-select + bulk edit (hide, favorite, refresh metadata)
 - [x] Choose between several covers/banners per game (SteamGridDB, IGDB, VNDB, Steam alternatives)
 - [x] Remember window size/position and last selected filter/sort
 - [ ] Library briefly flashes behind open popups. Gamut's own frames were verified correct (pixel readback), so likely G-Sync/VRR with uneven frame pacing; try Fixed Refresh for gamut.exe, then steady repaints while a popup is open
