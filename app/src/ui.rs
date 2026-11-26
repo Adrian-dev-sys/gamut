@@ -153,6 +153,7 @@ pub struct GamutApp {
     saved_view: (Sort, Filter, String, String, String),
     /// Achievements of the game on the details page.
     ach: Option<crate::achievements::GameAch>,
+    ra_pick: Option<crate::achievements::RetroPick>,
 }
 
 impl GamutApp {
@@ -212,6 +213,7 @@ impl GamutApp {
             window,
             saved_view: (sort, filter, platform, tag, completion),
             ach: None,
+            ra_pick: None,
         })
     }
 
@@ -638,14 +640,20 @@ impl GamutApp {
             });
         }
         // Achievements: from the cache now, refreshed in the background when stale.
-        let steam_ach = g.source == Source::Steam && g.steam_appid().is_some();
-        if steam_ach && self.ach.as_ref().map(|a| a.id) != Some(id) {
+        let ach_src = crate::achievements::Source::of(&g, &self.cfg.read().unwrap());
+        if ach_src.is_some() && self.ach.as_ref().map(|a| a.id) != Some(id) {
             let a = crate::achievements::GameAch::load(&self.lib, id);
-            if a.stale() {
+            let due = match ach_src {
+                Some(crate::achievements::Source::Retro { ra_id: None }) => true,
+                Some(crate::achievements::Source::Retro { ra_id: Some(r) }) => r > 0 && a.stale(),
+                _ => a.stale(),
+            };
+            if due {
                 self.workers.achievements(id);
             }
             self.ach = Some(a);
         }
+        let steam_ach = ach_src.is_some();
         for (hid, img) in self.hero_rx.try_iter() {
             if let (Some((cur, slot)), Some(img)) = (self.hero.as_mut(), img) {
                 if *cur == hid {
@@ -870,11 +878,13 @@ impl GamutApp {
                             None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
                         };
                     });
-                    if let Some(a) = self.ach.as_mut().filter(|a| steam_ach && a.id == id) {
+                    if let (Some(a), Some(src)) = (self.ach.as_mut().filter(|a| a.id == id), ach_src) {
                         ui.add_space(28.0);
                         let busy = self.workers.ach_busy.lock().unwrap().contains(&id);
-                        let has_key = !self.cfg.read().unwrap().steam_api_key.trim().is_empty();
-                        crate::achievements::section(ui, a, busy, has_key);
+                        if let Some(crate::achievements::Ask::PickRetroGame) = crate::achievements::section(ui, a, src, busy) {
+                            let cfg = self.cfg.read().unwrap().clone();
+                            self.ra_pick = Some(crate::achievements::RetroPick::open(&g, &cfg, self.paths.root.join("ra"), ui.ctx()));
+                        }
                     }
                 });
             });
@@ -988,6 +998,19 @@ impl GamutApp {
                         });
                         ui.hyperlink_to("Get a SteamGridDB key", "https://www.steamgriddb.com/profile/preferences/api");
                         ui.label(theme::hint("Used for covers and banners Steam doesn't have."));
+                        ui.add_space(12.0);
+                        ui.separator();
+                        theme::section(ui, "RetroAchievements");
+                        egui::Grid::new("ra").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                            ui.label("Username");
+                            ui.add(egui::TextEdit::singleline(&mut s.ra_user).desired_width(420.0));
+                            ui.end_row();
+                            ui.label("Web API key");
+                            ui.add(egui::TextEdit::singleline(&mut s.ra_api_key).password(true).desired_width(420.0));
+                            ui.end_row();
+                        });
+                        ui.hyperlink_to("Get your RetroAchievements key", "https://retroachievements.org/settings");
+                        ui.label(theme::hint("Achievements for emulated games, matched by platform and title."));
                         ui.add_space(12.0);
                         ui.separator();
                         theme::section(ui, "Playnite");
@@ -1715,7 +1738,8 @@ impl eframe::App for GamutApp {
             || self.confirm_remove.is_some()
             || self.confirm_stop.is_some()
             || self.playnite.is_some()
-            || self.picker.is_some();
+            || self.picker.is_some()
+            || self.ra_pick.is_some();
         if any_popup {
             theme::paint_backdrop(&ctx);
         }
@@ -1769,6 +1793,22 @@ impl eframe::App for GamutApp {
                         self.hero = None;
                     }
                     self.reload_one(id);
+                }
+            }
+        }
+        if let Some(p) = self.ra_pick.as_mut() {
+            use crate::achievements::PickOutcome;
+            match p.show(&ctx) {
+                PickOutcome::Open => {}
+                PickOutcome::Closed => self.ra_pick = None,
+                PickOutcome::Picked(id, ra) => {
+                    self.ra_pick = None;
+                    if let Err(e) = self.lib.set_ra_id(id, ra) {
+                        self.toasts.error(format!("{e:#}"));
+                    }
+                    self.reload_one(id);
+                    self.ach = None;
+                    self.workers.achievements(id);
                 }
             }
         }

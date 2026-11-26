@@ -287,14 +287,19 @@ impl Workers {
             const LATER: Duration = Duration::from_secs(30 * 60);
             let mut denied = 0;
             loop {
-                let (id, asked) = match rx.recv_timeout(sweep_at.saturating_duration_since(Instant::now())) {
+                let req = rx.recv_timeout(sweep_at.saturating_duration_since(Instant::now()));
+                let c = cfg.read().unwrap().clone();
+                let (key, sid) = (c.steam_api_key.trim().to_string(), steam::steam_id(&c));
+                let ra = (c.ra_user.trim().to_string(), c.ra_api_key.trim().to_string());
+                let (steam_ok, ra_ok) = (!key.is_empty() && !sid.is_empty(), !ra.0.is_empty() && !ra.1.is_empty());
+                let (id, asked) = match req {
                     Ok(0) => {
                         sweep_at = sweep_at.min(Instant::now() + Duration::from_secs(5));
                         continue;
                     }
                     Ok(id) => (id, true),
                     Err(RecvTimeoutError::Disconnected) => return,
-                    Err(RecvTimeoutError::Timeout) => match lib.achievements_due() {
+                    Err(RecvTimeoutError::Timeout) => match lib.achievements_due(steam_ok, ra_ok) {
                         Ok(Some(g)) => (g.id, false),
                         _ => {
                             sweep_at = Instant::now() + LATER;
@@ -302,17 +307,17 @@ impl Workers {
                         }
                     },
                 };
-                let c = cfg.read().unwrap().clone();
-                let (key, sid) = (c.steam_api_key.trim().to_string(), steam::steam_id(&c));
                 let Ok(Some(g)) = lib.get(id) else { continue };
-                let Some(app) = g.steam_appid().filter(|_| g.source == gamut_core::Source::Steam) else { continue };
-                if key.is_empty() || sid.is_empty() {
-                    sweep_at = Instant::now() + LATER;
+                let steam_app = g.steam_appid().filter(|_| g.source == gamut_core::Source::Steam);
+                if !(steam_app.is_some() && steam_ok || g.source == gamut_core::Source::Custom && ra_ok) {
                     continue;
                 }
                 busy.lock().unwrap().insert(id);
                 ctx.request_repaint();
-                let r = fetch_steam_achievements(&mut lib, id, app, &key, &sid);
+                let r = match steam_app {
+                    Some(app) => fetch_steam_achievements(&mut lib, id, app, &key, &sid),
+                    None => fetch_retro_achievements(&mut lib, &g, asked, &ra.0, &ra.1, &paths.root.join("ra"), &tx),
+                };
                 busy.lock().unwrap().remove(&id);
                 match r {
                     Ok(()) => denied = 0,
@@ -327,7 +332,9 @@ impl Workers {
                     }
                     Err(e) => {
                         log::warn!("Achievements for {} failed: {e:#}", g.name);
-                        if !asked {
+                        if asked {
+                            let _ = lib.save_achievement_error(id, &format!("{e:#}"));
+                        } else {
                             sweep_at = Instant::now() + Duration::from_secs(600);
                         }
                     }
@@ -483,6 +490,41 @@ fn fetch_steam_achievements(lib: &mut Library, id: i64, app: u32, key: &str, sid
     let full = lib.achievement_state(id)?.is_none_or(|s| s.schema_at < stale);
     if !lib.save_achievements(id, &achievements::steam(key, sid, app, full)?)? {
         lib.save_achievements(id, &achievements::steam(key, sid, app, true)?)?;
+    }
+    Ok(())
+}
+
+/// Looks the game up on RetroAchievements if needed, then fetches progress when it's matched
+/// and was asked for or played.
+fn fetch_retro_achievements(
+    lib: &mut Library,
+    g: &Game,
+    asked: bool,
+    user: &str,
+    key: &str,
+    cache: &std::path::Path,
+    tx: &Sender<Event>,
+) -> anyhow::Result<()> {
+    use gamut_core::retro;
+    let mut ra = g.ra_id;
+    if ra.is_none() || asked && ra.is_some_and(|r| r <= 0) {
+        let consoles = retro::consoles(key, cache)?;
+        let found = match g.platform.as_deref().and_then(|p| retro::console_for(p, &consoles)) {
+            None => retro::UNSUPPORTED,
+            Some(c) => retro::find(&g.name, &retro::games(key, c, cache)?).unwrap_or(retro::NOT_FOUND),
+        };
+        lib.set_ra_id(g.id, found)?;
+        if ra != Some(found) {
+            let _ = tx.send(Event::GameUpdated(g.id));
+        }
+        ra = Some(found);
+    }
+    let played = g.playtime_min > 0 || g.last_played > 0;
+    match ra {
+        Some(r) if r > 0 && (asked || played) => {
+            lib.save_achievements(g.id, &retro::progress(user, key, r)?)?;
+        }
+        _ => {}
     }
     Ok(())
 }

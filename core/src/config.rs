@@ -10,6 +10,9 @@ pub struct Config {
     pub steam_id: String,
     /// SteamGridDB API key; enables covers for any game.
     pub steamgriddb_key: String,
+    /// RetroAchievements username + web API key (retroachievements.org/controlpanel.php).
+    pub ra_user: String,
+    pub ra_api_key: String,
     /// Grid card width in logical pixels.
     pub card_width: f32,
     /// Last grid sort (see `SORTS` in app/src/ui.rs).

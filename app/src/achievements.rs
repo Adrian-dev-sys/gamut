@@ -41,28 +41,78 @@ pub fn tile(a: &GameAch) -> Option<String> {
     (!a.list.is_empty()).then(|| format!("{} / {}", a.unlocked(), a.list.len()))
 }
 
-pub fn section(ui: &mut Ui, a: &mut GameAch, busy: bool, has_key: bool) {
+/// Where a game's achievements come from, as far as the details page needs to know.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Source {
+    Steam { has_key: bool },
+    /// RetroAchievements game id as stored on the game (see `retro::NOT_FOUND` / `UNSUPPORTED`).
+    Retro { ra_id: Option<i64> },
+}
+
+impl Source {
+    /// Which source a game uses; None when it has none (or RA isn't set up).
+    pub fn of(g: &gamut_core::Game, cfg: &gamut_core::Config) -> Option<Source> {
+        use gamut_core::{retro, Source as S};
+        match g.source {
+            S::Steam if g.steam_appid().is_some() => Some(Source::Steam { has_key: !cfg.steam_api_key.trim().is_empty() }),
+            S::Custom if !cfg.ra_user.trim().is_empty() && !cfg.ra_api_key.trim().is_empty() && g.platform.is_some() => {
+                (g.ra_id != Some(retro::UNSUPPORTED)).then_some(Source::Retro { ra_id: g.ra_id })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Something the section asks the page to do.
+pub enum Ask {
+    PickRetroGame,
+}
+
+pub fn section(ui: &mut Ui, a: &mut GameAch, src: Source, busy: bool) -> Option<Ask> {
     theme::section(ui, "Achievements");
     let note = |ui: &mut Ui, t: &str| {
-        ui.label(RichText::new(t).color(TEXT_DIM));
+        ui.add(egui::Label::new(RichText::new(t).color(TEXT_DIM)).wrap());
     };
+    let spinner = |ui: &mut Ui, t: &str| {
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(14.0));
+            ui.label(RichText::new(t).color(TEXT_DIM));
+        });
+    };
+    let mut ask = None;
+    if let Source::Retro { ra_id: Some(r) } = src {
+        if r <= 0 || !a.list.is_empty() {
+            ui.horizontal(|ui| {
+                if r > 0 {
+                    ui.hyperlink_to(RichText::new("RetroAchievements").size(12.5), format!("https://retroachievements.org/game/{r}"));
+                } else {
+                    note(ui, "Not found on RetroAchievements.");
+                }
+                let label = if r > 0 { "Wrong game?" } else { "Pick the game…" };
+                if ui.button(RichText::new(label).size(12.5)).clicked() {
+                    ask = Some(Ask::PickRetroGame);
+                }
+            });
+            ui.add_space(8.0);
+        }
+        if r <= 0 {
+            return ask;
+        }
+    }
     if a.list.is_empty() {
         let err = a.state.as_ref().and_then(|s| s.error.as_deref());
-        match () {
-            _ if !has_key => note(ui, "Add a Steam Web API key in Settings to see achievements."),
-            _ if busy || a.state.is_none() => {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(14.0));
-                    note(ui, "Loading achievements…");
-                });
-            }
-            _ if err == Some(PRIVATE) => {
-                note(ui, "Steam didn't share achievements for this game. Either this account doesn't own it, or your profile's Game details aren't Public.")
-            }
-            _ if err.is_some() => note(ui, "Couldn't load achievements."),
+        match (src, err) {
+            (Source::Steam { has_key: false }, _) => note(ui, "Add a Steam Web API key in Settings to see achievements."),
+            (Source::Retro { ra_id: None }, _) => spinner(ui, "Looking this game up on RetroAchievements…"),
+            _ if busy || a.state.is_none() => spinner(ui, "Loading achievements…"),
+            (_, Some(PRIVATE)) => note(
+                ui,
+                "Steam didn't share achievements for this game. Either this account doesn't own it, or your profile's Game details aren't Public.",
+            ),
+            (_, Some(e)) => note(ui, &format!("Couldn't load achievements: {e}")),
             _ => note(ui, "This game has no achievements."),
         }
-        return;
+        return ask;
     }
 
     let (done, total) = (a.unlocked(), a.list.len());
@@ -109,6 +159,7 @@ pub fn section(ui: &mut Ui, a: &mut GameAch, busy: bool, has_key: bool) {
             a.show_all = !a.show_all;
         }
     }
+    ask
 }
 
 fn card(ui: &mut Ui, a: &Achievement, w: f32) {
@@ -144,6 +195,9 @@ fn card(ui: &mut Ui, a: &Achievement, w: f32) {
                         if open {
                             ui.label(RichText::new(crate::util::date(a.unlocked)).size(11.5).color(GOOD));
                         }
+                        if a.points > 0 {
+                            ui.label(RichText::new(format!("{} pts", a.points)).size(11.5).color(TEXT_DIM));
+                        }
                         if let Some(p) = a.percent {
                             let rare = p < RARE;
                             let t = format!("{}{p:.1}% of players", if rare { "Rare · " } else { "" });
@@ -156,5 +210,86 @@ fn card(ui: &mut Ui, a: &Achievement, w: f32) {
     if veiled {
         let text = if a.description.is_empty() { a.name.clone() } else { format!("{}\n{}", a.name, a.description) };
         r.response.on_hover_text(text);
+    }
+}
+
+/// Dialog to choose a game's RetroAchievements entry by hand, from its system's game list.
+pub struct RetroPick {
+    pub game_id: i64,
+    name: String,
+    query: String,
+    list: Option<Result<Vec<(i64, String)>, String>>,
+    rx: crossbeam_channel::Receiver<Result<Vec<(i64, String)>, String>>,
+}
+
+pub enum PickOutcome {
+    Open,
+    Closed,
+    Picked(i64, i64),
+}
+
+impl RetroPick {
+    pub fn open(g: &gamut_core::Game, cfg: &gamut_core::Config, cache: std::path::PathBuf, ctx: &egui::Context) -> Self {
+        use gamut_core::retro;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (key, platform, ctx) = (cfg.ra_api_key.trim().to_string(), g.platform.clone().unwrap_or_default(), ctx.clone());
+        std::thread::spawn(move || {
+            let r = retro::consoles(&key, &cache).and_then(|c| {
+                let id = retro::console_for(&platform, &c)
+                    .ok_or_else(|| anyhow::anyhow!("RetroAchievements doesn't support {platform}"))?;
+                retro::games(&key, id, &cache)
+            });
+            let _ = tx.send(r.map_err(|e| format!("{e:#}")));
+            ctx.request_repaint();
+        });
+        RetroPick { game_id: g.id, name: g.name.clone(), query: g.name.clone(), list: None, rx }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> PickOutcome {
+        if let Ok(r) = self.rx.try_recv() {
+            self.list = Some(r);
+        }
+        let (mut open, mut picked) = (true, None);
+        theme::dialog(ctx, "Pick RetroAchievements game", false, |ui| {
+            ui.set_width(560.0);
+            crate::ui::dialog_header(ui, "Pick RetroAchievements game", &mut open);
+            ui.label(RichText::new(format!("Which RetroAchievements game is \"{}\"?", self.name)).color(TEXT_DIM));
+            ui.add_space(6.0);
+            ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search").desired_width(f32::INFINITY));
+            ui.add_space(6.0);
+            match &self.list {
+                None => {
+                    ui.add(egui::Spinner::new());
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(e).color(theme::DANGER));
+                }
+                Some(Ok(list)) => {
+                    let words: Vec<String> = gamut_core::retro::title_key(&self.query).split(' ').map(str::to_string).collect();
+                    let hits: Vec<&(i64, String)> = list
+                        .iter()
+                        .filter(|(_, t)| {
+                            let k = gamut_core::retro::title_key(t);
+                            words.iter().all(|w| k.contains(w.as_str()))
+                        })
+                        .collect();
+                    egui::ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show_rows(ui, 22.0, hits.len(), |ui, rows| {
+                        for (id, title) in &hits[rows] {
+                            if ui.selectable_label(false, title.as_str()).clicked() {
+                                picked = Some(*id);
+                            }
+                        }
+                    });
+                    if hits.is_empty() {
+                        ui.label(RichText::new("No games match.").color(TEXT_DIM));
+                    }
+                }
+            }
+        });
+        match (picked, open) {
+            (Some(ra), _) => PickOutcome::Picked(self.game_id, ra),
+            (None, false) => PickOutcome::Closed,
+            _ => PickOutcome::Open,
+        }
     }
 }

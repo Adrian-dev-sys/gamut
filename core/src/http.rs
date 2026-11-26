@@ -22,6 +22,8 @@ fn min_gap(host: &str) -> Duration {
         "www.steamgriddb.com" => Duration::from_millis(300),
         // 200 requests per 5 minutes.
         "api.vndb.org" => Duration::from_millis(1500),
+        // Rate limited, number undocumented.
+        "retroachievements.org" => Duration::from_millis(700),
         // CDNs (Steam images, SteamGridDB image hosting).
         _ => Duration::from_millis(100),
     }

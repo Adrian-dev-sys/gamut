@@ -10,6 +10,7 @@ pub mod model;
 pub mod playnite;
 pub mod procs;
 pub mod reshade;
+pub mod retro;
 pub mod scrape;
 pub mod specialk;
 pub mod steam;

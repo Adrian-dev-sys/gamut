@@ -12,10 +12,10 @@ pub struct Library {
 const COLS: &str = "id, source, source_id, name, installed, install_dir, exe, args, work_dir, \
     playtime_min, last_played, description, developer, publisher, release_date, genres, \
     has_cover, has_hero, cover_state, meta_state, favorite, hidden, added, \
-    playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk, reshade, auto_hdr";
+    playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk, reshade, auto_hdr, ra_id";
 
 /// Columns added after the first release: (name, SQL type).
-const ADDED_COLS: [(&str, &str); 12] = [
+const ADDED_COLS: [(&str, &str); 13] = [
     ("playnite_id", "TEXT"),
     ("platform", "TEXT"),
     ("store", "TEXT"),
@@ -28,6 +28,7 @@ const ADDED_COLS: [(&str, &str); 12] = [
     ("specialk", "INTEGER"),
     ("reshade", "INTEGER"),
     ("auto_hdr", "INTEGER NOT NULL DEFAULT 0"),
+    ("ra_id", "INTEGER"),
 ];
 
 /// A Steam app as seen by a scan (local manifest and/or owned-games API).
@@ -231,13 +232,13 @@ impl Library {
     /// Inserts a complete row, keeping its id (used when rebuilding).
     fn insert_full(&self, g: &Game) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)"),
+            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)"),
             params![
                 g.id, g.source.as_str(), g.source_id, g.name, g.installed, g.install_dir, g.exe, g.args, g.work_dir,
                 g.playtime_min, g.last_played, g.description, g.developer, g.publisher, g.release_date, g.genres,
                 g.has_cover, g.has_hero, g.cover_state, g.meta_state, g.favorite, g.hidden, g.added,
                 g.playnite_id, g.platform, g.store, g.completion, g.play_count, g.critic_score, g.community_score,
-                g.tags, g.series, g.specialk, g.reshade, g.auto_hdr
+                g.tags, g.series, g.specialk, g.reshade, g.auto_hdr, g.ra_id
             ],
         )?;
         Ok(())
@@ -285,6 +286,7 @@ impl Library {
             specialk: r.get(32)?,
             reshade: r.get(33)?,
             auto_hdr: r.get(34)?,
+            ra_id: r.get(35)?,
         })
     }
 
@@ -363,7 +365,9 @@ impl Library {
             "UPDATE games SET name = ?2, exe = ?3, args = ?4, work_dir = ?5, favorite = ?6, hidden = ?7,
              description = ?8, developer = ?9, publisher = ?10, release_date = ?11, genres = ?12,
              platform = ?13, store = ?14, completion = ?15, critic_score = ?16, community_score = ?17,
-             tags = ?18, series = ?19, specialk = ?20, reshade = ?21, auto_hdr = ?22
+             tags = ?18, series = ?19, specialk = ?20, reshade = ?21, auto_hdr = ?22,
+             -- A new platform (or a new name for an unmatched game) means a new RetroAchievements lookup.
+             ra_id = CASE WHEN platform IS NOT ?13 OR (ra_id <= 0 AND name IS NOT ?2) THEN NULL ELSE ra_id END
              WHERE id = ?1",
             params![
                 g.id, g.name, g.exe, g.args, g.work_dir, g.favorite, g.hidden,
@@ -473,15 +477,29 @@ impl Library {
         Ok(())
     }
 
-    /// Next Steam game whose achievements were never fetched or that was played since.
-    pub fn achievements_due(&self) -> Result<Option<Game>> {
+    /// Next game needing achievement work: played and never fetched or played since, or (RA) not looked up yet.
+    pub fn achievements_due(&self, steam: bool, ra: bool) -> Result<Option<Game>> {
         let sql = format!(
             "SELECT {COLS} FROM games g LEFT JOIN achievement_state s ON s.game_id = g.id
-             WHERE g.source = 'steam' AND (g.playtime_min > 0 OR g.last_played > 0)
-               AND (s.game_id IS NULL OR g.last_played > s.fetched)
-             ORDER BY g.last_played DESC LIMIT 1"
+             WHERE (?1 AND g.source = 'steam' AND (g.playtime_min > 0 OR g.last_played > 0)
+                    AND (s.game_id IS NULL OR g.last_played > s.fetched))
+                OR (?2 AND g.source = 'custom' AND g.platform IS NOT NULL AND (g.ra_id IS NULL
+                    OR (g.ra_id > 0 AND (g.playtime_min > 0 OR g.last_played > 0)
+                        AND (s.game_id IS NULL OR g.last_played > s.fetched))))
+             ORDER BY g.ra_id IS NOT NULL, g.last_played DESC LIMIT 1"
         );
-        Ok(self.conn.query_row(&sql, [], Self::row).optional()?)
+        Ok(self.conn.query_row(&sql, params![steam, ra], Self::row).optional()?)
+    }
+
+    /// Sets the RetroAchievements game; a different game's cached achievements are dropped.
+    pub fn set_ra_id(&self, id: i64, ra: i64) -> Result<()> {
+        let old: Option<i64> = self.conn.query_row("SELECT ra_id FROM games WHERE id = ?1", [id], |r| r.get(0))?;
+        if old != Some(ra) {
+            self.conn.execute("UPDATE games SET ra_id = ?2 WHERE id = ?1", params![id, ra])?;
+            self.conn.execute("DELETE FROM achievements WHERE game_id = ?1", [id])?;
+            self.conn.execute("DELETE FROM achievement_state WHERE game_id = ?1", [id])?;
+        }
+        Ok(())
     }
 
     /// Fills metadata fields only where they are still empty, so user edits win.
@@ -809,13 +827,14 @@ world"));
         let entry = SteamEntry { appid: 9, name: "G".into(), installed: true, install_dir: None, playtime_min: Some(5), last_played: 100 };
         lib.sync_steam(&[entry]).unwrap();
         let id = lib.all().unwrap()[0].id;
-        assert_eq!(lib.achievements_due().unwrap().map(|g| g.id), Some(id));
+        assert_eq!(lib.achievements_due(true, true).unwrap().map(|g| g.id), Some(id));
+        assert!(lib.achievements_due(false, true).unwrap().is_none());
 
         let a = |k: &str, u| Achievement { key: k.into(), name: k.into(), unlocked: u, percent: Some(1.5), ..Default::default() };
         assert!(lib.save_achievements(id, &Fetched::List { items: vec![a("x", 0), a("y", 50)], full: true }).unwrap());
         let st = lib.achievement_state(id).unwrap().unwrap();
         assert_eq!((st.total, st.unlocked), (2, 1));
-        assert!(lib.achievements_due().unwrap().is_none(), "fetched after last play");
+        assert!(lib.achievements_due(true, true).unwrap().is_none(), "fetched after last play");
 
         // Unlock-only refresh keeps names/rarity; an unknown key asks for a full fetch.
         assert!(lib.save_achievements(id, &Fetched::List { items: vec![a("x", 70), a("y", 50)], full: false }).unwrap());
@@ -829,6 +848,37 @@ world"));
         assert_eq!(lib.achievements(id).unwrap().len(), 2);
         lib.delete(id).unwrap();
         assert!(lib.achievements(id).unwrap().is_empty() && lib.achievement_state(id).unwrap().is_none());
+        drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn retro_matching_state() {
+        use crate::achievements::{Achievement, Fetched};
+        let dir = std::env::temp_dir().join(format!("gamut-ra-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lib = Library::open(&dir.join("t.db")).unwrap();
+        let mut g = Game::new_custom("Rom".into(), None);
+        g.platform = Some("Nintendo SNES".into());
+        let id = lib.add_custom(&g).unwrap();
+        assert!(lib.achievements_due(false, true).unwrap().is_none(), "no platform yet");
+        lib.update_user_fields(&Game { id, ..g.clone() }).unwrap();
+        assert_eq!(lib.achievements_due(false, true).unwrap().map(|g| g.id), Some(id), "needs lookup");
+        lib.set_ra_id(id, 55).unwrap();
+        assert!(lib.achievements_due(false, true).unwrap().is_none(), "matched but never played");
+        lib.add_playtime(id, 10, 100).unwrap();
+        assert_eq!(lib.achievements_due(false, true).unwrap().map(|g| g.id), Some(id));
+        let a = Achievement { key: "1".into(), unlocked: 5, ..Default::default() };
+        lib.save_achievements(id, &Fetched::List { items: vec![a], full: true }).unwrap();
+        assert!(lib.achievements_due(false, true).unwrap().is_none());
+        lib.set_ra_id(id, 55).unwrap();
+        assert_eq!(lib.achievements(id).unwrap().len(), 1, "same game keeps its cache");
+        lib.set_ra_id(id, 77).unwrap();
+        assert!(lib.achievements(id).unwrap().is_empty(), "another game drops it");
+        assert_eq!(lib.get(id).unwrap().unwrap().ra_id, Some(77));
+        lib.update_user_fields(&Game { id, favorite: true, ..g.clone() }).unwrap();
+        assert_eq!(lib.get(id).unwrap().unwrap().ra_id, Some(77), "other edits keep the match");
+        lib.update_user_fields(&Game { id, platform: Some("Nintendo 64".into()), ..g }).unwrap();
+        assert_eq!(lib.get(id).unwrap().unwrap().ra_id, None);
         drop(lib);
         let _ = std::fs::remove_dir_all(&dir);
     }

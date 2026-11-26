@@ -71,6 +71,8 @@ pub struct Game {
     pub reshade: Option<bool>,
     /// Turn Windows HDR on while this game runs.
     pub auto_hdr: bool,
+    /// RetroAchievements game id; None = not looked up, see `retro::NOT_FOUND` / `UNSUPPORTED`.
+    pub ra_id: Option<i64>,
 }
 
 impl Game {
@@ -111,6 +113,7 @@ impl Game {
             specialk: None,
             reshade: None,
             auto_hdr: false,
+            ra_id: None,
         }
     }
 
