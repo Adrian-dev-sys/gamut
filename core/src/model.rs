@@ -178,16 +178,31 @@ impl Game {
         Game { source: Source::Custom, exe: opt(&a.path), args: opt(&a.args), work_dir: opt(&a.work_dir), installed: true, ..self.clone() }
     }
 
-    /// The game's folder: install folder, else the ROM's (a quoted path in the arguments), else the exe's.
+    /// The game's folder: install folder, else the ROM's, else the exe's.
     pub fn folder(&self) -> Option<std::path::PathBuf> {
-        let abs = |p: &&str| p.len() > 3 && p.as_bytes()[1] == b':' && !p.contains('{');
         let d = self.install_dir.as_deref().filter(|d| abs(d)).map(std::path::PathBuf::from);
-        let rom = || self.args.as_deref().unwrap_or("").split('"').skip(1).step_by(2).find(abs);
         d.or_else(|| {
-            let f = rom().or(self.exe.as_deref().filter(abs))?;
-            std::path::Path::new(f).parent().map(|p| p.to_path_buf())
+            let f = self.rom().or(self.exe.clone().filter(|e| abs(&e.as_str())))?;
+            std::path::Path::new(&f).parent().map(|p| p.to_path_buf())
         })
     }
+
+    /// The file an emulator is given: the first quoted absolute path in the arguments,
+    /// else an unquoted one running to the end ("-- D:\Roms\Game (USA).iso") that exists.
+    pub fn rom(&self) -> Option<String> {
+        let args = self.args.as_deref().unwrap_or("");
+        if let Some(q) = args.split('"').skip(1).step_by(2).find(abs) {
+            return Some(q.to_string());
+        }
+        let i = args.find(":\\")?.checked_sub(1)?;
+        let rest = args.get(i..)?.trim();
+        (abs(&rest) && std::path::Path::new(rest).exists()).then(|| rest.to_string())
+    }
+}
+
+/// "X:\..." without `{Placeholders}`.
+fn abs(p: &&str) -> bool {
+    p.len() > 3 && p.as_bytes()[1] == b':' && p.as_bytes()[0].is_ascii_alphabetic() && !p.contains('{')
 }
 
 /// JSON for a list column; None when empty.

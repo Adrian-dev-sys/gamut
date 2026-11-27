@@ -315,6 +315,25 @@ pub fn sgdb_list(key: &str, game: &str, hero: bool, nsfw: bool) -> Result<Vec<Sg
     }
 }
 
+/// Every static icon for a game.
+pub fn sgdb_icons(key: &str, game: &str, nsfw: bool) -> Result<Vec<SgdbArt>> {
+    let nsfw = if nsfw { "&nsfw=any" } else { "" };
+    match sgdb_get::<SgdbList<SgdbArt>>(key, &format!("/icons/{game}?types=static{nsfw}")) {
+        Ok(l) => Ok(l.data),
+        Err(e) if is_missing(&e) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Steam's client icon from the local cache.
+pub fn steam_official_icon(appid: u32) -> Vec<SgdbArt> {
+    let Some(p) = crate::steam::local_icon(appid) else { return Vec::new() };
+    let Ok(b) = std::fs::read(&p) else { return Vec::new() };
+    let (width, height) = crate::images::dimensions(&b).unwrap_or((0, 0));
+    let url = p.display().to_string();
+    vec![SgdbArt { thumb: url.clone(), url, width, height, source: Some("Your Steam library") }]
+}
+
 /// Steam's own library art: the local Steam cache copy (includes art customised in Steam), then the store CDN.
 pub fn steam_official_art(appid: u32, hero: bool) -> Vec<SgdbArt> {
     let mut out = Vec::new();

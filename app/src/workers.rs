@@ -370,12 +370,51 @@ impl Scanner {
                 }
             }
             scanning.store(false, Ordering::SeqCst);
+            sizes(&paths, &tx, &ctx);
             let _ = kc.send(());
             let _ = km.send(());
             let _ = ach.send(0);
             ctx.request_repaint();
         });
     }
+}
+
+/// Fills in sizes of installed games that have none (Steam's come from its manifests), one at a time.
+fn sizes(paths: &Paths, tx: &Sender<Event>, ctx: &Context) {
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let (paths, tx, ctx) = (paths.clone(), tx.clone(), ctx.clone());
+    std::thread::spawn(move || {
+        let r = (|| -> anyhow::Result<usize> {
+            let lib = Library::open(&paths.db)?;
+            let ids = lib.without_size()?;
+            if ids.is_empty() {
+                return Ok(0);
+            }
+            let games = lib.all()?;
+            let shared = gamut_core::shared_folders(&games);
+            let mut n = 0;
+            for g in games.iter().filter(|g| ids.contains(&g.id)) {
+                if let Some(b) = gamut_core::game_size(g, &shared).filter(|b| *b > 0) {
+                    lib.set_install_size(g.id, Some(b))?;
+                    n += 1;
+                }
+            }
+            Ok(n)
+        })();
+        match r {
+            Ok(0) => {}
+            Ok(n) => {
+                log::info!("sizes: {n} games measured");
+                let _ = tx.send(Event::LibraryChanged);
+                ctx.request_repaint();
+            }
+            Err(e) => log::warn!("sizes: {e:#}"),
+        }
+        BUSY.store(false, Ordering::SeqCst);
+    });
 }
 
 impl Workers {

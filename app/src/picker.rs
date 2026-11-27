@@ -1,4 +1,4 @@
-//! Cover/banner picker: SteamGridDB, IGDB, VNDB and official Steam art for a game, or a local file.
+//! Cover/banner/icon picker: SteamGridDB, IGDB, VNDB and official Steam art for a game, or a local file.
 use crate::theme::{self, ACCENT, CARD, TEXT_DIM};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{vec2, ColorImage, CornerRadius, RichText, Sense, Stroke, TextureHandle, TextureOptions};
@@ -11,6 +11,17 @@ use std::sync::{Arc, Mutex};
 pub enum ArtKind {
     Cover,
     Banner,
+    Icon,
+}
+
+impl ArtKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            ArtKind::Cover => "cover",
+            ArtKind::Banner => "banner",
+            ArtKind::Icon => "icon",
+        }
+    }
 }
 
 enum Msg {
@@ -140,7 +151,7 @@ impl Picker {
             sgdb_done: false,
             igdb_done: false,
             vndb_done: false,
-            igdb_cfg: igdb::configured(cfg).then(|| cfg.clone()),
+            igdb_cfg: (igdb::configured(cfg) && kind != ArtKind::Icon).then(|| cfg.clone()),
             vn: tags.contains("visual novel") || g.genres.as_deref().unwrap_or("").to_lowercase().contains("visual novel"),
             chosen: None,
             tiles: Vec::new(),
@@ -186,7 +197,8 @@ impl Picker {
         let round = self.search_round.fetch_add(1, Ordering::SeqCst) + 1;
         log::info!("art picker: searching for {:?}", self.query.trim());
         (self.sgdb, self.igdb, self.vndb) = (Vec::new(), Vec::new(), Vec::new());
-        (self.sgdb_done, self.igdb_done, self.vndb_done) = (self.key.is_empty(), self.igdb_cfg.is_none(), false);
+        let icon = self.kind == ArtKind::Icon;
+        (self.sgdb_done, self.igdb_done, self.vndb_done) = (self.key.is_empty(), self.igdb_cfg.is_none(), icon);
         if let Some(cfg) = self.igdb_cfg.clone() {
             let (q, tx, ctx) = (self.query.trim().to_string(), self.tx.clone(), ctx.clone());
             std::thread::spawn(move || {
@@ -208,6 +220,9 @@ impl Picker {
                 let _ = tx.send(Msg::Games(round, r));
                 ctx.request_repaint();
             });
+        }
+        if icon {
+            return;
         }
         let (q, vn, tx, ctx) = (self.query.trim().to_string(), self.vn, self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
@@ -260,11 +275,18 @@ impl Picker {
         self.tiles.clear();
         self.busy = true;
         self.note = None;
-        let (key, path, hero, nsfw) = (self.key.clone(), self.matches[i].path.clone(), self.kind == ArtKind::Banner, self.nsfw);
+        let (key, path, kind, nsfw) = (self.key.clone(), self.matches[i].path.clone(), self.kind, self.nsfw);
+        let hero = kind == ArtKind::Banner;
         let (tx, ctx, igdb_cfg) = (self.tx.clone(), ctx.clone(), self.igdb_cfg.clone());
         std::thread::spawn(move || {
             let igdb_id = path.strip_prefix("igdb/").and_then(|a| a.parse::<i64>().ok());
-            let r = if let Some(appid) = path.strip_prefix("official/").and_then(|a| a.parse().ok()) {
+            let official = path.strip_prefix("official/").and_then(|a| a.parse().ok());
+            let r = if kind == ArtKind::Icon {
+                match official {
+                    Some(appid) => Ok(scrape::steam_official_icon(appid)),
+                    None => scrape::sgdb_icons(&key, &path, nsfw).map_err(|e| format!("{e:#}")),
+                }
+            } else if let Some(appid) = official {
                 Ok(scrape::steam_official_art(appid, hero))
             } else if let (Some(id), Some(cfg)) = (igdb_id, igdb_cfg) {
                 igdb::game(&cfg, id).map_err(|e| format!("{e:#}")).map(|g| g.map(|g| igdb_art(&g, hero)).unwrap_or_default())
@@ -328,6 +350,10 @@ impl Picker {
                         images::store_hero(&bytes, &paths.hero(id))?;
                         lib.set_cover_state(id, has_cover, Some(true), cover_state)?;
                     }
+                    ArtKind::Icon => {
+                        images::decode_bytes(&bytes, 64)?;
+                        std::fs::write(paths.icon(id), &bytes)?;
+                    }
                 }
                 anyhow::Ok(())
             })();
@@ -381,7 +407,7 @@ impl Picker {
                                 continue;
                             }
                             if arts.is_empty() {
-                                let what = if self.kind == ArtKind::Cover { "cover" } else { "banner" };
+                                let what = self.kind.name();
                                 let path = self.chosen.map_or("", |c| self.matches[c].path.as_str());
                                 self.note = Some(if path.starts_with("official/") {
                                     format!("Steam has no official {what} for this game.")
@@ -434,7 +460,7 @@ impl Picker {
         let screen = ctx.content_rect();
         let size = vec2((screen.width() * 0.8).min(1100.0), (screen.height() * 0.88).min(980.0));
         let mut close = false;
-        let what = if self.kind == ArtKind::Cover { "cover" } else { "banner" };
+        let what = self.kind.name();
         let resp = theme::dialog(ctx, "art_picker", true, |ui| {
             ui.set_width(size.x);
             let top = ui.cursor().top();
@@ -497,7 +523,11 @@ impl Picker {
             }
             ui.add_space(6.0);
             ui.separator();
-            let tile = if self.kind == ArtKind::Cover { vec2(150.0, 225.0) } else { vec2(330.0, 107.0) };
+            let tile = match self.kind {
+                ArtKind::Cover => vec2(150.0, 225.0),
+                ArtKind::Banner => vec2(330.0, 107.0),
+                ArtKind::Icon => vec2(96.0, 96.0),
+            };
             let mut picked = None;
             // The grid fills whatever height the header left over.
             let grid_h = (size.y - (ui.cursor().top() - top)).max(240.0);

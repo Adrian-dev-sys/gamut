@@ -130,6 +130,62 @@ pub fn dir_size(dir: &std::path::Path) -> u64 {
         .sum()
 }
 
+/// Folders that more than one game would be sized by (shared ROM folders, "D:\Games").
+pub fn shared_folders(games: &[Game]) -> std::collections::HashSet<std::path::PathBuf> {
+    let mut n = std::collections::HashMap::new();
+    for g in games.iter().filter(|g| g.source == Source::Custom) {
+        if let Some(d) = size_dir(g) {
+            *n.entry(d).or_insert(0) += 1;
+        }
+    }
+    n.into_iter().filter(|(_, c)| *c > 1).map(|(d, _)| d).collect()
+}
+
+fn size_dir(g: &Game) -> Option<std::path::PathBuf> {
+    match g.rom() {
+        Some(r) => std::path::Path::new(&r).parent().map(|p| p.to_path_buf()),
+        None => g.folder(),
+    }
+}
+
+/// Bytes a game takes: its own folder, or only its ROM (plus same-named tracks) in a shared folder.
+pub fn game_size(g: &Game, shared: &std::collections::HashSet<std::path::PathBuf>) -> Option<i64> {
+    use std::path::Path;
+    if let Some(r) = g.rom() {
+        let rom = Path::new(&r);
+        if rom.is_dir() {
+            return Some(dir_size(rom) as i64);
+        }
+        let mut dir = rom.parent()?;
+        if !rom.is_file() {
+            return None;
+        }
+        if shared.contains(dir) {
+            // "Game (USA).cue" + "Game (USA) (Track 1).bin".
+            let stem = rom.file_stem()?.to_string_lossy().to_string();
+            let tracks = format!("{stem} (");
+            let same = |e: &std::fs::DirEntry| {
+                let s = e.path().file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                s == stem || s.starts_with(&tracks)
+            };
+            let files = std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file()) && same(e));
+            return Some(files.map(|e| e.metadata().map(|m| m.len()).unwrap_or(0)).sum::<u64>() as i64);
+        }
+        // PS3 "Game\PS3_GAME\USRDIR\EBOOT.BIN", Wii U "title\code\x.rpx": size the whole game.
+        while let Some(p) = dir.parent().filter(|_| {
+            let n = dir.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            ["usrdir", "ps3_game", "code", "content", "meta"].contains(&n.as_str())
+        }) {
+            dir = p;
+        }
+        return Some(dir_size(dir) as i64);
+    }
+    let d = g.folder().filter(|d| d.is_dir() && !shared.contains(d))?;
+    let pc = g.platform.as_deref().is_none_or(|p| p.contains("PC") || p.contains("Windows"));
+    // An emulator's own folder isn't the game's.
+    (pc || g.install_dir.as_deref().is_some_and(|i| !i.contains('{'))).then(|| dir_size(&d) as i64)
+}
+
 /// "123.3 GB", "850 MB".
 pub fn format_size(bytes: i64) -> String {
     let b = bytes.max(0) as f64;
@@ -146,4 +202,33 @@ pub fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_roms_in_shared_folders_alone() {
+        let dir = std::env::temp_dir().join(format!("gamut size test {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (f, n) in [("A (USA).cue", 10), ("A (USA) (Track 1).bin", 100), ("A (USA) 2.bin", 1000), ("B.cue", 5)] {
+            std::fs::write(dir.join(f), vec![0u8; n]).unwrap();
+        }
+        let game = |rom: &str, quoted: bool| {
+            let mut g = Game::new_custom(rom.into(), Some("C:\\emu\\emu.exe".into()));
+            let p = dir.join(rom).display().to_string();
+            g.args = Some(if quoted { format!("-batch \"{p}\"") } else { format!("-fullscreen -- {p}") });
+            g.platform = Some("Sony PlayStation".into());
+            g
+        };
+        let (a, b) = (game("A (USA).cue", false), game("B.cue", true));
+        assert_eq!(a.rom().as_deref(), Some(dir.join("A (USA).cue").to_str().unwrap()));
+        let shared = shared_folders(&[a.clone(), b.clone()]);
+        assert!(shared.contains(&dir));
+        assert_eq!(game_size(&a, &shared), Some(110));
+        assert_eq!(game_size(&b, &shared), Some(5));
+        assert_eq!(game_size(&a, &Default::default()), Some(1115));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -4,13 +4,14 @@ Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `
 
 ## Editor tabs
 - **General**: Sorting name (grid "Name" sort and its tiebreaks use it; cleared when equal to the name), Your score.
-- **Launch**: install folder (custom games only; Steam keeps its own), size (Steam fills it from the manifest's `SizeOnDisk`; "Calculate" walks the folder on a thread), save folder (Browse or "Find" on PCGamingWiki).
+- **Launch**: install folder (custom games only; Steam keeps its own), size (Steam fills it from the manifest's `SizeOnDisk`; other installed games are measured in the background after each Steam scan, `workers::sizes`; "Recalculate" redoes one), save folder (Browse or "Find" on PCGamingWiki).
 - **Actions & scripts**: extra actions (name, path, args, working folder, "Counts as playing"); PowerShell before/after scripts.
 - **Links & notes**: own links (shown after the automatic ones), notes (shown above the description).
-- **Media**: icon (png/jpg/webp copied in on Save).
+- **Media**: icon (png/ico/jpg/webp copied in on Save, or "Search online…": the art picker in Icon mode, SteamGridDB icons plus Steam's cached client icon).
 
 ## Folders
-- `Game::folder()`: install folder, else the ROM's folder (first quoted absolute path in the arguments), else the exe's. Used by Calculate, Open install folder, `{{p|game}}` save paths and scripts. For ROMs in a shared folder, Calculate measures the whole folder.
+- `Game::folder()`: install folder, else the ROM's folder (first quoted absolute path in the arguments), else the exe's. Used by Open install folder, `{{p|game}}` save paths and scripts.
+- `game_size` (lib.rs): a ROM in a folder shared with other games (`shared_folders`) counts only its own files (`Name.*`, `Name (Track n).*`); otherwise the ROM's folder (PS3 `PS3_GAME\USRDIR` and Wii U `code` climb to the game root) or the install folder. An emulator's own folder is never measured. Launcher links (GOG Galaxy, Ubisoft) get no size.
 
 ## Launching
 - Extra actions appear in the More / right-click menu. "Counts as playing" goes through `Workers::play` with `Game::with_action` (time tracked, Special K/ReShade/HDR, scripts); otherwise the file is just opened. A tracked action is refused while the game runs.

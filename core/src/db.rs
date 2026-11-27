@@ -715,6 +715,13 @@ impl Library {
         Ok(())
     }
 
+    /// Installed non-Steam games without a size yet.
+    pub fn without_size(&self) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare("SELECT id FROM games WHERE installed = 1 AND install_size IS NULL AND source != 'steam'")?;
+        let ids = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
     pub fn set_install_size(&self, id: i64, bytes: Option<i64>) -> Result<()> {
         self.conn.execute("UPDATE games SET install_size = ?2 WHERE id = ?1", params![id, bytes])?;
         Ok(())

@@ -72,6 +72,8 @@ pub struct Editor {
     install_dir: String,
     install_size: Option<i64>,
     size_rx: Option<Receiver<i64>>,
+    /// Shared ROM/game folders, so "Calculate" sizes only this game's files there.
+    pub shared: std::collections::HashSet<std::path::PathBuf>,
     save_dir: String,
     save_rx: Option<Receiver<Result<Option<std::path::PathBuf>, String>>>,
     save_msg: Option<String>,
@@ -247,6 +249,7 @@ impl Editor {
             install_dir: s(&g.install_dir),
             install_size: g.install_size,
             size_rx: None,
+            shared: Default::default(),
             save_dir: s(&g.save_dir),
             save_rx: None,
             save_msg: None,
@@ -321,6 +324,9 @@ impl Editor {
 
     pub fn reload_art(&mut self) {
         self.art = None;
+        if self.icon_file.is_none() {
+            (self.icon_tex, self.icon_rx) = (None, None);
+        }
     }
 
     pub fn show(&mut self, ctx: &egui::Context, lists: &Lists) -> EditorOutcome {
@@ -748,12 +754,16 @@ impl Editor {
                     ui.label(self.install_size.map(gamut_core::format_size).unwrap_or_else(|| "—".into()));
                     if self.size_rx.is_some() {
                         ui.spinner();
-                    } else if ui.add_enabled(dir.is_some(), egui::Button::new("Calculate")).clicked() {
+                    } else if ui.add_enabled(dir.is_some(), egui::Button::new("Recalculate")).clicked() {
                         let (tx, rx) = unbounded();
                         let ctx = ui.ctx().clone();
-                        let dir = dir.unwrap_or_default();
+                        let mut g = self.orig.clone();
+                        g.install_dir = opt(&self.install_dir).or(g.install_dir);
+                        g.exe = opt(&self.exe).or(g.exe);
+                        g.args = opt(&self.args).or(g.args);
+                        let shared = self.shared.clone();
                         std::thread::spawn(move || {
-                            let _ = tx.send(gamut_core::dir_size(&dir) as i64);
+                            let _ = tx.send(gamut_core::game_size(&g, &shared).unwrap_or(0));
                             ctx.request_repaint();
                         });
                         self.size_rx = Some(rx);
@@ -905,7 +915,9 @@ impl Editor {
         }
         ui.label(theme::hint("Search SteamGridDB, IGDB, VNDB and Steam, or use a file from your PC."));
         ui.add_space(8.0);
-        self.icon_section(ui);
+        if self.icon_section(ui) {
+            out = Some(EditorOutcome::PickArt(self.id, ArtKind::Icon));
+        }
         ui.add_space(10.0);
         self.poll_art(ui.ctx());
         let art = self.art.as_ref();
@@ -934,7 +946,9 @@ impl Editor {
     }
 
     /// Small square icon (for lists); replaced or removed on save.
-    fn icon_section(&mut self, ui: &mut Ui) {
+    /// Returns true when "Search online…" was clicked.
+    fn icon_section(&mut self, ui: &mut Ui) -> bool {
+        let mut pick = false;
         if self.icon_tex.is_none() && self.icon_rx.is_none() {
             let path = match &self.icon_file {
                 Some(p) => p.clone(),
@@ -957,6 +971,10 @@ impl Editor {
             art_box(ui, self.icon_tex.as_ref(), vec2(64.0, 64.0), "");
             ui.add_space(8.0);
             ui.vertical(|ui| {
+                if self.id != 0 && ui.button("Search online…").on_hover_text("SteamGridDB and Steam").clicked() {
+                    self.icon_file = None;
+                    pick = true;
+                }
                 if ui.button("Choose file…").clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("Images", &["png", "ico", "jpg", "jpeg", "webp"]).pick_file() {
                         (self.icon_file, self.icon_tex) = (Some(Some(p)), None);
@@ -968,6 +986,7 @@ impl Editor {
                 }
             });
         });
+        pick
     }
 
     /// Starts decoding the art files once, then turns finished images into textures.

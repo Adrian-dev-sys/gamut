@@ -190,6 +190,7 @@ pub fn scan(cfg: &crate::Config) -> Result<(Vec<SteamEntry>, Option<String>)> {
             Some(o) => {
                 o.installed = l.installed;
                 o.install_dir = l.install_dir;
+                o.size = l.size;
                 o.last_played = o.last_played.max(l.last_played);
             }
             None => {
@@ -198,6 +199,16 @@ pub fn scan(cfg: &crate::Config) -> Result<(Vec<SteamEntry>, Option<String>)> {
         }
     }
     Ok((map.into_values().collect(), warning))
+}
+
+/// Steam's small client icon for an app, from the local cache.
+pub fn local_icon(appid: u32) -> Option<PathBuf> {
+    // The client icon is the hash-named jpg in the app's cache folder.
+    let dir = steam_path()?.join(r"appcache\librarycache").join(appid.to_string());
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        stem.len() == 40 && stem.bytes().all(|b| b.is_ascii_hexdigit()) && p.extension().is_some_and(|e| e == "jpg")
+    })
 }
 
 /// Locally cached library art (Steam client cache), if present.

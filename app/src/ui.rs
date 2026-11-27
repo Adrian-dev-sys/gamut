@@ -553,6 +553,7 @@ impl GamutApp {
                         let mut ed = Editor::from_game(g);
                         ed.art_paths = Some((self.paths.cover(id), self.paths.hero(id)));
                         ed.icon_path = Some(self.paths.icon(id));
+                        ed.shared = gamut_core::shared_folders(&self.games);
                         self.editor = Some(ed);
                         self.ed_lists = editor_facets(&self.games);
                     }
@@ -1526,61 +1527,64 @@ impl GamutApp {
                 ui.allocate_ui_with_layout(vec2(left_w, 0.0), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(left_w);
                     ui.vertical(|ui| {
-                        theme::section(ui, "Details");
                         let source = match (g.source, &g.store) {
                             (Source::Steam, _) => "Steam",
                             (_, Some(s)) => s.as_str(),
                             _ => "Custom",
                         };
-                        fact(ui, "Source", source);
-                        let scores = match (g.critic_score, g.community_score) {
-                            (Some(c), Some(u)) => Some(format!("Critics {c} · Users {u}")),
-                            (Some(c), None) => Some(format!("Critics {c}")),
-                            (None, Some(u)) => Some(format!("Users {u}")),
-                            _ => None,
-                        };
                         let released = g.release_date.as_deref().map(util::release);
-                        for (k, v) in [
-                            ("Platform", &g.platform),
-                            ("Developer", &g.developer),
-                            ("Publisher", &g.publisher),
-                            ("Released", &released),
-                            ("Genres", &g.genres),
-                            ("Series", &g.series),
-                            ("Score", &scores),
-                        ] {
-                            if let Some(v) = v {
-                                fact(ui, k, v);
+                        card(ui, "Details", |ui| {
+                            fact(ui, "Source", source);
+                            for (k, v) in [
+                                ("Platform", &g.platform),
+                                ("Developer", &g.developer),
+                                ("Publisher", &g.publisher),
+                                ("Released", &released),
+                                ("Genres", &g.genres),
+                                ("Series", &g.series),
+                            ] {
+                                if let Some(v) = v {
+                                    fact(ui, k, v);
+                                }
                             }
-                        }
-                        if let Some(s) = g.user_score {
-                            fact(ui, "Your score", &s.to_string());
+                        });
+                        let scores: Vec<(&str, i64)> =
+                            [("Critics", g.critic_score), ("Users", g.community_score), ("You", g.user_score)].into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
+                        if !scores.is_empty() {
+                            card(ui, "Scores", |ui| {
+                                for (k, v) in scores {
+                                    fact(ui, k, &v.to_string());
+                                }
+                            });
                         }
                         if let Some(t) = hltb {
                             let h = gamut_core::hltb::hours;
-                            ui.label(theme::caption("HowLongToBeat"));
-                            ui.spacing_mut().item_spacing.y = 3.0;
-                            for (k, v) in [("Main story", t.main), ("Main + extras", t.plus), ("Completionist", t.full)] {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(k).color(TEXT_DIM));
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(h(v)));
-                                });
-                            }
-                            ui.add_space(8.0);
+                            card(ui, "HowLongToBeat", |ui| {
+                                for (k, v) in [("Main story", t.main), ("Main + extras", t.plus), ("Completionist", t.full)] {
+                                    fact(ui, k, &h(v));
+                                }
+                            });
                         }
-                        if let Some(b) = g.install_size {
-                            fact(ui, "Size on disk", &gamut_core::format_size(b));
-                        }
-                        if let Some(a) = g.steam_appid() {
-                            fact(ui, "Steam ID", &a.to_string());
-                        }
-                        if let Some(d) = g.install_dir.as_deref().or(g.exe.as_deref()) {
-                            ui.label(theme::caption("Location"));
-                            ui.add(egui::Label::new(d).truncate()).on_hover_text(d);
-                            ui.add_space(6.0);
+                        let location = g.install_dir.as_deref().filter(|d| !d.contains('{')).or(g.exe.as_deref());
+                        if g.install_size.is_some() || g.steam_appid().is_some() || location.is_some() {
+                            card(ui, "Install", |ui| {
+                                if let Some(b) = g.install_size {
+                                    fact(ui, "Size", &gamut_core::format_size(b));
+                                }
+                                if let Some(a) = g.steam_appid() {
+                                    fact(ui, "Steam ID", &a.to_string());
+                                }
+                                if let Some(d) = location {
+                                    ui.add_space(2.0);
+                                    ui.label(RichText::new("Location").color(TEXT_DIM));
+                                    ui.add(egui::Label::new(RichText::new(d).size(12.5)).truncate()).on_hover_text(d);
+                                }
+                            });
                         }
                         if g.tags.is_some() {
+                            ui.add_space(4.0);
                             ui.label(theme::caption("Tags"));
+                            ui.add_space(2.0);
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                                 for t in split_list(&g.tags) {
@@ -2658,12 +2662,30 @@ fn stat(ui: &mut Ui, label: &str, value: &str) {
         });
 }
 
-/// Caption + wrapped value in the details column.
+/// A titled group in the details column.
+fn card(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
+    egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.label(theme::caption(title));
+        ui.add_space(2.0);
+        body(ui);
+    });
+    ui.add_space(10.0);
+}
+
+/// Dim label on the left, value (wrapping) on the right.
 fn fact(ui: &mut Ui, k: &str, v: &str) {
-    ui.spacing_mut().item_spacing.y = 3.0;
-    ui.label(theme::caption(k));
-    ui.add(egui::Label::new(v).wrap());
-    ui.add_space(8.0);
+    const LABEL_W: f32 = 96.0;
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(vec2(LABEL_W, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_width(LABEL_W);
+            ui.label(RichText::new(k).color(TEXT_DIM));
+        });
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.add(egui::Label::new(v).wrap());
+        });
+    });
 }
 
 /// Small filled pill with uppercase text.
@@ -3122,7 +3144,11 @@ impl eframe::App for GamutApp {
                 Outcome::Closed => self.picker = None,
                 Outcome::Changed(id, kind) => {
                     self.picker = None;
-                    let what = if kind == ArtKind::Cover { "Cover" } else { "Banner" };
+                    let what = match kind {
+                        ArtKind::Cover => "Cover",
+                        ArtKind::Banner => "Banner",
+                        ArtKind::Icon => "Icon",
+                    };
                     let name = self.game(id).map(|g| g.name.clone()).unwrap_or_default();
                     self.toasts.success(format!("{what} updated for {name}."));
                     if kind == ArtKind::Banner || self.game(id).is_some_and(|g| !g.has_hero) {
