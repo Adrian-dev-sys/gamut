@@ -50,3 +50,6 @@ Kept cheap: they only repaint while running.
 - Cards ease their lift/glow on hover and cursor (`animate_bool`); the glow uses the cover's main color
   (`ThumbCache::color`, computed off-thread from the thumbnail). Covers fade in as they load; tab switches
   cross-fade.
+
+## Random game
+- "Random game" (top bar and big screen bar, Ctrl+R) opens a random game from the current view, so filters, search and tags narrow it; never the game already open. The grid cursor moves to it.

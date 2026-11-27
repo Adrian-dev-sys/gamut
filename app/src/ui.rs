@@ -657,6 +657,10 @@ impl GamutApp {
                 if ui.button("Settings").clicked() {
                     self.settings = Some(self.cfg.read().unwrap().clone());
                 }
+                if ui.add_enabled(!self.view.is_empty(), egui::Button::new("Random game")).on_hover_text("Open a random game from the ones shown (Ctrl+R)").clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.random_game(&ctx);
+                }
                 let scanning = self.workers.scanning.load(Ordering::Relaxed);
                 if ui.add_enabled(!scanning, egui::Button::new("Refresh")).clicked() {
                     self.workers.rescan();
@@ -718,6 +722,10 @@ impl GamutApp {
                 if ui.button(RichText::new("Exit big screen").size(15.0)).clicked() {
                     let ctx = ui.ctx().clone();
                     self.toggle_big(&ctx);
+                }
+                if ui.add_enabled(!self.view.is_empty(), egui::Button::new(RichText::new("Random game").size(15.0))).clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.random_game(&ctx);
                 }
                 ui.label(RichText::new(format!("{} games", self.view.len())).color(TEXT_DIM).size(15.0));
             });
@@ -1033,6 +1041,28 @@ impl GamutApp {
     }
 
     /// Moves the grid cursor; shift extends the selection; keeps the cursor's row in view.
+    /// Opens a random game from the current view (not the one already open), with the grid cursor on it.
+    fn random_game(&mut self, ctx: &egui::Context) {
+        use std::hash::{BuildHasher, Hasher};
+        let n = self.view.len();
+        if n == 0 {
+            return;
+        }
+        let r = std::collections::hash_map::RandomState::new().build_hasher().finish() as usize;
+        let mut i = r % n;
+        if n > 1 && Some(self.games[self.view[i]].id) == self.selected {
+            i = (i + 1 + r / n % (n - 1)) % n;
+        }
+        let id = self.games[self.view[i]].id;
+        (self.ach_tab, self.stats_tab) = (None, None);
+        (self.cursor, self.anchor) = (Some(id), Some(id));
+        let cols = self.grid_cols.max(1);
+        self.scroll_to = Some((i / cols as usize) as f32 * self.grid_pitch.max(1.0));
+        self.selected = Some(id);
+        self.opened_at = ctx.input(|i| i.time);
+        self.focus_play = true;
+    }
+
     pub(crate) fn nav(&mut self, nav: Nav, shift: bool) {
         let n = self.view.len();
         if n == 0 {
@@ -3066,6 +3096,9 @@ impl eframe::App for GamutApp {
         let blocked_by_dialog = self.any_dialog();
         if ctx.input(|i| i.key_pressed(Key::F11)) {
             self.toggle_big(&ctx);
+        }
+        if !self.any_dialog() && ctx.input(|i| i.modifiers.command && i.key_pressed(Key::R)) {
+            self.random_game(&ctx);
         }
         self.handle_pad(&ctx, &mut actions);
         if self.big.is_some() && grid_shown && self.cursor.is_none() && !self.view.is_empty() {
