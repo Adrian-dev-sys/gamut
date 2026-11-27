@@ -39,6 +39,8 @@ pub enum ScanOut {
     /// Add these (name, exe) with the scanner's platform/tags; the dialog closes.
     /// Name, exe, tags per picked game.
     Import(Scanner, Vec<(String, PathBuf, String)>),
+    /// Give games already added from this scanner's folder its tags and tag rules.
+    ApplyTags(Scanner),
 }
 
 impl ScanDialog {
@@ -108,21 +110,34 @@ impl ScanDialog {
                 }
                 None => {
                     dialog_header(ui, "Scan folders for games", &mut open);
-                    if self.editor(ui, known, platforms, tags) {
-                        out = ScanOut::Close;
+                    match self.editor(ui, known, platforms, tags) {
+                        Some(o) => out = o,
+                        None => {}
                     }
                 }
             }
         });
         if !open {
+            self.commit_tag_input();
             out = ScanOut::Close;
         }
         out
     }
 
-    /// Scanner list + the selected one's settings. True = Close.
-    fn editor(&mut self, ui: &mut Ui, known: impl FnOnce() -> HashSet<String>, platforms: &[(String, usize)], tags: &[(String, usize)]) -> bool {
-        let mut close = false;
+    /// A tag typed but not confirmed with Enter still counts.
+    fn commit_tag_input(&mut self) {
+        let t = std::mem::take(&mut self.tag_input);
+        let t = t.trim().trim_matches(',');
+        if let Some(s) = self.scanners.get_mut(self.sel).filter(|_| !t.is_empty()) {
+            if !s.tags.split(',').any(|x| x.trim().eq_ignore_ascii_case(t)) {
+                s.tags = if s.tags.trim().is_empty() { t.to_string() } else { format!("{}, {t}", s.tags.trim()) };
+            }
+        }
+    }
+
+    /// Scanner list + the selected one's settings; returns Close or ApplyTags when clicked.
+    fn editor(&mut self, ui: &mut Ui, known: impl FnOnce() -> HashSet<String>, platforms: &[(String, usize)], tags: &[(String, usize)]) -> Option<ScanOut> {
+        let mut res = None;
         let body_h = ui.available_height() - 52.0;
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
@@ -215,10 +230,13 @@ impl ScanDialog {
             let busy = self.busy.is_some();
             let (sel, mut s) = (self.sel, self.scanners[self.sel].clone());
             s.nested = scanner::nested_dirs(&s.dir, &self.scanners);
+            let can_tag = !s.dir.trim().is_empty() && (!s.tags.trim().is_empty() || s.tag_rules.contains('='));
             let label = if busy { "Scanning…" } else { "Scan" };
             let scan = egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT);
             if ui.add_enabled(!busy && !s.dir.trim().is_empty(), scan).clicked() {
                 self.error = None;
+                self.commit_tag_input();
+                s = Scanner { nested: s.nested, ..self.scanners[sel].clone() };
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let (known, ctx, bound) = (known(), ui.ctx().clone(), s.clone());
                 std::thread::spawn(move || {
@@ -231,10 +249,15 @@ impl ScanDialog {
                 ui.spinner();
             }
             if ui.button("Close").clicked() {
-                close = true;
+                self.commit_tag_input();
+                res = Some(ScanOut::Close);
+            }
+            if ui.add_enabled(can_tag, egui::Button::new("Apply tags to added games")).on_hover_text("Give the games already added from this folder this scanner's tags and tag rules.").clicked() {
+                self.commit_tag_input();
+                res = Some(ScanOut::ApplyTags(self.scanners[sel].clone()));
             }
         });
-        close
+        res
     }
 }
 

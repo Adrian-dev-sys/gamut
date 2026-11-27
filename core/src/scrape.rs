@@ -95,10 +95,61 @@ struct SearchItem {
     name: String,
 }
 
-/// Finds a Steam appid whose name matches `name` (normalized).
+/// Finds a Steam appid whose name matches `name` or one of its `name_variants`.
 pub fn steam_search(name: &str) -> Result<Option<u32>> {
-    let want = normalize(name);
-    Ok(steam_find(name)?.into_iter().find(|(_, n)| normalize(n) == want).map(|(id, _)| id))
+    for v in name_variants(name) {
+        if let Some((id, _)) = steam_find(&v)?.into_iter().find(|(_, n)| same_game(&v, n)) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Words that mark a fan port, not part of the game's title.
+const PORT_WORDS: &[&str] = &["recomp", "recompiled", "recompilation", "decomp", "decompiled", "decompilation", "native"];
+
+/// Names to search for, best first: the name, then without port words ("Fire Emblem Engage Recomp"), then each
+/// part around " - " ("Majora's Mask 64 PC port - Zelda64 Recompiled" -> "Majora's Mask", "Zelda64").
+pub fn name_variants(name: &str) -> Vec<String> {
+    let mut out = vec![name.trim().to_string()];
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let mut kept = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let l = w.to_lowercase();
+        let next = words.get(i + 1).map(|n| n.to_lowercase());
+        if PORT_WORDS.contains(&l.as_str()) || l == "port" || l == "pc" && next.as_deref() == Some("port") {
+            continue;
+        }
+        kept.push(*w);
+    }
+    let stripped = kept.join(" ");
+    let mut push = |s: &str| {
+        let s = s.trim().trim_matches(|c: char| c == '-' || c == ':').trim();
+        // "Ocarina of Time 64" is "Ocarina of Time" elsewhere.
+        let s = s.strip_suffix(" 64").unwrap_or(s).trim();
+        if normalize(s).len() >= 3 && !out.iter().any(|o| normalize(o) == normalize(s)) {
+            out.push(s.to_string());
+        }
+    };
+    push(&stripped);
+    for part in stripped.split(" - ") {
+        push(part);
+    }
+    out
+}
+
+/// A search hit is the game: same title, or the title without a series prefix
+/// ("The Legend of Zelda: Tears of the Kingdom" for "Tears of the Kingdom").
+pub fn same_game(want: &str, title: &str) -> bool {
+    let k = |s: &str| normalize(&crate::retro::title_key(s));
+    let w = k(want);
+    if w.is_empty() {
+        return false;
+    }
+    if k(title) == w {
+        return true;
+    }
+    w.len() >= 8 && title.split_once(": ").or_else(|| title.split_once(" - ")).is_some_and(|(_, sub)| k(sub) == w)
 }
 
 /// Store search results (appid, name), Steam's order.
@@ -177,10 +228,14 @@ fn sgdb_game_path(key: &str, r: &SgdbRef) -> Result<Option<String>> {
     Ok(match r {
         SgdbRef::Steam(id) => Some(format!("steam/{id}")),
         SgdbRef::Name(name) => {
-            let l: SgdbList<SgdbGame> = sgdb_get(key, &format!("/search/autocomplete/{}", encode(name)))?;
-            // Only an exact name match: the top fuzzy hit is often a different game.
-            let want = normalize(name);
-            l.data.iter().find(|g| normalize(&g.name) == want).map(|g| format!("game/{}", g.id))
+            // Only an exact name match (or the name without a series prefix): the top fuzzy hit is often a different game.
+            for v in name_variants(name) {
+                let l: SgdbList<SgdbGame> = sgdb_get(key, &format!("/search/autocomplete/{}", encode(&v)))?;
+                if let Some(g) = l.data.iter().find(|g| same_game(&v, &g.name)) {
+                    return Ok(Some(format!("game/{}", g.id)));
+                }
+            }
+            None
         }
     })
 }
@@ -422,6 +477,22 @@ pub fn strip_html(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn port_name_variants() {
+        use super::{name_variants, same_game};
+        assert_eq!(name_variants("Fire Emblem Engage Recomp"), ["Fire Emblem Engage Recomp", "Fire Emblem Engage"]);
+        assert_eq!(
+            name_variants("Majora's Mask 64 PC port - Zelda64 Recompiled"),
+            ["Majora's Mask 64 PC port - Zelda64 Recompiled", "Majora's Mask 64 - Zelda64", "Majora's Mask", "Zelda64"]
+        );
+        assert_eq!(name_variants("Celeste"), ["Celeste"]);
+        assert!(same_game("Tears of the Kingdom", "The Legend of Zelda: Tears of the Kingdom"));
+        assert!(same_game("Pokemon Legends Z-A", "Pokémon Legends: Z-A"));
+        assert!(same_game("Hyrule Warriors Age of Imprisonment", "Hyrule Warriors: Age of Imprisonment"));
+        assert!(!same_game("Zelda64", "Zelda 64: Dawn & Dusk"));
+        assert!(!same_game("Doom", "Final: Doom"));
+    }
+
     #[test]
     fn ranks_search_results() {
         use super::{best_matches, title_score};

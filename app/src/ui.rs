@@ -1948,9 +1948,15 @@ impl GamutApp {
                 .collect()
         };
         let out = d.show(ctx, known, &self.platforms, &self.tags);
-        if matches!(out, crate::scan_ui::ScanOut::Open) {
-            return;
-        }
+        let out = match out {
+            crate::scan_ui::ScanOut::ApplyTags(s) => {
+                let nested = gamut_core::scanner::nested_dirs(&s.dir, &d.scanners);
+                self.apply_scanner_tags(&s, &nested);
+                return;
+            }
+            crate::scan_ui::ScanOut::Open => return,
+            o => o,
+        };
         let scanners = self.scans.take().map(|d| d.scanners).unwrap_or_default();
         if self.cfg.read().unwrap().scanners != scanners {
             let mut c = self.cfg.write().unwrap();
@@ -1971,6 +1977,36 @@ impl GamutApp {
                 }
                 Err(e) => self.toasts.error(format!("Adding games failed: {e:#}")),
             }
+        }
+    }
+
+    /// Gives games under a scanner's folder (not under `nested` scanners' folders) its tags and tag rules,
+    /// matched against the exe's folders inside the scanned folder.
+    fn apply_scanner_tags(&mut self, s: &gamut_core::scanner::Scanner, nested: &[String]) {
+        use gamut_core::scanner::key;
+        let base = format!("{}\\", key(std::path::Path::new(s.dir.trim())).trim_end_matches('\\'));
+        let add: Vec<(i64, String)> = self
+            .games
+            .iter()
+            .filter_map(|g| {
+                let exe = key(std::path::Path::new(g.exe.as_deref()?));
+                let rel = exe.strip_prefix(&base)?;
+                if nested.iter().any(|n| exe.starts_with(&format!("{n}\\"))) {
+                    return None;
+                }
+                let dir = rel.rsplit_once('\\').map_or("", |(d, _)| d);
+                let tags = s.tags_for(dir);
+                (!tags.is_empty()).then(|| (g.id, tags))
+            })
+            .collect();
+        match self.lib.add_tags(&add) {
+            Ok(n) => {
+                log::info!("scanner \"{}\": tagged {n} of {} games", s.name, add.len());
+                self.reload_all();
+                (self.platforms, self.tags) = facets(&self.games);
+                self.toasts.success(format!("Tagged {n} games from {}.", s.dir.trim()));
+            }
+            Err(e) => self.toasts.error(format!("Tagging failed: {e:#}")),
         }
     }
 

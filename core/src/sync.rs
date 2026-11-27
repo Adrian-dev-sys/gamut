@@ -135,8 +135,15 @@ pub fn igdb_entry(lib: &Library, cfg: &Config, g: &Game) -> Result<Option<igdb::
         Some(id) => igdb::game(cfg, id),
         None => {
             let year = g.release_date.as_deref().and_then(release_year);
-            let hits = igdb::search(cfg, &igdb::search_name(&clean_name(&g.name)))?;
-            let found = igdb::best(&g.name, g.platform.as_deref(), year, &hits).cloned();
+            let mut found = None;
+            for (i, v) in scrape::name_variants(&clean_name(&g.name)).iter().enumerate() {
+                let hits = igdb::search(cfg, &igdb::search_name(v))?;
+                // Shortened names are of fan ports, so the original game's platform won't match.
+                found = igdb::best(v, if i == 0 { g.platform.as_deref() } else { None }, year, &hits).cloned();
+                if found.is_some() {
+                    break;
+                }
+            }
             lib.set_igdb_id(g.id, found.as_ref().map_or(0, |f| f.id))?;
             Ok(found)
         }

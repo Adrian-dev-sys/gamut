@@ -31,6 +31,10 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
   "no match" results forgotten. Runs at startup and when the credentials are saved.
 
 ## Manual
+- Fan ports: Steam, SteamGridDB and IGDB lookups try `scrape::name_variants` in turn (the name, without
+  recomp/decomp/port words, each part around " - ", a trailing " 64" dropped) and accept a title without its
+  series prefix (`same_game`: "Tears of the Kingdom" = "The Legend of Zelda: Tears of the Kingdom"). Shortened
+  names skip the platform check on IGDB. A forced Refresh clears a cached IGDB "not found".
 - Cover/banner picker lists IGDB matches next to SteamGridDB and VNDB.
   Each source keeps its best 3 by `scrape::best_matches` (same name > prefix > shared words; under half the best
   dropped). VNDB matches on every title (English, romaji, Japanese, aliases), so an English name finds the

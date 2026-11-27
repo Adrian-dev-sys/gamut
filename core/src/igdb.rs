@@ -299,7 +299,12 @@ pub fn best<'a>(name: &str, platform: Option<&str>, year: Option<i32>, games: &'
     if !exact.is_empty() {
         return one(exact);
     }
-    one(games.iter().filter(ok).filter(|g| g.alt_names.iter().any(|a| crate::retro::title_key(a) == want)).collect())
+    let alt: Vec<_> = games.iter().filter(ok).filter(|g| g.alt_names.iter().any(|a| crate::retro::title_key(a) == want)).collect();
+    if !alt.is_empty() {
+        return one(alt);
+    }
+    // "Tears of the Kingdom" -> "The Legend of Zelda: Tears of the Kingdom".
+    one(games.iter().filter(ok).filter(|g| crate::scrape::same_game(name, &g.name)).collect())
 }
 
 /// Search text without region/dump tags ("Foo (USA) [!]" -> "Foo").

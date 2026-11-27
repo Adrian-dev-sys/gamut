@@ -422,6 +422,28 @@ impl Library {
         Ok(games.len())
     }
 
+    /// Adds comma-separated tags to games (kept: existing tags, case-insensitive duplicates). Returns how many changed.
+    pub fn add_tags(&mut self, add: &[(i64, String)]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut changed = 0;
+        for (id, tags) in add {
+            let old: Option<String> = tx.query_row("SELECT tags FROM games WHERE id = ?1", [id], |r| r.get(0)).optional()?.flatten();
+            let mut list: Vec<String> = old.as_deref().unwrap_or("").split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+            let before = list.len();
+            for t in tags.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                if !list.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    list.push(t.to_string());
+                }
+            }
+            if list.len() != before {
+                tx.execute("UPDATE games SET tags = ?2 WHERE id = ?1", params![id, list.join(", ")])?;
+                changed += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     pub fn add_custom(&self, g: &Game) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO games (source, source_id, name, installed, exe, args, work_dir, added)
@@ -748,6 +770,8 @@ impl Library {
                  publisher = NULL, release_date = NULL, genres = NULL WHERE id = ?1",
                 [id],
             )?;
+            // A forced refresh retries IGDB too when it found nothing before.
+            self.conn.execute("DELETE FROM igdb_match WHERE game_id = ?1 AND igdb_id = 0", [id])?;
         } else {
             self.conn
                 .execute("UPDATE games SET cover_state = 0, meta_state = 0 WHERE id = ?1", [id])?;
@@ -911,6 +935,12 @@ mod tests {
         assert_eq!((c.source, c.exe.as_deref(), c.work_dir.as_deref()), (Source::Custom, Some(r"D:\G\Celeste\Celeste.exe"), Some(r"D:\G\Celeste")));
         assert_eq!((c.platform.as_deref(), c.tags.as_deref()), (Some("PC (Windows)"), None));
         assert_eq!(all.iter().find(|g| g.name == "Hades").unwrap().tags.as_deref(), Some("Roguelike, Fan port"));
+        let (c, h) = (c.id, all.iter().find(|g| g.name == "Hades").unwrap().id);
+        assert_eq!(lib.add_tags(&[(c, "Indie".into()), (h, "fan PORT, Recomp".into())]).unwrap(), 2);
+        assert_eq!(lib.add_tags(&[(c, "indie".into())]).unwrap(), 0);
+        let all = lib.all().unwrap();
+        let tags = |id| all.iter().find(|g| g.id == id).unwrap().tags.clone();
+        assert_eq!((tags(c).as_deref(), tags(h).as_deref()), (Some("Indie"), Some("Roguelike, Fan port, Recomp")));
         drop(lib);
         let _ = std::fs::remove_dir_all(&dir);
     }
