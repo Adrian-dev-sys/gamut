@@ -18,6 +18,10 @@ The code is `core/src/reshade.rs`. It runs from `with_reshade` in `app/src/worke
   - unknown → `dxgi.dll`.
 
   The 64- or 32-bit build is chosen from the exe's PE header.
+- **Vulkan + Special K.** Both together can crash Vulkan games (seen: XCX recomp, crash in nvoglv64 on present). On
+  Play, `reshade::vulkan_clash` (Vulkan-only exe, both would load, no per-game choice for both yet) opens a dialog:
+  Special K only / ReShade only / Keep both. The choice is saved as both per-game overrides
+  (`Library::set_hooks`), so it's asked once; "Special K only" also removes Gamut's ReShade files.
 - **Write the files.**
   - `ReShade.ini`: absolute `EffectSearchPaths` and `TextureSearchPaths` into the shared shader folder, plus `PresetPath=.\ReShadePreset.ini`.
   - `ReShadePreset.ini`: no techniques enabled, like a fresh install.

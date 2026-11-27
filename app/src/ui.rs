@@ -206,6 +206,8 @@ pub struct GamutApp {
     confirm_stop: Option<i64>,
     /// (game to start, Steam game running) when Steam would have to close one for the other.
     confirm_play: Option<(i64, i64)>,
+    /// Vulkan game about to get both Special K and ReShade: asks which to use (once per game).
+    confirm_hooks: Option<i64>,
     /// Controller menu (Start) for this game.
     game_menu: Option<i64>,
     scans: Option<crate::scan_ui::ScanDialog>,
@@ -318,6 +320,7 @@ impl GamutApp {
             confirm_remove: None,
             confirm_stop: None,
             confirm_play: None,
+            confirm_hooks: None,
             game_menu: None,
             scans: None,
             was_dialog: false,
@@ -515,6 +518,14 @@ impl GamutApp {
                             return Ok(());
                         }
                     }
+                    let clash = {
+                        let c = self.cfg.read().unwrap();
+                        gamut_core::reshade::vulkan_clash(&g, &c.reshade, &c.specialk)
+                    };
+                    if clash {
+                        self.confirm_hooks = Some(id);
+                        return Ok(());
+                    }
                     self.workers.play(g)?;
                 }
                 Action::PlayAnyway(id) => {
@@ -692,7 +703,7 @@ impl GamutApp {
                 Pad::BigScreen => self.toggle_big(ctx),
                 // In dialogs the D-pad/A drive egui focus (raw_input_hook); B cancels simple ones.
                 Pad::Back if self.any_dialog() => {
-                    (self.confirm_play, self.game_menu, self.confirm_stop) = (None, None, None);
+                    (self.confirm_play, self.game_menu, self.confirm_stop, self.confirm_hooks) = (None, None, None, None);
                     (self.confirm_remove, self.confirm_refresh) = (None, None);
                 }
                 _ if self.any_dialog() => {}
@@ -816,6 +827,7 @@ impl GamutApp {
             || self.ra_pick.is_some()
             || self.search_pop.is_some()
             || self.confirm_play.is_some()
+            || self.confirm_hooks.is_some()
             || self.game_menu.is_some()
             || self.scans.is_some()
     }
@@ -2081,6 +2093,62 @@ impl GamutApp {
         }
     }
 
+    /// Special K + ReShade in a Vulkan game: pick per game, then launch.
+    fn hooks_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some(id) = self.confirm_hooks else { return };
+        let Some(g) = self.game(id).cloned() else {
+            self.confirm_hooks = None;
+            return;
+        };
+        let (mut close, mut open, mut pick) = (false, true, None);
+        let resp = theme::dialog(ctx, "confirm_hooks", self.selected.is_some(), |ui| {
+            ui.set_max_width(500.0);
+            dialog_header(ui, "Special K and ReShade", &mut open);
+            ui.label(format!(
+                "\"{}\" is a Vulkan game. Special K and ReShade together can crash Vulkan games. \
+                 Your choice is kept for this game (Edit → Launch changes it).",
+                g.name
+            ));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+                if ui.button("Special K only").clicked() {
+                    pick = Some((true, false));
+                }
+                if ui.button("ReShade only").clicked() {
+                    pick = Some((false, true));
+                }
+                if ui.button("Keep both").clicked() {
+                    pick = Some((true, true));
+                }
+            });
+        });
+        if let Some((sk, rs)) = pick {
+            let r = self.lib.set_hooks(id, Some(sk), Some(rs)).and_then(|_| {
+                // ReShade's Vulkan layer stays active while its files are there.
+                if !rs {
+                    gamut_core::reshade::uninstall(&g)?;
+                }
+                Ok(())
+            });
+            match r {
+                Ok(()) => {
+                    if let Some(x) = self.games.iter_mut().find(|x| x.id == id) {
+                        (x.specialk, x.reshade) = (Some(sk), Some(rs));
+                    }
+                    actions.push(Action::PlayAnyway(id));
+                }
+                Err(e) => self.toasts.error(format!("Saving the choice failed: {e:#}")),
+            }
+            close = true;
+        }
+        if close || !open || resp.should_close() {
+            self.confirm_hooks = None;
+        }
+    }
+
     /// "Close game?" for a running game: politely (WM_CLOSE) or by force.
     fn stop_window(&mut self, ctx: &egui::Context) {
         let Some(id) = self.confirm_stop else { return };
@@ -2937,6 +3005,7 @@ impl eframe::App for GamutApp {
             o.show(&ctx);
         }
         self.play_window(&ctx, &mut actions);
+        self.hooks_window(&ctx, &mut actions);
         if self.any_dialog() != self.was_dialog {
             ctx.request_repaint();
         }
@@ -2989,7 +3058,7 @@ impl eframe::App for GamutApp {
                 Cmd::Play(id) => {
                     self.apply(Action::Play(id));
                     // "Another game is running" needs the window.
-                    if self.confirm_play.is_some() {
+                    if self.confirm_play.is_some() || self.confirm_hooks.is_some() {
                         self.show_window(ctx);
                     }
                 }

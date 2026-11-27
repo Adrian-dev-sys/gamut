@@ -676,6 +676,12 @@ impl Library {
         Ok(())
     }
 
+    /// Per-game Special K / ReShade overrides (None = follow Settings).
+    pub fn set_hooks(&self, id: i64, specialk: Option<bool>, reshade: Option<bool>) -> Result<()> {
+        self.conn.execute("UPDATE games SET specialk = ?2, reshade = ?3 WHERE id = ?1", params![id, specialk, reshade])?;
+        Ok(())
+    }
+
     pub fn set_hidden(&self, id: i64, hidden: bool) -> Result<()> {
         self.conn.execute("UPDATE games SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
         Ok(())

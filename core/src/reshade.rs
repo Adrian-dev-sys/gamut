@@ -177,6 +177,15 @@ fn has_existing(dir: &Path) -> Option<String> {
     })
 }
 
+/// True for a Vulkan-only game where Special K and ReShade would both load and the player hasn't chosen
+/// per game yet (the two together can crash Vulkan games).
+pub fn vulkan_clash(g: &Game, rs: &Settings, sk: &crate::specialk::Settings) -> bool {
+    (g.specialk.is_none() || g.reshade.is_none())
+        && decide(g, rs).is_ok()
+        && crate::specialk::decide(g, sk).is_ok()
+        && procs::game_exe(g).and_then(|e| hook_for(&e)).is_some_and(|(_, h)| h == Hook::Vulkan)
+}
+
 /// Installs ReShade next to the game's executable, unless it already has its own.
 pub fn install(g: &Game, cache: &Path) -> Result<Outcome> {
     let Some(exe) = procs::game_exe(g) else { return Ok(Outcome::Skipped("couldn't find the game's executable".into())) };
