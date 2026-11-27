@@ -114,7 +114,7 @@ enum Bulk {
 }
 
 /// Space above the first grid row and below the last.
-const GRID_MARGIN: f32 = 12.0;
+const GRID_MARGIN: f32 = 18.0;
 
 /// Filters reachable from big screen tabs and LB/RB, with their labels.
 const BIG_TABS: [(Filter, &str); 5] =
@@ -1054,15 +1054,24 @@ impl GamutApp {
                     let painter = ui.painter();
                     let r = CornerRadius::same(6);
 
-                    // Lift hovered cards slightly, with a soft accent glow.
-                    let cover = if hovered { cover.translate(vec2(0.0, -3.0)) } else { cover };
-                    if hovered || is_sel {
-                        let glow = egui::epaint::Shadow { offset: [0, 4], blur: 22, spread: 1, color: ACCENT.gamma_multiply(0.32) };
+                    // Hover/cursor lift the card and light a glow in the cover's own color, eased in and out.
+                    let is_cursor = cursor == Some(g.id);
+                    let hot = ui.ctx().animate_bool_with_time_and_easing(resp.id.with("hot"), hovered || is_cursor, 0.18, egui::emath::easing::cubic_out);
+                    let cover = cover.translate(vec2(0.0, -4.0 * hot));
+                    let tint = thumbs.color(g.id).unwrap_or(ACCENT);
+                    let strength = if is_cursor { 0.75 } else { 0.5 } * hot + if in_multi { 0.25 } else { 0.0 };
+                    if strength > 0.01 {
+                        let glow = egui::epaint::Shadow { offset: [0, 4], blur: 26, spread: 2, color: tint.gamma_multiply(strength.min(1.0)) };
                         painter.add(glow.as_shape(cover, r));
                     }
                     match thumbs.get(g.id, g.has_cover) {
                         Some(t) => {
-                            egui::Image::from_texture(t).corner_radius(r).paint_at(ui, cover);
+                            // Covers fade in as they load (or scroll back into view).
+                            let a = theme::appear(ui.ctx(), resp.id.with("tex"), 0.22);
+                            if a < 1.0 {
+                                painter.rect_filled(cover, r, CARD);
+                            }
+                            egui::Image::from_texture(t).corner_radius(r).tint(Color32::WHITE.gamma_multiply(a)).paint_at(ui, cover);
                         }
                         None => {
                             painter.rect_filled(cover, r, CARD);
@@ -1092,11 +1101,12 @@ impl GamutApp {
                     if in_multi {
                         paint_check(painter, cover.left_bottom() + vec2(16.0, -16.0));
                     }
-                    if cursor == Some(g.id) {
-                        painter.rect_stroke(cover, r, Stroke::new(3.0, Color32::WHITE), StrokeKind::Outside);
-                    } else if is_sel || hovered {
-                        let s = if is_sel { Stroke::new(2.5, ACCENT) } else { Stroke::new(1.5, ACCENT.gamma_multiply(0.8)) };
-                        painter.rect_stroke(cover, r, s, StrokeKind::Outside);
+                    if is_cursor {
+                        painter.rect_stroke(cover, r, Stroke::new(3.0, Color32::WHITE.gamma_multiply(0.4 + 0.6 * hot)), StrokeKind::Outside);
+                    } else if in_multi {
+                        painter.rect_stroke(cover, r, Stroke::new(2.5, ACCENT), StrokeKind::Outside);
+                    } else if hot > 0.01 {
+                        painter.rect_stroke(cover, r, Stroke::new(1.5, tint.gamma_multiply(0.9 * hot)), StrokeKind::Outside);
                     }
                     // Platform pill right of the title (Steam, PS5, Switch…).
                     let title_w = {
@@ -2579,6 +2589,9 @@ impl eframe::App for GamutApp {
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
             .show(ui, |ui| {
+                // Switching tabs cross-fades the content in.
+                let tab = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else { 0 };
+                ui.multiply_opacity(theme::appear(&ctx, egui::Id::unique("tab_fade").with(tab), 0.18));
                 let clicked = match (self.ach_tab.as_mut(), self.stats_tab.as_mut()) {
                     (Some(ov), _) => {
                         let busy = !self.workers.ach_busy.lock().unwrap().is_empty();
@@ -2621,11 +2634,7 @@ impl eframe::App for GamutApp {
                 .corner_radius(CornerRadius::same(10))
                 .shadow(ctx.global_style().visuals.window_shadow)
                 .stroke(Stroke::new(1.0, Color32::from_gray(50)));
-            let resp = egui::Modal::new(egui::Id::unique("details_modal"))
-                .area(theme::no_fade(egui::Id::unique("details_modal")))
-                .frame(frame)
-                .backdrop_color(Color32::TRANSPARENT)
-                .show(&ctx, |ui| {
+            let resp = theme::popup(&ctx, egui::Id::unique("details_modal"), frame, Color32::TRANSPARENT, |ui| {
                     ui.set_min_size(size);
                     ui.set_max_size(size);
                     ui.set_clip_rect(Rect::from_min_size(ui.max_rect().min, size));

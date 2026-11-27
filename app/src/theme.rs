@@ -140,9 +140,36 @@ pub fn dialog<R>(ctx: &Context, id: &str, stacked: bool, add: impl FnOnce(&mut e
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::same(18))
         .shadow(ctx.global_style().visuals.window_shadow);
-    let id = egui::Id::unique(id);
     let dim = if stacked { STACKED } else { Color32::TRANSPARENT };
-    egui::Modal::new(id).area(no_fade(id)).frame(frame).backdrop_color(dim).show(ctx, add)
+    popup(ctx, egui::Id::unique(id), frame, dim, add)
+}
+
+/// Modal that fades and slides in when it opens; the frame is drawn inside so it fades too.
+pub fn popup<R>(ctx: &Context, id: egui::Id, frame: egui::Frame, dim: Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
+    let t = appear(ctx, id, 0.16);
+    let area = no_fade(id).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 16.0 * (1.0 - t)));
+    egui::Modal::new(id).area(area).frame(egui::Frame::NONE).backdrop_color(dim).show(ctx, |ui| {
+        ui.multiply_opacity(t);
+        frame.show(ui, add).inner
+    })
+}
+
+/// 0→1 (eased) over `secs` from when `id` was first drawn after not being drawn; repaints meanwhile.
+pub fn appear(ctx: &Context, id: egui::Id, secs: f64) -> f32 {
+    let (now, pass) = (ctx.input(|i| i.time), ctx.cumulative_pass_nr());
+    let start = ctx.data_mut(|d| {
+        let e = d.get_temp_mut_or_insert_with(id.with("appear"), || (now, pass));
+        if e.1 + 2 < pass {
+            e.0 = now;
+        }
+        e.1 = pass;
+        e.0
+    });
+    let t = ((now - start) / secs).clamp(0.0, 1.0) as f32;
+    if t < 1.0 {
+        ctx.request_repaint();
+    }
+    egui::emath::easing::cubic_out(t)
 }
 
 /// Modal area without egui's fade-in: switching dialogs (details -> edit) would blink the backdrop.

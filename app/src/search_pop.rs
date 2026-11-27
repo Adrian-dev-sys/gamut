@@ -74,11 +74,8 @@ impl SearchPop {
     /// Draws the popup; true when it should close (Done, Enter, Esc or a click outside).
     pub fn show(&mut self, ctx: &egui::Context, q: &mut String, results: usize) -> bool {
         let mut close = false;
-        let resp = egui::Modal::new(egui::Id::unique("search_pop"))
-            .area(theme::no_fade(egui::Id::unique("search_pop")))
-            .frame(egui::Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::same(20)))
-            .backdrop_color(Color32::TRANSPARENT)
-            .show(ctx, |ui| {
+        let frame = egui::Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::same(20));
+        let resp = theme::popup(ctx, egui::Id::unique("search_pop"), frame, Color32::TRANSPARENT, |ui| {
                 ui.set_width(640.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Search").size(22.0).strong());

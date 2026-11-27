@@ -15,11 +15,17 @@
 ## Controller and big screen
 - `app/src/gamepad.rs`: one thread polls PlayStation pads over HID (hidapi; DualSense/Edge/DS4, USB and BT
   report layouts in `parse`) and everything else through gilrs. Windows.Gaming.Input (gilrs' backend) sees no
-  controller with DSX/HidHide, while HID sees DSX's virtual DualSense, like games do. The same action twice
-  within 60 ms counts once (remappers show a pad twice). D-pad/left stick repeat after 380 ms, every 95 ms.
-  `GamutApp::handle_pad` ignores input while Gamut's window isn't focused (a game is in front) and while
-  dialogs are open. A = open/Play, B = back/clear, X = favorite, LB/RB = filter tabs, LT/RT = page,
-  View/Guide = big screen, Start = like A.
+  controller with DSX/HidHide, while HID sees DSX's virtual DualSense, like games do. Every HID report is
+  edge-checked (`Src::update`), so quick taps between polls still count. Remappers show a pad twice (real +
+  virtual): `Lead` follows the device that acted first and ignores others until it's quiet for 400 ms.
+  D-pad/left stick repeat after 380 ms, every 95 ms. `GamutApp::handle_pad` ignores input while Gamut's
+  window isn't focused (a game is in front). A = open/Play, B = back/clear, X = favorite, Y = search,
+  Start/Options/Create = game menu (`game_menu_window`, the right-click menu as a dialog), LB/RB = top tabs
+  (filter tabs in big screen), LT/RT = page, View/PS = big screen.
+- Dialogs with controller: `raw_input_hook` sends Tab/Shift+Tab for the D-pad (text fields keep arrows),
+  Enter for A, Escape for B (B also closes the simple confirm dialogs). A dialog opened from the controller
+  gets a Tab so its first widget is focused; ✕ buttons aren't focusable. One focus move per frame; extra
+  input waits in `pad_later`.
 - Big screen (`toggle_big`, F11, top-bar button, View): full screen, zoom ×1.35, filter tabs instead of the
   normal bar, a button-hint footer, cursor always placed. Leaving restores zoom and windowed mode;
   `track_window` pauses meanwhile so the saved placement isn't overwritten.
@@ -29,4 +35,12 @@
   L2/R2 scroll the page (`detail_scroll`).
 - Search: Y/Triangle focuses the search box; in big screen it opens `search_pop.rs`, a centered on-screen
   keyboard (A types, X deletes, B/Y close) that filters the grid live.
-- The grid keeps `GRID_MARGIN` above the first row and below the last so the cursor outline isn't clipped.
+- The grid keeps `GRID_MARGIN` above the first row and below the last so the cursor outline/glow isn't clipped.
+
+## Animations
+Kept cheap: they only repaint while running.
+- `theme::popup` fades and slides every dialog in (frame drawn inside so it fades too); `theme::appear` is the
+  shared 0→1 timer (restarts when an id wasn't drawn for 2 passes).
+- Cards ease their lift/glow on hover and cursor (`animate_bool`); the glow uses the cover's main color
+  (`ThumbCache::color`, computed off-thread from the thumbnail). Covers fade in as they load; tab switches
+  cross-fade.

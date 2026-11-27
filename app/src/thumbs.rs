@@ -1,6 +1,6 @@
 //! Grid cover textures: decoded off-thread, only for what's on screen, with a bounded cache.
 use crossbeam_channel::{unbounded, Receiver};
-use egui::{ColorImage, Context, TextureHandle, TextureOptions};
+use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions};
 use gamut_core::{images, Paths};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -19,6 +19,8 @@ pub struct ThumbCache {
     queue: Arc<(Mutex<Queue>, Condvar)>,
     rx: Receiver<(i64, Option<(ColorImage, u32)>)>,
     tex: HashMap<i64, (TextureHandle, u64)>,
+    /// Each cover's main color (for the grid glow); kept after the texture is evicted.
+    colors: HashMap<i64, Color32>,
     missing: HashSet<i64>,
     wanted: Vec<i64>,
     frame: u64,
@@ -53,7 +55,7 @@ impl ThumbCache {
                 ctx.request_repaint();
             });
         }
-        ThumbCache { queue, rx, tex: HashMap::new(), missing: HashSet::new(), wanted: Vec::new(), frame: 0, width }
+        ThumbCache { queue, rx, colors: HashMap::new(), tex: HashMap::new(), missing: HashSet::new(), wanted: Vec::new(), frame: 0, width }
     }
 
     pub fn begin_frame(&mut self, ctx: &Context) {
@@ -63,6 +65,7 @@ impl ThumbCache {
             match img {
                 Some((_, w)) if w != self.width.load(Ordering::Relaxed) => {} // decoded before a size change
                 Some((img, _)) => {
+                    self.colors.insert(id, main_color(&img));
                     let t = ctx.load_texture(format!("thumb{id}"), img, TextureOptions::LINEAR);
                     self.tex.insert(id, (t, self.frame));
                 }
@@ -126,10 +129,37 @@ impl ThumbCache {
         }
     }
 
+    /// The cover's main color, once its thumbnail has loaded.
+    pub fn color(&self, id: i64) -> Option<Color32> {
+        self.colors.get(&id).copied()
+    }
+
     pub fn invalidate(&mut self, id: i64) {
+        self.colors.remove(&id);
         self.tex.remove(&id);
         self.missing.remove(&id);
     }
+}
+
+/// Average of the cover's colorful pixels, made bright and saturated enough to glow.
+fn main_color(img: &ColorImage) -> Color32 {
+    let (mut sum, mut w) = ([0f32; 3], 0f32);
+    for p in img.pixels.iter().step_by(5) {
+        let [r, g, b, _] = p.to_array();
+        let (mx, mn) = (r.max(g).max(b) as f32, r.min(g).min(b) as f32);
+        let k = ((mx - mn) / 255.0).powi(2) * (mx / 255.0) + 0.002;
+        for (s, c) in sum.iter_mut().zip([r, g, b]) {
+            *s += c as f32 * k;
+        }
+        w += k;
+    }
+    let avg = sum.map(|s| (s / w).round() as u8);
+    let mut hsv = egui::ecolor::Hsva::from(Color32::from_rgb(avg[0], avg[1], avg[2]));
+    if hsv.s < 0.12 {
+        return crate::theme::ACCENT; // grey cover: no color of its own
+    }
+    (hsv.s, hsv.v) = (hsv.s.clamp(0.45, 0.9), hsv.v.max(0.85));
+    Color32::from(hsv)
 }
 
 fn load(paths: &Paths, id: i64, w: u32) -> Option<ColorImage> {
