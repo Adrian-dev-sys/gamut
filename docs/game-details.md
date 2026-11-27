@@ -1,6 +1,6 @@
 # Game details: extra fields, actions, scripts, HowLongToBeat, saves
 
-Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `notes`, `links` (JSON `[Link]`), `actions` (JSON `[PlayAction]`), `script_before`, `script_after`, `install_size` (bytes), `save_dir`. Icons are files at `Paths::icon(id)` (`icons/<id>.img`), no column.
+Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `notes`, `links` (JSON `[Link]`), `actions` (JSON `[PlayAction]`), `script_before`, `script_after`, `install_size` (bytes), `save_dir`, `display` (JSON `display::DisplayMode`). Icons are files at `Paths::icon(id)` (`icons/<id>.img`), no column.
 
 ## Editor tabs
 - **General**: Sorting name (grid "Name" sort and its tiebreaks use it; cleared when equal to the name), Your score.
@@ -17,6 +17,10 @@ Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `
 - Extra actions appear in the More / right-click menu. "Counts as playing" goes through `Workers::play` with `Game::with_action` (time tracked, Special K/ReShade/HDR, scripts); otherwise the file is just opened. A tracked action is refused while the game runs.
 - `scripts::before` runs `powershell -NoProfile -ExecutionPolicy Bypass -Command`, hidden, waited for up to 2 minutes; a failure is a toast and the game still starts. `scripts::After` runs on drop, i.e. when tracking sees the game exit. Env: `GAMUT_GAME_NAME`, `GAMUT_GAME_DIR`, `GAMUT_GAME_EXE`.
 
+## Display mode (`core/src/display.rs`)
+- Launch tab "Display": screen, resolution, refresh rate (0 = keep). Applied before launch with `ChangeDisplaySettingsExW(CDS_FULLSCREEN)` (temporary; Windows undoes it if Gamut dies), restored on exit by resetting to the registry mode. Skipped while another game holds a change. Shown in the details Install card.
+- Playnite's Display Helper stores it as features `[RC] WxH`, `[RC] NHz`, `[RC] Display: \.\DISPLAYn`; read by the import and "Links, notes and more".
+
 ## HowLongToBeat (`core/src/hltb.rs`)
 - Unofficial API: the search path is found in the site's `/_next/static/chunks/*.js` (a `fetch("/api/…", {method: "POST"})`), cached per session, fallback `api/s`. `GET <path>/init?t=<ms>` gives a token (`x-auth-token`; a key/val pair, if present, goes in headers and body). POST the search JSON with a browser User-Agent and Referer/Origin. Times are seconds.
 - Matching is strict (`scrape::same_game` on the name, its port variants, or the HLTB aliases). Not found is cached as id 0.
@@ -29,4 +33,4 @@ Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `
 - "Open save folder" uses `save_dir` if it exists, else looks it up, stores and opens it. `gamut-cli saves NAME [APPID]` checks it.
 
 ## Playnite
-- Import reads SortingName, Notes, UserScore, InstallSize, Links, Icon (.ico decodes too), and every GameAction except the first play action. Settings → Playnite → "Links, notes and more" fills these for already imported games, only where Gamut has none (`Library::import_extras`). Playnite must be closed (its files are locked). PreScript/PostScript are not imported: they use Playnite's runspace (`$Game`, `$PlayniteApi`) and would fail in plain PowerShell.
+- Import reads SortingName, Notes, UserScore, InstallSize, Links, Icon (.ico decodes too), every GameAction except the first play action, and Display Helper's `[RC]` features. Settings → Playnite → "Links, notes and more" fills these for already imported games, only where Gamut has none (`Library::import_extras`). Playnite must be closed (its files are locked). PreScript/PostScript are not imported: they use Playnite's runspace (`$Game`, `$PlayniteApi`) and would fail in plain PowerShell.

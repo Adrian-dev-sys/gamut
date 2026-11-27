@@ -529,6 +529,15 @@ impl Workers {
             } else {
                 None
             };
+            let display = match g.display_mode().filter(|_| g.installed) {
+                Some(m) => gamut_core::display::Guard::apply(&m)
+                    .map_err(|e| {
+                        let _ = t.tx.send(Event::Error(format!("Couldn't change the display mode: {e:#}")));
+                    })
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
             if let Err(e) = gamut_core::scripts::before(&g, Duration::from_secs(120)) {
                 let _ = t.tx.send(Event::Error(format!("{e:#}")));
             }
@@ -542,7 +551,7 @@ impl Workers {
                         }
                         Err(e) => log::warn!("couldn't count the launch of {}: {e:#}", g.name),
                     }
-                    t.track(&g, l, guard, (hdr, gamut_core::scripts::After::new(&g)))
+                    t.track(&g, l, guard, (hdr, display, gamut_core::scripts::After::new(&g)))
                 }
                 Err(e) => {
                     t.running.lock().unwrap().remove(&g.id);
@@ -817,8 +826,8 @@ fn release_specialk(sk: SkGuard, name: String, exited: bool) {
 
 impl Tracker {
     /// Adds the session's playtime when a tracked game exits, and releases Special K and HDR.
-    /// `hdr` also holds the "after" script; both are released when the game exits.
-    fn track(&self, g: &Game, launched: Launched, sk: SkGuard, hdr: (Option<gamut_core::hdr::Guard>, gamut_core::scripts::After)) {
+    /// `hdr` also holds the display mode and the "after" script; all are released when the game exits.
+    fn track(&self, g: &Game, launched: Launched, sk: SkGuard, hdr: (Option<gamut_core::hdr::Guard>, Option<gamut_core::display::Guard>, gamut_core::scripts::After)) {
         let (id, name) = (g.id, g.name.clone());
         let exit_stop = sk.as_ref().is_some_and(|s| s.2 == "exit");
         let Launched::Tracked(handle) = launched else {
@@ -826,7 +835,7 @@ impl Tracker {
             release_specialk(sk, name, false);
             // Steam playtime comes from Steam; custom shortcuts/URLs are timed by watching their folder.
             let custom = g.source == gamut_core::Source::Custom && !gamut_core::procs::game_dirs(g).is_empty();
-            if hdr.0.is_some() || hdr.1.is_some() || custom || g.source == gamut_core::Source::Steam {
+            if hdr.0.is_some() || hdr.1.is_some() || hdr.2.is_some() || custom || g.source == gamut_core::Source::Steam {
                 let (g, ach, paths, tx, ctx) =
                     (g.clone(), self.ach.clone(), self.paths.clone(), self.tx.clone(), self.ctx.clone());
                 std::thread::spawn(move || {

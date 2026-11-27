@@ -1,6 +1,7 @@
 pub mod achievements;
 pub mod config;
 pub mod db;
+pub mod display;
 pub mod gog;
 pub mod scanner;
 pub mod http;

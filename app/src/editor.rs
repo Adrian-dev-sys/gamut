@@ -33,6 +33,9 @@ pub struct Editor {
     specialk: Option<bool>,
     reshade: Option<bool>,
     auto_hdr: bool,
+    display: gamut_core::display::DisplayMode,
+    /// Displays and their modes, read when the Launch tab first shows.
+    monitors: Option<Vec<(gamut_core::display::Monitor, Vec<gamut_core::display::Mode>)>>,
     /// The game as opened (for ReShade's folder); and where Gamut installed ReShade, once looked up.
     orig: Game,
     rs_dir: Option<Option<std::path::PathBuf>>,
@@ -213,6 +216,8 @@ impl Editor {
             specialk: g.specialk,
             reshade: g.reshade,
             auto_hdr: g.auto_hdr,
+            display: g.display_mode().unwrap_or_default(),
+            monitors: None,
             orig: g.clone(),
             rs_dir: None,
             description: s(&g.description),
@@ -271,6 +276,7 @@ impl Editor {
         g.specialk = self.specialk;
         g.reshade = self.reshade;
         g.auto_hdr = self.auto_hdr;
+        g.display = self.display.to_json();
         g.description = opt(&self.description);
         g.developer = opt(&self.developer);
         g.publisher = opt(&self.publisher);
@@ -685,6 +691,7 @@ impl Editor {
             row(ui, "HDR", |ui| {
                 ui.checkbox(&mut self.auto_hdr, "Turn Windows HDR on while this game runs");
             });
+            row(ui, "Display", |ui| self.display_row(ui));
             if self.source == Source::Steam {
                 return;
             }
@@ -805,6 +812,55 @@ impl Editor {
         g.install_dir = opt(&self.install_dir).or(g.install_dir);
         g.exe = opt(&self.exe).or(g.exe);
         g.folder().filter(|d| d.is_dir())
+    }
+
+    /// Resolution / refresh rate / screen while the game runs; restored when it exits.
+    fn display_row(&mut self, ui: &mut Ui) {
+        use gamut_core::display::{self, short};
+        let mons = self.monitors.get_or_insert_with(|| display::monitors().into_iter().map(|m| { let v = display::modes(&m.device); (m, v) }).collect());
+        let d = &mut self.display;
+        let label = |m: &display::Monitor| {
+            let main = if m.primary { " (main)" } else { "" };
+            if m.name.is_empty() { format!("{}{main}", short(&m.device)) } else { format!("{} · {}{main}", short(&m.device), m.name) }
+        };
+        let cur = mons.iter().find(|(m, _)| m.device == d.device).or_else(|| mons.iter().find(|(m, _)| m.primary));
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                let screen = if d.device.is_empty() { "Main display".to_string() } else { cur.map_or(short(&d.device).to_string(), |(m, _)| label(m)) };
+                egui::ComboBox::from_id_salt("disp_dev").selected_text(screen).width(200.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut d.device, String::new(), "Main display");
+                    for (m, _) in mons.iter() {
+                        ui.selectable_value(&mut d.device, m.device.clone(), label(m));
+                    }
+                });
+                let modes: &[display::Mode] = cur.map_or(&[], |(_, v)| v.as_slice());
+                let mut sizes: Vec<(u32, u32)> = modes.iter().map(|m| (m.width, m.height)).collect();
+                sizes.dedup();
+                let res = if d.width == 0 { "Same resolution".to_string() } else { format!("{}×{}", d.width, d.height) };
+                egui::ComboBox::from_id_salt("disp_res").selected_text(res).width(140.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(d.width == 0, "Same resolution").clicked() {
+                        (d.width, d.height) = (0, 0);
+                    }
+                    for (w, h) in sizes {
+                        if ui.selectable_label((d.width, d.height) == (w, h), format!("{w}×{h}")).clicked() {
+                            (d.width, d.height) = (w, h);
+                        }
+                    }
+                });
+                let (w, h) = if d.width > 0 { (d.width, d.height) } else { cur.map_or((0, 0), |(m, _)| (m.current.width, m.current.height)) };
+                let mut rates: Vec<u32> = modes.iter().filter(|m| (m.width, m.height) == (w, h)).map(|m| m.hz).collect();
+                rates.sort_unstable_by(|a, b| b.cmp(a));
+                rates.dedup();
+                let hz = if d.hz == 0 { "Same refresh rate".to_string() } else { format!("{} Hz", d.hz) };
+                egui::ComboBox::from_id_salt("disp_hz").selected_text(hz).width(130.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut d.hz, 0, "Same refresh rate");
+                    for r in rates {
+                        ui.selectable_value(&mut d.hz, r, format!("{r} Hz"));
+                    }
+                });
+            });
+            ui.label(theme::hint("Switched when the game starts and put back when it exits (not if another game already changed it)."));
+        });
     }
 
     fn actions_tab(&mut self, ui: &mut Ui) {

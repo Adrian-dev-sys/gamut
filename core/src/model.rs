@@ -89,6 +89,8 @@ pub struct Game {
     pub install_size: Option<i64>,
     /// Save folder: set by hand or found on PCGamingWiki.
     pub save_dir: Option<String>,
+    /// JSON `display::DisplayMode` set while the game runs.
+    pub display: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -157,6 +159,7 @@ impl Game {
             script_after: None,
             install_size: None,
             save_dir: None,
+            display: None,
         }
     }
 
@@ -166,6 +169,10 @@ impl Game {
 
     pub fn links(&self) -> Vec<Link> {
         self.links.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+    }
+
+    pub fn display_mode(&self) -> Option<crate::display::DisplayMode> {
+        self.display.as_deref().and_then(|s| serde_json::from_str::<crate::display::DisplayMode>(s).ok()).filter(|m| !m.is_empty())
     }
 
     pub fn actions(&self) -> Vec<PlayAction> {

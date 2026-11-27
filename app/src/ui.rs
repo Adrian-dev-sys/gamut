@@ -1566,8 +1566,12 @@ impl GamutApp {
                             });
                         }
                         let location = g.install_dir.as_deref().filter(|d| !d.contains('{')).or(g.exe.as_deref());
-                        if g.install_size.is_some() || g.steam_appid().is_some() || location.is_some() {
+                        let display = g.display_mode();
+                        if g.install_size.is_some() || g.steam_appid().is_some() || location.is_some() || display.is_some() {
                             card(ui, "Install", |ui| {
+                                if let Some(m) = &display {
+                                    fact(ui, "Display", &m.describe());
+                                }
                                 if let Some(b) = g.install_size {
                                     fact(ui, "Size", &gamut_core::format_size(b));
                                 }
@@ -1577,7 +1581,7 @@ impl GamutApp {
                                 if let Some(d) = location {
                                     ui.add_space(2.0);
                                     ui.label(RichText::new("Location").color(TEXT_DIM));
-                                    ui.add(egui::Label::new(RichText::new(d).size(12.5)).truncate()).on_hover_text(d);
+                                    ui.add(egui::Label::new(RichText::new(d).size(12.5)).truncate()); // egui shows the full text on hover when it's cut.
                                 }
                             });
                         }

@@ -247,6 +247,10 @@ impl Tables {
             })
             .collect();
         g.actions = to_json(&actions);
+        // Display Helper's per-game resolution / refresh rate.
+        g.display = Self::join(&self.features, d, "FeatureIds")
+            .and_then(|f| crate::display::DisplayMode::from_playnite(&f))
+            .and_then(|m| m.to_json());
     }
 
     fn launch(&self, d: &Doc, plugin: &str, g: &mut Game) -> Launch {

@@ -13,12 +13,12 @@ const COLS: &str = "id, source, source_id, name, installed, install_dir, exe, ar
     playtime_min, last_played, description, developer, publisher, release_date, genres, \
     has_cover, has_hero, cover_state, meta_state, favorite, hidden, added, \
     playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk, reshade, auto_hdr, ra_id, \
-    sort_name, user_score, notes, links, actions, script_before, script_after, install_size, save_dir";
+    sort_name, user_score, notes, links, actions, script_before, script_after, install_size, save_dir, display";
 
 const ACH_COLS: &str = "key, name, description, icon, icon_locked, hidden, unlocked, percent, points";
 
 /// Columns added after the first release: (name, SQL type).
-const ADDED_COLS: [(&str, &str); 22] = [
+const ADDED_COLS: [(&str, &str); 23] = [
     ("playnite_id", "TEXT"),
     ("platform", "TEXT"),
     ("store", "TEXT"),
@@ -41,6 +41,7 @@ const ADDED_COLS: [(&str, &str); 22] = [
     ("script_after", "TEXT"),
     ("install_size", "INTEGER"),
     ("save_dir", "TEXT"),
+    ("display", "TEXT"),
 ];
 
 /// A Steam app as seen by a scan (local manifest and/or owned-games API).
@@ -264,14 +265,14 @@ impl Library {
     /// Inserts a complete row, keeping its id (used when rebuilding).
     fn insert_full(&self, g: &Game) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)"),
+            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46)"),
             params![
                 g.id, g.source.as_str(), g.source_id, g.name, g.installed, g.install_dir, g.exe, g.args, g.work_dir,
                 g.playtime_min, g.last_played, g.description, g.developer, g.publisher, g.release_date, g.genres,
                 g.has_cover, g.has_hero, g.cover_state, g.meta_state, g.favorite, g.hidden, g.added,
                 g.playnite_id, g.platform, g.store, g.completion, g.play_count, g.critic_score, g.community_score,
                 g.tags, g.series, g.specialk, g.reshade, g.auto_hdr, g.ra_id,
-                g.sort_name, g.user_score, g.notes, g.links, g.actions, g.script_before, g.script_after, g.install_size, g.save_dir
+                g.sort_name, g.user_score, g.notes, g.links, g.actions, g.script_before, g.script_after, g.install_size, g.save_dir, g.display
             ],
         )?;
         Ok(())
@@ -329,6 +330,7 @@ impl Library {
             script_after: r.get(42)?,
             install_size: r.get(43)?,
             save_dir: r.get(44)?,
+            display: r.get(45)?,
         })
     }
 
@@ -493,7 +495,7 @@ impl Library {
              platform = ?13, store = ?14, completion = ?15, critic_score = ?16, community_score = ?17,
              tags = ?18, series = ?19, specialk = ?20, reshade = ?21, auto_hdr = ?22,
              sort_name = ?23, user_score = ?24, notes = ?25, links = ?26, actions = ?27, script_before = ?28,
-             script_after = ?29, save_dir = ?30, install_size = ?31,
+             script_after = ?29, save_dir = ?30, install_size = ?31, display = ?33,
              -- Steam knows where its games are.
              install_dir = CASE WHEN source = 'custom' THEN ?32 ELSE install_dir END,
              -- A new platform (or a new name for an unmatched game) means a new RetroAchievements lookup.
@@ -505,7 +507,7 @@ impl Library {
                 g.platform, g.store, g.completion, g.critic_score, g.community_score, g.tags, g.series,
                 g.specialk, g.reshade, g.auto_hdr,
                 g.sort_name, g.user_score, g.notes, g.links, g.actions, g.script_before, g.script_after, g.save_dir,
-                g.install_size, g.install_dir
+                g.install_size, g.install_dir, g.display
             ],
         )?;
         Ok(())
@@ -890,10 +892,10 @@ impl Library {
             let mut set = tx.prepare(
                 "UPDATE games SET sort_name = COALESCE(sort_name, ?2), user_score = COALESCE(user_score, ?3),
                  notes = COALESCE(notes, ?4), links = COALESCE(links, ?5), actions = COALESCE(actions, ?6),
-                 install_size = COALESCE(install_size, ?7)
+                 install_size = COALESCE(install_size, ?7), display = COALESCE(display, ?8)
                  WHERE id = ?1 AND (sort_name IS NOT COALESCE(sort_name, ?2) OR user_score IS NOT COALESCE(user_score, ?3)
                    OR notes IS NOT COALESCE(notes, ?4) OR links IS NOT COALESCE(links, ?5) OR actions IS NOT COALESCE(actions, ?6)
-                   OR install_size IS NOT COALESCE(install_size, ?7))",
+                   OR install_size IS NOT COALESCE(install_size, ?7) OR display IS NOT COALESCE(display, ?8))",
             )?;
             for g in games {
                 let Some(pid) = &g.playnite_id else {
@@ -904,7 +906,7 @@ impl Library {
                 let changed = match id {
                     Some(id) => {
                         set.execute(params![
-                            id, g.sort_name, g.user_score, g.notes, g.links, g.actions, g.install_size
+                            id, g.sort_name, g.user_score, g.notes, g.links, g.actions, g.install_size, g.display
                         ])? > 0
                     }
                     None => false,
