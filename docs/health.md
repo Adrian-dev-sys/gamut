@@ -13,7 +13,7 @@
 ## Dialog
 - Two sections: **Can't start** (Edit / Remove / Ignore) and **Possible duplicates**.
 - Each duplicate copy shows how it starts (emulator + ROM file, since copies share the emulator exe), where it came from (Playnite import, store, added in Gamut), added date, playtime and cover.
-- ★ marks the suggested copy (`keep_score`: can start, playtime, cover, description, older). **Keep only this** removes the other copies after an inline confirm, optionally adding their playtime to the kept one. **Not a duplicate** ignores the group.
+- "(suggested)" marks the copy to keep (the UI font has no ★) (`keep_score`: can start, playtime, cover, description, older). **Keep only this** removes the other copies after an inline confirm, optionally adding their playtime to the kept one. **Not a duplicate** ignores the group.
 
 ## Settings (`[health]` in config.toml)
 - `skip_platforms`: platforms not checked at all (games played on the console).

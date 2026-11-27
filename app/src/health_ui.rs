@@ -122,7 +122,7 @@ impl HealthDialog {
                 if !dups.is_empty() {
                     theme::section(ui, &format!("POSSIBLE DUPLICATES ({})", dups.len()));
                     ui.label(theme::hint(
-                        "The same game was added more than once for one platform. Pick the copy to keep (★ is the suggested one: \
+                        "The same game was added more than once for one platform. Pick the copy to keep (the one marked "suggested" \
                          it can start and has the most playtime and details). \"Not a duplicate\" hides the group.",
                     ));
                     for issue in &dups {
@@ -206,7 +206,7 @@ fn title(ui: &mut Ui, g: &Game) {
 fn copy_row(ui: &mut Ui, g: &Game, suggested: bool, out: &mut Option<HealthOut>, key: &str, keep: &mut Option<(String, i64, bool)>) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            let head = if suggested { format!("★ {}", launcher(g)) } else { launcher(g) };
+            let head = if suggested { format!("{}  (suggested)", launcher(g)) } else { launcher(g) };
             ui.label(if suggested { RichText::new(head).color(ACCENT) } else { RichText::new(head) });
             ui.label(theme::hint(&details(g)));
         });
