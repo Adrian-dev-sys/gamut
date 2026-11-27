@@ -18,6 +18,8 @@
   controller with DSX/HidHide, while HID sees DSX's virtual DualSense, like games do. Every HID report is
   edge-checked (`Src::update`), so quick taps between polls still count. Remappers show a pad twice (real +
   virtual): `Lead` follows the device that acted first and ignores others until it's quiet for 400 ms.
+  When a Bluetooth pad and a non-Bluetooth one are both present (DSX: real BT pad + virtual USB copy), the
+  Bluetooth one is muted so only the remapped copy counts (`mirrored`; bus types are logged on connect).
   D-pad/left stick repeat after 380 ms, every 95 ms. `GamutApp::handle_pad` ignores input while Gamut's
   window isn't focused (a game is in front). A = open/Play, B = back/clear, X = favorite, Y = search,
   Start/Options/Create = game menu (`game_menu_window`, the right-click menu as a dialog), LB/RB = top tabs
@@ -32,7 +34,11 @@
 - Details popup with controller: `raw_input_hook` turns D-pad/A into arrow/Enter key events while it's open,
   so egui's own focus moves between its buttons/tabs and Enter clicks the focused one. Opening a game from the
   controller or keyboard focuses Play (`focus_play`); the focused widget gets a white border (`kb_focus`).
-  L2/R2 scroll the page (`detail_scroll`).
+  L2/R2 page and the right stick scrolls (`scroll_details`); a D-pad up/down that finds nothing to focus
+  that way scrolls instead (`nav_probe`: focus unchanged next frame).
+- On-screen keyboard (`osk.rs`): A on any focused text field (and Y outside big screen, which focuses the
+  search box) opens it at the bottom. It's painted, not focusable, and types by injecting `Event::Text` /
+  Backspace / Ctrl+A into the focused field. A types, X deletes, Y space, LB/RB shift, B closes.
 - Search: Y/Triangle focuses the search box; in big screen it opens `search_pop.rs`, a centered on-screen
   keyboard (A types, X deletes, B/Y close) that filters the grid live.
 - The grid keeps `GRID_MARGIN` above the first row and below the last so the cursor outline/glow isn't clipped.

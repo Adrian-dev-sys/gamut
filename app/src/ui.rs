@@ -201,6 +201,10 @@ pub struct GamutApp {
     was_dialog: bool,
     /// Controller input held for the next frame (egui moves focus once per frame).
     pad_later: Vec<crate::gamepad::Pad>,
+    /// On-screen keyboard typing into the focused text field.
+    osk: Option<crate::osk::Osk>,
+    /// Details: a D-pad move from this focused widget; if focus didn't change, the page scrolls instead.
+    nav_probe: Option<(egui::Id, f32)>,
     settings_tab: usize,
     picker: Option<Picker>,
     ctx_handle: egui::Context,
@@ -297,6 +301,8 @@ impl GamutApp {
             game_menu: None,
             was_dialog: false,
             pad_later: Vec::new(),
+            osk: None,
+            nav_probe: None,
             settings_tab: 0,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
@@ -673,8 +679,10 @@ impl GamutApp {
                 }
                 Pad::Nav(n) if self.selected.is_none() && grid => self.nav(n, false),
                 // Details: L2/R2 page through the description.
-                Pad::Nav(Nav::PageUp) if self.selected.is_some() => self.detail_scroll = Some(-420.0),
-                Pad::Nav(Nav::PageDown) if self.selected.is_some() => self.detail_scroll = Some(420.0),
+                Pad::Nav(Nav::PageUp) if self.selected.is_some() => self.scroll_details(-420.0),
+                Pad::Nav(Nav::PageDown) if self.selected.is_some() => self.scroll_details(420.0),
+                Pad::Scroll(d) if self.selected.is_some() => self.scroll_details(d as f32 * 60.0),
+                Pad::Scroll(_) => {}
                 Pad::Nav(_) => {}
                 Pad::Search if self.selected.is_none() => {
                     (self.ach_tab, self.stats_tab) = (None, None);
@@ -682,6 +690,7 @@ impl GamutApp {
                         self.search_pop = Some(crate::search_pop::SearchPop::new());
                     } else {
                         self.focus_search = true;
+                        self.osk = Some(crate::osk::Osk::new());
                     }
                 }
                 Pad::Search => {}
@@ -734,6 +743,10 @@ impl GamutApp {
             }
             self.kb_focus = true;
         }
+    }
+
+    fn scroll_details(&mut self, d: f32) {
+        self.detail_scroll = Some(self.detail_scroll.unwrap_or(0.0) + d);
     }
 
     fn close_search(&mut self) {
@@ -2462,7 +2475,55 @@ impl eframe::App for GamutApp {
         use crate::gamepad::Pad;
         let dialog = self.any_dialog() && self.search_pop.is_none();
         let details = self.selected.is_some() && !self.any_dialog();
-        let mut has_focus = ctx.memory(|m| m.focused().is_some());
+        let focused = ctx.memory(|m| m.focused());
+        let mut has_focus = focused.is_some();
+        let text_field = focused.filter(|id| egui::text_edit::TextEditState::load(ctx, *id).is_some());
+        // Last frame's D-pad move in the details found nothing that way: scroll the page instead.
+        if let Some((from, d)) = self.nav_probe.take() {
+            if details && focused == Some(from) {
+                self.scroll_details(d);
+            }
+        }
+        if self.osk.is_some() && (text_field.is_none() || self.search_pop.is_some()) {
+            self.osk = None;
+        }
+        if let Some(osk) = self.osk.as_mut() {
+            use crate::osk::Out;
+            let events: Vec<Pad> = std::mem::take(&mut self.pad_later).into_iter().chain(self.pad.try_iter()).collect();
+            if !raw.focused {
+                return;
+            }
+            let key = |raw: &mut egui::RawInput, key: Key, modifiers: egui::Modifiers| {
+                for pressed in [true, false] {
+                    raw.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
+                }
+            };
+            for p in events {
+                if p == Pad::BigScreen {
+                    self.pad_buf.push(p);
+                    continue;
+                }
+                match osk.pad(p) {
+                    Out::None => {}
+                    Out::Text(s) => raw.events.push(egui::Event::Text(s)),
+                    Out::Backspace => key(raw, Key::Backspace, Default::default()),
+                    Out::Clear => {
+                        key(raw, Key::A, egui::Modifiers::COMMAND);
+                        key(raw, Key::Backspace, Default::default());
+                    }
+                    Out::Close => {
+                        self.osk = None;
+                        // Outside dialogs, leave the field so the D-pad drives the grid again.
+                        if let (false, Some(id)) = (dialog, text_field) {
+                            ctx.memory_mut(|m| m.surrender_focus(id));
+                        }
+                        break;
+                    }
+                }
+            }
+            ctx.request_repaint();
+            return;
+        }
         let push = |raw: &mut egui::RawInput, key: Key, shift: bool| {
             let modifiers = egui::Modifiers { shift, ..Default::default() };
             for pressed in [true, false] {
@@ -2501,6 +2562,13 @@ impl eframe::App for GamutApp {
                 (Pad::Back, true) => Some((Key::Escape, false)),
                 _ => None,
             };
+            // A on a text field opens the on-screen keyboard instead.
+            if p == Pad::Confirm && text_field.is_some() && self.search_pop.is_none() {
+                self.osk = Some(crate::osk::Osk::new());
+                self.pad_later.extend_from_slice(&events[i + 1..]);
+                ctx.request_repaint();
+                break;
+            }
             match key.filter(|_| dialog || details) {
                 // Details opened with the mouse: the first move lands on Play.
                 Some(_) if details && !has_focus => {
@@ -2509,6 +2577,12 @@ impl eframe::App for GamutApp {
                     moved = true;
                 }
                 Some((key, shift)) => {
+                    if details && matches!(key, Key::ArrowUp | Key::ArrowDown) {
+                        if let Some(f) = focused {
+                            self.nav_probe = Some((f, if key == Key::ArrowUp { -160.0 } else { 160.0 }));
+                            ctx.request_repaint();
+                        }
+                    }
                     push(raw, key, shift);
                     self.kb_focus = true;
                     moved = matches!(p, Pad::Nav(_) | Pad::Confirm);
@@ -2702,6 +2776,9 @@ impl eframe::App for GamutApp {
         self.stop_window(&ctx);
         self.playnite_window(&ctx);
         self.game_menu_window(&ctx, &mut actions);
+        if let Some(o) = &self.osk {
+            o.show(&ctx);
+        }
         self.play_window(&ctx, &mut actions);
         if self.any_dialog() != self.was_dialog {
             ctx.request_repaint();

@@ -25,11 +25,15 @@ pub enum Pad {
     Menu,
     /// North (Y / Triangle).
     Search,
+    /// Right stick held up (-1) / down (1), repeated while held.
+    Scroll(i8),
 }
 
 /// Held-direction repeat: first repeat after `DELAY`, then every `RATE`.
 const DELAY: Duration = Duration::from_millis(380);
 const RATE: Duration = Duration::from_millis(95);
+/// Right-stick scroll steps while held.
+const SCROLL_RATE: Duration = Duration::from_millis(45);
 /// After input from one device, others are ignored this long (a remapper's mirrored copy).
 const LEAD: Duration = Duration::from_millis(400);
 const STICK: f32 = 0.55;
@@ -53,6 +57,8 @@ pub fn start(ctx: egui::Context) -> Receiver<Pad> {
 struct PadState {
     buttons: [bool; 11],
     dir: Option<Nav>,
+    /// Right stick vertical: -1 up, 1 down.
+    scroll: i8,
 }
 
 /// Order of `PadState::buttons`.
@@ -75,6 +81,7 @@ const ACTIONS: [Pad; 11] = [
 struct Src {
     state: PadState,
     due: Option<Instant>,
+    scroll_due: Option<Instant>,
 }
 
 impl Src {
@@ -91,6 +98,12 @@ impl Src {
                 now + DELAY
             });
         }
+        if new.scroll != self.state.scroll {
+            self.scroll_due = (new.scroll != 0).then(|| {
+                out.push(Pad::Scroll(new.scroll));
+                now + SCROLL_RATE
+            });
+        }
         self.state = new;
     }
 
@@ -101,6 +114,10 @@ impl Src {
                 out.push(Pad::Nav(d));
                 self.due = Some(now + RATE);
             }
+        }
+        if let Some(due) = self.scroll_due.filter(|d| now >= *d && self.state.scroll != 0) {
+            out.push(Pad::Scroll(self.state.scroll));
+            self.scroll_due = Some(due.max(now - SCROLL_RATE) + SCROLL_RATE);
         }
     }
 }
@@ -133,6 +150,8 @@ struct HidPad {
     dev: hidapi::HidDevice,
     path: CString,
     dualsense: bool,
+    /// Connected over Bluetooth (with DSX, the real pad; its virtual copy is USB).
+    bt: bool,
     src: Src,
     id: u64,
 }
@@ -160,7 +179,9 @@ fn run(tx: Sender<Pad>, ctx: egui::Context) {
             for (id, p) in g.gamepads() {
                 let s = gil_src.entry(id.into()).or_default();
                 let mut v = Vec::new();
-                s.update(PadState { buttons: s.state.buttons, dir: gilrs_dir(&p) }, now, &mut v);
+                let ry = p.value(Axis::RightStickY);
+                let scroll = if ry > STICK { -1 } else if ry < -STICK { 1 } else { 0 };
+                s.update(PadState { buttons: s.state.buttons, dir: gilrs_dir(&p), scroll }, now, &mut v);
                 s.tick(now, &mut v);
                 out.extend(v.into_iter().map(|a| (usize::from(id) as u64, a)));
                 if s.state.dir.is_some() {
@@ -175,7 +196,11 @@ fn run(tx: Sender<Pad>, ctx: egui::Context) {
                 scanned = Instant::now();
                 open_new(api, &mut pads, &mut next_id);
             }
+            // DSX & co. mirror a Bluetooth pad as a virtual USB one: use only the virtual one (it has the
+            // remapper's mappings), and read the real one just to keep its buffer drained.
+            let mirrored = pads.iter().any(|p| p.bt) && pads.iter().any(|p| !p.bt);
             pads.retain_mut(|p| {
+                let muted = mirrored && p.bt;
                 let mut buf = [0u8; 128];
                 let mut v = Vec::new();
                 loop {
@@ -193,6 +218,9 @@ fn run(tx: Sender<Pad>, ctx: egui::Context) {
                     }
                 }
                 p.src.tick(now, &mut v);
+                if muted {
+                    return true;
+                }
                 out.extend(v.into_iter().map(|a| (p.id, a)));
                 if p.src.state != PadState::default() {
                     lead.hold(p.id, now);
@@ -268,9 +296,10 @@ fn open_new(api: &mut hidapi::HidApi, pads: &mut Vec<HidPad>, next_id: &mut u64)
             continue;
         }
         if let Ok(dev) = d.open_device(api) {
-            log::info!("controller connected: {} ({pid:04x})", d.product_string().unwrap_or("PlayStation pad"));
+            let bt = matches!(d.bus_type(), hidapi::BusType::Bluetooth);
+            log::info!("controller connected: {} ({pid:04x}, {:?})", d.product_string().unwrap_or("PlayStation pad"), d.bus_type());
             *next_id += 1;
-            pads.push(HidPad { dev, path: d.path().to_owned(), dualsense: DUALSENSE.contains(&pid), src: Src::default(), id: *next_id });
+            pads.push(HidPad { dev, path: d.path().to_owned(), dualsense: DUALSENSE.contains(&pid), bt, src: Src::default(), id: *next_id });
         }
     }
 }
@@ -301,6 +330,8 @@ fn parse(r: &[u8], dualsense: bool) -> Option<PadState> {
     };
     let axis = |v: u8| (v as f32 - 128.0) / 128.0;
     let dir = dpad.or_else(|| stick_dir(axis(b(0)), -axis(b(1))));
+    let ry = axis(b(3));
+    let scroll = if ry < -STICK { -1 } else if ry > STICK { 1 } else { 0 };
     let buttons = [
         face & 0x20 != 0,     // Cross
         face & 0x40 != 0,     // Circle
@@ -314,7 +345,7 @@ fn parse(r: &[u8], dualsense: bool) -> Option<PadState> {
         shoulder & 0x20 != 0, // Options
         face & 0x80 != 0,     // Triangle
     ];
-    Some(PadState { buttons, dir })
+    Some(PadState { buttons, dir, scroll })
 }
 
 #[cfg(test)]

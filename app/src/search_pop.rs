@@ -4,7 +4,7 @@ use crate::theme::{self, ACCENT, CARD, CARD_HI, TEXT_DIM};
 use crate::ui::Nav;
 use egui::{vec2, Color32, CornerRadius, RichText, Stroke};
 
-const ROWS: [&str; 4] = ["1234567890", "QWERTYUIOP", "ASDFGHJKL'", "ZXCVBNM-:."];
+use crate::osk::ROWS;
 /// Bottom row: label and the columns (of 10) it spans.
 const SPECIAL: [(&str, usize, usize); 4] = [("Space", 0, 3), ("Delete", 3, 6), ("Clear", 6, 8), ("Done", 8, 10)];
 

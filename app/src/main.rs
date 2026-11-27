@@ -8,6 +8,7 @@ mod gamepad;
 mod keycheck;
 mod sessions_view;
 mod logging;
+mod osk;
 mod search_pop;
 mod lookup;
 mod notify;
