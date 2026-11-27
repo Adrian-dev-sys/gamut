@@ -6,7 +6,7 @@ use gamut_core::Library;
 fn main() {
     let db = std::path::PathBuf::from(std::env::args().nth(1).expect("db path"));
     let entries: Vec<SteamEntry> = (1..1500)
-        .map(|i| SteamEntry { appid: i, name: format!("Game {i}"), installed: i % 3 == 0, install_dir: None, playtime_min: Some(i as i64), last_played: 0 })
+        .map(|i| SteamEntry { appid: i, name: format!("Game {i}"), installed: i % 3 == 0, install_dir: None, size: None, playtime_min: Some(i as i64), last_played: 0 })
         .collect();
     let desc = "x".repeat(6000);
     let hs: Vec<_> = (0..4)

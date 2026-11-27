@@ -7,6 +7,8 @@ pub mod http;
 pub mod igdb;
 pub mod hdr;
 pub mod health;
+pub mod hltb;
+pub mod pcgw;
 pub mod images;
 pub mod launch;
 pub mod litedb;
@@ -16,6 +18,7 @@ pub mod procs;
 pub mod reshade;
 pub mod retro;
 pub mod scrape;
+pub mod scripts;
 pub mod specialk;
 pub mod steam;
 pub mod status;
@@ -38,6 +41,7 @@ pub struct Paths {
     pub covers: PathBuf,
     pub thumbs: PathBuf,
     pub heroes: PathBuf,
+    pub icons: PathBuf,
 }
 
 impl Paths {
@@ -61,9 +65,10 @@ impl Paths {
             covers: root.join("covers"),
             thumbs: root.join("thumbs"),
             heroes: root.join("heroes"),
+            icons: root.join("icons"),
             root,
         };
-        for d in [&p.root, &p.covers, &p.thumbs, &p.heroes] {
+        for d in [&p.root, &p.covers, &p.thumbs, &p.heroes, &p.icons] {
             std::fs::create_dir_all(d)?;
         }
         Ok(p)
@@ -90,6 +95,9 @@ impl Paths {
     pub fn hero(&self, id: i64) -> PathBuf {
         self.heroes.join(format!("{id}.img"))
     }
+    pub fn icon(&self, id: i64) -> PathBuf {
+        self.icons.join(format!("{id}.img"))
+    }
 }
 
 /// Released when dropped (or when the process exits).
@@ -108,6 +116,29 @@ pub fn utc_offset() -> i64 {
     }
     #[allow(unreachable_code)]
     0
+}
+
+/// Total size of the files under `dir` (links not followed).
+pub fn dir_size(dir: &std::path::Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// "123.3 GB", "850 MB".
+pub fn format_size(bytes: i64) -> String {
+    let b = bytes.max(0) as f64;
+    match b {
+        b if b >= 1e12 => format!("{:.2} TB", b / 1e12),
+        b if b >= 1e9 => format!("{:.1} GB", b / 1e9),
+        b if b >= 1e6 => format!("{:.0} MB", b / 1e6),
+        b => format!("{:.0} KB", b / 1e3),
+    }
 }
 
 pub fn now() -> i64 {

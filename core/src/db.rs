@@ -12,12 +12,13 @@ pub struct Library {
 const COLS: &str = "id, source, source_id, name, installed, install_dir, exe, args, work_dir, \
     playtime_min, last_played, description, developer, publisher, release_date, genres, \
     has_cover, has_hero, cover_state, meta_state, favorite, hidden, added, \
-    playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk, reshade, auto_hdr, ra_id";
+    playnite_id, platform, store, completion, play_count, critic_score, community_score, tags, series, specialk, reshade, auto_hdr, ra_id, \
+    sort_name, user_score, notes, links, actions, script_before, script_after, install_size, save_dir";
 
 const ACH_COLS: &str = "key, name, description, icon, icon_locked, hidden, unlocked, percent, points";
 
 /// Columns added after the first release: (name, SQL type).
-const ADDED_COLS: [(&str, &str); 13] = [
+const ADDED_COLS: [(&str, &str); 22] = [
     ("playnite_id", "TEXT"),
     ("platform", "TEXT"),
     ("store", "TEXT"),
@@ -31,6 +32,15 @@ const ADDED_COLS: [(&str, &str); 13] = [
     ("reshade", "INTEGER"),
     ("auto_hdr", "INTEGER NOT NULL DEFAULT 0"),
     ("ra_id", "INTEGER"),
+    ("sort_name", "TEXT"),
+    ("user_score", "INTEGER"),
+    ("notes", "TEXT"),
+    ("links", "TEXT"),
+    ("actions", "TEXT"),
+    ("script_before", "TEXT"),
+    ("script_after", "TEXT"),
+    ("install_size", "INTEGER"),
+    ("save_dir", "TEXT"),
 ];
 
 /// A Steam app as seen by a scan (local manifest and/or owned-games API).
@@ -40,6 +50,8 @@ pub struct SteamEntry {
     pub name: String,
     pub installed: bool,
     pub install_dir: Option<String>,
+    /// Bytes on disk (from the app manifest).
+    pub size: Option<i64>,
     pub playtime_min: Option<i64>,
     pub last_played: i64,
 }
@@ -93,6 +105,8 @@ impl Library {
              -- IGDB game per game: >0 the IGDB id, 0 = looked up, no confident match.
              CREATE TABLE IF NOT EXISTS igdb_match (game_id INTEGER PRIMARY KEY, igdb_id INTEGER NOT NULL);
              -- Last Steam API total per game and when it was first seen at that value (session baseline).
+             CREATE TABLE IF NOT EXISTS hltb (game_id INTEGER PRIMARY KEY, hltb_id INTEGER NOT NULL, main INTEGER NOT NULL,
+                 plus INTEGER NOT NULL, full INTEGER NOT NULL, fetched INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS steam_seen (game_id INTEGER PRIMARY KEY, minutes INTEGER NOT NULL, since INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS achievement_state (
                 game_id INTEGER PRIMARY KEY, fetched INTEGER NOT NULL DEFAULT 0, schema_at INTEGER NOT NULL DEFAULT 0,
@@ -250,13 +264,14 @@ impl Library {
     /// Inserts a complete row, keeping its id (used when rebuilding).
     fn insert_full(&self, g: &Game) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)"),
+            &format!("INSERT OR REPLACE INTO games ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)"),
             params![
                 g.id, g.source.as_str(), g.source_id, g.name, g.installed, g.install_dir, g.exe, g.args, g.work_dir,
                 g.playtime_min, g.last_played, g.description, g.developer, g.publisher, g.release_date, g.genres,
                 g.has_cover, g.has_hero, g.cover_state, g.meta_state, g.favorite, g.hidden, g.added,
                 g.playnite_id, g.platform, g.store, g.completion, g.play_count, g.critic_score, g.community_score,
-                g.tags, g.series, g.specialk, g.reshade, g.auto_hdr, g.ra_id
+                g.tags, g.series, g.specialk, g.reshade, g.auto_hdr, g.ra_id,
+                g.sort_name, g.user_score, g.notes, g.links, g.actions, g.script_before, g.script_after, g.install_size, g.save_dir
             ],
         )?;
         Ok(())
@@ -305,6 +320,15 @@ impl Library {
             reshade: r.get(33)?,
             auto_hdr: r.get(34)?,
             ra_id: r.get(35)?,
+            sort_name: r.get(36)?,
+            user_score: r.get(37)?,
+            notes: r.get(38)?,
+            links: r.get(39)?,
+            actions: r.get(40)?,
+            script_before: r.get(41)?,
+            script_after: r.get(42)?,
+            install_size: r.get(43)?,
+            save_dir: r.get(44)?,
         })
     }
 
@@ -388,7 +412,8 @@ impl Library {
                     installed = excluded.installed,
                     install_dir = COALESCE(excluded.install_dir, install_dir),
                     playtime_min = COALESCE(?5, playtime_min),
-                    last_played = MAX(last_played, excluded.last_played)",
+                    last_played = MAX(last_played, excluded.last_played),
+                    install_size = COALESCE(?8, install_size)",
             )?;
             for e in entries {
                 st.execute(params![
@@ -398,7 +423,8 @@ impl Library {
                     e.install_dir,
                     e.playtime_min,
                     e.last_played,
-                    now
+                    now,
+                    e.size
                 ])?;
             }
         }
@@ -466,6 +492,10 @@ impl Library {
              description = ?8, developer = ?9, publisher = ?10, release_date = ?11, genres = ?12,
              platform = ?13, store = ?14, completion = ?15, critic_score = ?16, community_score = ?17,
              tags = ?18, series = ?19, specialk = ?20, reshade = ?21, auto_hdr = ?22,
+             sort_name = ?23, user_score = ?24, notes = ?25, links = ?26, actions = ?27, script_before = ?28,
+             script_after = ?29, save_dir = ?30, install_size = ?31,
+             -- Steam knows where its games are.
+             install_dir = CASE WHEN source = 'custom' THEN ?32 ELSE install_dir END,
              -- A new platform (or a new name for an unmatched game) means a new RetroAchievements lookup.
              ra_id = CASE WHEN platform IS NOT ?13 OR (ra_id <= 0 AND name IS NOT ?2) THEN NULL ELSE ra_id END
              WHERE id = ?1",
@@ -473,7 +503,9 @@ impl Library {
                 g.id, g.name, g.exe, g.args, g.work_dir, g.favorite, g.hidden,
                 g.description, g.developer, g.publisher, g.release_date, g.genres,
                 g.platform, g.store, g.completion, g.critic_score, g.community_score, g.tags, g.series,
-                g.specialk, g.reshade, g.auto_hdr
+                g.specialk, g.reshade, g.auto_hdr,
+                g.sort_name, g.user_score, g.notes, g.links, g.actions, g.script_before, g.script_after, g.save_dir,
+                g.install_size, g.install_dir
             ],
         )?;
         Ok(())
@@ -487,6 +519,7 @@ impl Library {
         self.conn.execute("DELETE FROM sessions WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM steam_seen WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM igdb_match WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM hltb WHERE game_id = ?1", [id])?;
         Ok(())
     }
 
@@ -682,6 +715,34 @@ impl Library {
         Ok(())
     }
 
+    pub fn set_install_size(&self, id: i64, bytes: Option<i64>) -> Result<()> {
+        self.conn.execute("UPDATE games SET install_size = ?2 WHERE id = ?1", params![id, bytes])?;
+        Ok(())
+    }
+
+    pub fn set_save_dir(&self, id: i64, dir: &str) -> Result<()> {
+        self.conn.execute("UPDATE games SET save_dir = ?2 WHERE id = ?1", params![id, dir])?;
+        Ok(())
+    }
+
+    /// Cached HowLongToBeat entry: (hltb id, main, main+extra, completionist seconds, fetched); id 0 = not found.
+    pub fn hltb(&self, id: i64) -> Result<Option<crate::hltb::Times>> {
+        Ok(self
+            .conn
+            .query_row("SELECT hltb_id, main, plus, full, fetched FROM hltb WHERE game_id = ?1", [id], |r| {
+                Ok(crate::hltb::Times { id: r.get(0)?, main: r.get(1)?, plus: r.get(2)?, full: r.get(3)?, fetched: r.get(4)? })
+            })
+            .optional()?)
+    }
+
+    pub fn set_hltb(&self, id: i64, t: &crate::hltb::Times) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO hltb (game_id, hltb_id, main, plus, full, fetched) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, t.id, t.main, t.plus, t.full, t.fetched],
+        )?;
+        Ok(())
+    }
+
     pub fn set_hidden(&self, id: i64, hidden: bool) -> Result<()> {
         self.conn.execute("UPDATE games SET hidden = ?2 WHERE id = ?1", params![id, hidden])?;
         Ok(())
@@ -810,6 +871,44 @@ impl Library {
         }
         tx.commit()?;
         Ok((updated, kept))
+    }
+
+    /// Fills Playnite's extras (links, notes, user score…) where the game has none; ids in `games` order
+    /// (None = not in the library) and whether anything changed.
+    pub fn import_extras(&mut self, games: &[&Game]) -> Result<Vec<(Option<i64>, bool)>> {
+        let tx = self.conn.transaction()?;
+        let mut out = Vec::new();
+        {
+            let mut get = tx.prepare("SELECT id FROM games WHERE playnite_id = ?1")?;
+            let mut set = tx.prepare(
+                "UPDATE games SET sort_name = COALESCE(sort_name, ?2), user_score = COALESCE(user_score, ?3),
+                 notes = COALESCE(notes, ?4), links = COALESCE(links, ?5), actions = COALESCE(actions, ?6),
+                 script_before = COALESCE(script_before, ?7), script_after = COALESCE(script_after, ?8),
+                 install_size = COALESCE(install_size, ?9)
+                 WHERE id = ?1 AND (sort_name IS NOT COALESCE(sort_name, ?2) OR user_score IS NOT COALESCE(user_score, ?3)
+                   OR notes IS NOT COALESCE(notes, ?4) OR links IS NOT COALESCE(links, ?5) OR actions IS NOT COALESCE(actions, ?6)
+                   OR script_before IS NOT COALESCE(script_before, ?7) OR script_after IS NOT COALESCE(script_after, ?8)
+                   OR install_size IS NOT COALESCE(install_size, ?9))",
+            )?;
+            for g in games {
+                let Some(pid) = &g.playnite_id else {
+                    out.push((None, false));
+                    continue;
+                };
+                let id: Option<i64> = get.query_row([pid], |r| r.get(0)).optional()?;
+                let changed = match id {
+                    Some(id) => {
+                        set.execute(params![
+                            id, g.sort_name, g.user_score, g.notes, g.links, g.actions, g.script_before, g.script_after, g.install_size
+                        ])? > 0
+                    }
+                    None => false,
+                };
+                out.push((id, changed));
+            }
+        }
+        tx.commit()?;
+        Ok(out)
     }
 
     /// Upserts Playnite games in one transaction and returns their row ids (same order).
@@ -958,7 +1057,7 @@ mod tests {
         let path = dir.join("t.db");
         let _ = std::fs::remove_file(&path);
         let mut lib = Library::open(&path).unwrap();
-        let e = |appid, name: &str| SteamEntry { appid, name: name.into(), installed: true, install_dir: None, playtime_min: None, last_played: 0 };
+        let e = |appid, name: &str| SteamEntry { appid, name: name.into(), installed: true, install_dir: None, size: None, playtime_min: None, last_played: 0 };
         lib.sync_steam(&[e(1, "Old")]).unwrap();
         lib.sync_steam(&[e(1, "Old"), e(2, "New")]).unwrap();
         let added = |n: &str| lib.conn.query_row("SELECT added FROM games WHERE name = ?1", [n], |r| r.get::<_, i64>(0)).unwrap();
@@ -1045,6 +1144,33 @@ world"));
     }
 
     #[test]
+    fn saves_details_fields() {
+        let dir = std::env::temp_dir().join(format!("gamut-test-extra-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lib = Library::open(&dir.join("t.db")).unwrap();
+        let id = lib.add_custom(&Game::new_custom("Hades".into(), Some(r"D:\G\Hades.exe".into()))).unwrap();
+        let mut g = lib.get(id).unwrap().unwrap();
+        (g.sort_name, g.user_score, g.notes, g.install_dir) = (Some("Hades 1".into()), Some(90), Some("100% run".into()), Some(r"D:\G".into()));
+        g.links = crate::model::to_json(&[crate::model::Link { name: "Wiki".into(), url: "https://x".into() }]);
+        lib.update_user_fields(&g).unwrap();
+        let back = lib.get(id).unwrap().unwrap();
+        assert_eq!((&back.sort_name, back.user_score, &back.notes, &back.install_dir), (&g.sort_name, g.user_score, &g.notes, &g.install_dir));
+        assert_eq!(back.links()[0].url, "https://x");
+        // Playnite extras fill only what's empty.
+        let mut pn = Game { playnite_id: Some("p".into()), notes: Some("from Playnite".into()), install_size: Some(5), ..back.clone() };
+        lib.conn.execute("UPDATE games SET playnite_id = 'p' WHERE id = ?1", [id]).unwrap();
+        assert_eq!(lib.import_extras(&[&pn]).unwrap(), [(Some(id), true)]);
+        let back = lib.get(id).unwrap().unwrap();
+        assert_eq!((back.notes.as_deref(), back.install_size), (Some("100% run"), Some(5)));
+        pn.install_size = Some(9);
+        assert_eq!(lib.import_extras(&[&pn]).unwrap(), [(Some(id), false)]);
+        let t = crate::hltb::Times { id: 7, main: 3600, plus: 0, full: 0, fetched: 1 };
+        lib.set_hltb(id, &t).unwrap();
+        assert_eq!(lib.hltb(id).unwrap(), Some(t));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn steam_sync_and_custom() {
         let dir = std::env::temp_dir().join(format!("gamut-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1054,6 +1180,7 @@ world"));
             name: format!("G{id}"),
             installed: inst,
             install_dir: None,
+            size: None,
             playtime_min: None,
             last_played: 0,
         };
@@ -1076,7 +1203,7 @@ world"));
         let dir = std::env::temp_dir().join(format!("gamut-ach-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut lib = Library::open(&dir.join("t.db")).unwrap();
-        let entry = SteamEntry { appid: 9, name: "G".into(), installed: true, install_dir: None, playtime_min: Some(5), last_played: 100 };
+        let entry = SteamEntry { appid: 9, name: "G".into(), installed: true, install_dir: None, size: None, playtime_min: Some(5), last_played: 100 };
         lib.sync_steam(&[entry]).unwrap();
         let id = lib.all().unwrap()[0].id;
         assert_eq!(lib.achievements_due(true, true).unwrap().map(|g| g.id), Some(id));
@@ -1170,7 +1297,7 @@ world"));
         let dir = std::env::temp_dir().join(format!("gamut-sess-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut lib = Library::open(&dir.join("t.db")).unwrap();
-        let e = |mins, last| SteamEntry { appid: 5, name: "G".into(), installed: true, install_dir: None, playtime_min: Some(mins), last_played: last };
+        let e = |mins, last| SteamEntry { appid: 5, name: "G".into(), installed: true, install_dir: None, size: None, playtime_min: Some(mins), last_played: last };
         lib.sync_steam(&[e(10, 0)]).unwrap();
         lib.sync_steam(&[e(10, 0)]).unwrap();
         assert!(lib.sessions_since(0).unwrap().is_empty(), "first sightings aren't play");

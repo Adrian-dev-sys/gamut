@@ -34,6 +34,10 @@ fn main() -> anyhow::Result<()> {
         }
         let _lock = paths.lock().ok_or_else(|| anyhow::anyhow!("Gamut is running; close it first"))?;
         let (mut lib, _) = Library::open_checked(&paths.db)?;
+        if args.iter().any(|a| a == "--extras") {
+            println!("extras for {} games", gamut_core::playnite::import_extras(&mut lib, &paths, &items)?);
+            return Ok(());
+        }
         let t = std::time::Instant::now();
         let st = gamut_core::playnite::import(&mut lib, &paths, &items, &|_, _| {})?;
         println!(
@@ -93,6 +97,22 @@ fn main() -> anyhow::Result<()> {
                 println!("\n{:#?}\ntags: {}", d.meta, d.tags.join(", "));
             }
         }
+        Some("hltb") if args.len() >= 2 => {
+            let t = gamut_core::hltb::lookup(&args[1])?;
+            let h = gamut_core::hltb::hours;
+            println!("{:?}  main {} · +extra {} · 100% {}  {}", t.id, h(t.main), h(t.plus), h(t.full), t.url().unwrap_or_default());
+        }
+        // saves NAME [STEAM_APPID]: PCGamingWiki save paths and the folder found here.
+        Some("saves") if args.len() >= 2 => {
+            let mut g = gamut_core::Game::new_custom(args[1].clone(), None);
+            if let Some(a) = args.get(2) {
+                (g.source, g.source_id) = (gamut_core::Source::Steam, a.clone());
+            }
+            for t in gamut_core::pcgw::save_templates(&g)? {
+                println!("{t}\n  -> {:?}", gamut_core::pcgw::expand(&t, &g));
+            }
+            println!("found: {:?}", gamut_core::pcgw::find_save_dir(&g)?);
+        }
         // gog NAME / steam NAME: store search results, then the first one's details.
         Some("gog") if args.len() >= 2 => {
             use gamut_core::gog;
@@ -117,7 +137,7 @@ fn main() -> anyhow::Result<()> {
         }
         _ => {}
     }
-    if matches!(args.first().map(String::as_str), Some("status" | "igdb" | "vndb" | "gog" | "steam" | "scanfolder")) {
+    if matches!(args.first().map(String::as_str), Some("status" | "igdb" | "vndb" | "gog" | "steam" | "scanfolder" | "hltb" | "saves")) {
         return Ok(());
     }
     // Writing commands must not run alongside the app.

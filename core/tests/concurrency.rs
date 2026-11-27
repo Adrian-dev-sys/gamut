@@ -10,7 +10,7 @@ fn concurrent_writers_keep_db_intact() {
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("t.db");
     let entries: Vec<SteamEntry> = (1..1500)
-        .map(|i| SteamEntry { appid: i, name: format!("Game {i}"), installed: i % 3 == 0, install_dir: None, playtime_min: Some(i as i64), last_played: 0 })
+        .map(|i| SteamEntry { appid: i, name: format!("Game {i}"), installed: i % 3 == 0, install_dir: None, size: None, playtime_min: Some(i as i64), last_played: 0 })
         .collect();
     Library::open(&db).unwrap();
     let desc = "x".repeat(6000); // forces overflow pages like long Steam descriptions
@@ -46,7 +46,7 @@ fn damaged_db_is_rebuilt() {
     {
         let mut lib = Library::open(&db).unwrap();
         let entries: Vec<SteamEntry> = (1..400)
-            .map(|i| SteamEntry { appid: i, name: format!("Game {i} {}", "y".repeat(300)), installed: true, install_dir: None, playtime_min: None, last_played: 0 })
+            .map(|i| SteamEntry { appid: i, name: format!("Game {i} {}", "y".repeat(300)), installed: true, install_dir: None, size: None, playtime_min: None, last_played: 0 })
             .collect();
         lib.sync_steam(&entries).unwrap();
         lib.add_custom(&gamut_core::Game::new_custom("Mine".into(), None)).unwrap();

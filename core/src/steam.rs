@@ -90,6 +90,7 @@ pub fn installed(steam: &Path) -> Vec<SteamEntry> {
                 name,
                 installed: flags & 4 != 0,
                 install_dir: dir,
+                size: app.str("SizeOnDisk").and_then(|s| s.parse().ok()).filter(|s: &i64| *s > 0),
                 playtime_min: None,
                 last_played: app.str("LastPlayed").and_then(|s| s.parse().ok()).unwrap_or(0),
             });
@@ -147,6 +148,7 @@ pub fn owned(api_key: &str, steam_id: &str) -> Result<Vec<SteamEntry>> {
             name: g.name,
             installed: false,
             install_dir: None,
+            size: None,
             playtime_min: Some(g.playtime_forever),
             last_played: g.rtime_last_played,
         })

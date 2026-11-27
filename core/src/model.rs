@@ -73,6 +73,40 @@ pub struct Game {
     pub auto_hdr: bool,
     /// RetroAchievements game id; None = not looked up, see `retro::NOT_FOUND` / `UNSUPPORTED`.
     pub ra_id: Option<i64>,
+    /// Sorts by this instead of the name ("Zelda Tears of the Kingdom").
+    pub sort_name: Option<String>,
+    /// The player's own score, 0-100.
+    pub user_score: Option<i64>,
+    pub notes: Option<String>,
+    /// JSON list of `Link`.
+    pub links: Option<String>,
+    /// JSON list of `PlayAction`: extra ways to start the game (mod manager, config tool).
+    pub actions: Option<String>,
+    /// PowerShell run before launch (waited for) and after the game exits.
+    pub script_before: Option<String>,
+    pub script_after: Option<String>,
+    /// Bytes on disk, from Steam or "Calculate".
+    pub install_size: Option<i64>,
+    /// Save folder: set by hand or found on PCGamingWiki.
+    pub save_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Link {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PlayAction {
+    pub name: String,
+    /// Exe, file or URL.
+    pub path: String,
+    pub args: String,
+    pub work_dir: String,
+    /// Counts as playing (time tracked, Special K/HDR) instead of just opening it.
+    pub track: bool,
 }
 
 impl Game {
@@ -114,12 +148,49 @@ impl Game {
             reshade: None,
             auto_hdr: false,
             ra_id: None,
+            sort_name: None,
+            user_score: None,
+            notes: None,
+            links: None,
+            actions: None,
+            script_before: None,
+            script_after: None,
+            install_size: None,
+            save_dir: None,
         }
     }
 
     pub fn steam_appid(&self) -> Option<u32> {
         self.source_id.parse().ok()
     }
+
+    pub fn links(&self) -> Vec<Link> {
+        self.links.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+    }
+
+    pub fn actions(&self) -> Vec<PlayAction> {
+        self.actions.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+    }
+
+    /// This game started through one of its extra actions instead (same id, so tracking and art still apply).
+    pub fn with_action(&self, a: &PlayAction) -> Game {
+        let opt = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
+        Game { source: Source::Custom, exe: opt(&a.path), args: opt(&a.args), work_dir: opt(&a.work_dir), installed: true, ..self.clone() }
+    }
+
+    /// The game's folder: install folder, else the exe's.
+    pub fn folder(&self) -> Option<std::path::PathBuf> {
+        let d = self.install_dir.as_deref().filter(|d| !d.trim().is_empty() && !d.contains('{')).map(std::path::PathBuf::from);
+        d.or_else(|| {
+            let e = self.exe.as_deref().filter(|e| e.len() > 3 && e.as_bytes()[1] == b':')?;
+            std::path::Path::new(e).parent().map(|p| p.to_path_buf())
+        })
+    }
+}
+
+/// JSON for a list column; None when empty.
+pub fn to_json<T: serde::Serialize>(v: &[T]) -> Option<String> {
+    (!v.is_empty()).then(|| serde_json::to_string(v).ok()).flatten()
 }
 
 /// Scraped metadata to merge into a game.

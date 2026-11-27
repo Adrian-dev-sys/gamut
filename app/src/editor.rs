@@ -7,12 +7,15 @@ use crossbeam_channel::{unbounded, Receiver};
 use crate::lookup::{self, Compare, CompareOut, Hit, Src};
 use gamut_core::igdb;
 use gamut_core::vndb::VnDetails;
+use gamut_core::model::{to_json, Link, PlayAction};
 use gamut_core::{scrape, Config, Game, Source};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
     General,
     Launch,
+    Actions,
+    Links,
     Media,
 }
 
@@ -59,6 +62,25 @@ pub struct Editor {
     pub art_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
     art: Option<Art>,
     filled: Option<String>,
+    sort_name: String,
+    user_score: String,
+    notes: String,
+    links: Vec<Link>,
+    actions: Vec<PlayAction>,
+    script_before: String,
+    script_after: String,
+    install_dir: String,
+    install_size: Option<i64>,
+    size_rx: Option<Receiver<i64>>,
+    save_dir: String,
+    save_rx: Option<Receiver<Result<Option<std::path::PathBuf>, String>>>,
+    save_msg: Option<String>,
+    /// Icon file to copy in on save; Some(None) removes the icon.
+    pub icon_file: Option<Option<std::path::PathBuf>>,
+    /// The current icon, for the Media tab.
+    pub icon_path: Option<std::path::PathBuf>,
+    icon_tex: Option<Option<egui::TextureHandle>>,
+    icon_rx: Option<Receiver<Option<egui::ColorImage>>>,
 }
 
 enum Msg {
@@ -215,6 +237,23 @@ impl Editor {
             art_paths: None,
             art: None,
             filled: None,
+            sort_name: s(&g.sort_name),
+            user_score: n(g.user_score),
+            notes: s(&g.notes),
+            links: g.links(),
+            actions: g.actions(),
+            script_before: s(&g.script_before),
+            script_after: s(&g.script_after),
+            install_dir: s(&g.install_dir),
+            install_size: g.install_size,
+            size_rx: None,
+            save_dir: s(&g.save_dir),
+            save_rx: None,
+            save_msg: None,
+            icon_file: None,
+            icon_path: None,
+            icon_tex: None,
+            icon_rx: None,
         }
     }
 
@@ -241,6 +280,28 @@ impl Editor {
         g.community_score = score(&self.community);
         g.genres = join(&self.genres);
         g.tags = join(&self.tags);
+        g.sort_name = opt(&self.sort_name).filter(|s| *s != g.name);
+        g.user_score = score(&self.user_score);
+        g.notes = opt(&self.notes);
+        let links: Vec<Link> = self
+            .links
+            .iter()
+            .filter(|l| !l.url.trim().is_empty())
+            .map(|l| Link { name: if l.name.trim().is_empty() { l.url.trim().into() } else { l.name.trim().into() }, url: l.url.trim().into() })
+            .collect();
+        g.links = to_json(&links);
+        let actions: Vec<PlayAction> = self
+            .actions
+            .iter()
+            .filter(|a| !a.path.trim().is_empty())
+            .map(|a| PlayAction { name: if a.name.trim().is_empty() { "Action".into() } else { a.name.trim().into() }, ..a.clone() })
+            .collect();
+        g.actions = to_json(&actions);
+        g.script_before = opt(&self.script_before);
+        g.script_after = opt(&self.script_after);
+        g.install_dir = opt(&self.install_dir);
+        g.install_size = self.install_size;
+        g.save_dir = opt(&self.save_dir);
     }
 
     /// Edited (playtime minutes, play count), when they differ from the game as opened.
@@ -273,7 +334,9 @@ impl Editor {
                 ui.set_max_size(size);
                 crate::ui::dialog_header(ui, title, &mut open);
                 ui.horizontal(|ui| {
-                    for (t, label) in [(Tab::General, "General"), (Tab::Launch, "Launch"), (Tab::Media, "Media")] {
+                    let tabs =
+                        [(Tab::General, "General"), (Tab::Launch, "Launch"), (Tab::Actions, "Actions & scripts"), (Tab::Links, "Links & notes"), (Tab::Media, "Media")];
+                    for (t, label) in tabs {
                         ui.selectable_value(&mut self.tab, t, RichText::new(label).size(14.5));
                     }
                 });
@@ -284,6 +347,8 @@ impl Editor {
                     match self.tab {
                         Tab::General => self.general(ui, lists, body_h),
                         Tab::Launch => self.launch(ui),
+                        Tab::Actions => self.actions_tab(ui),
+                        Tab::Links => self.links_tab(ui, body_h),
                         Tab::Media => {
                             if let Some(o) = self.media(ui) {
                                 out = o;
@@ -323,6 +388,7 @@ impl Editor {
             };
             grid(&mut cols[0], "ed_left", &mut |ui| {
                 row(ui, "Name", |ui| text(ui, &mut self.name, field_w, ""));
+                row(ui, "Sorting name", |ui| text(ui, &mut self.sort_name, field_w, "sorts by the name when empty"));
                 row(ui, "Platform", |ui| suggest(ui, "ed_platform", &mut self.platform, lists.platforms, field_w, "PC (Windows)"));
                 row(ui, "Store", |ui| text(ui, &mut self.store, field_w, "e.g. GOG, PlayStation"));
                 row(ui, "Developer", |ui| text(ui, &mut self.developer, field_w, ""));
@@ -347,6 +413,7 @@ impl Editor {
                 row(ui, "Completion", |ui| completion(ui, &mut self.completion, lists.completions, field_w));
                 row(ui, "Critic score", |ui| text(ui, &mut self.critic, 60.0, "0–100"));
                 row(ui, "Community score", |ui| text(ui, &mut self.community, 60.0, "0–100"));
+                row(ui, "Your score", |ui| text(ui, &mut self.user_score, 60.0, "0–100"));
                 row(ui, "Play count", |ui| text(ui, &mut self.play_count, 60.0, "0"));
             });
         });
@@ -641,6 +708,185 @@ impl Editor {
             ui.add_space(6.0);
             ui.label(theme::hint("Steam games start through Steam; executable and arguments are set there."));
         }
+        ui.add_space(14.0);
+        self.install_section(ui, w);
+    }
+
+    /// Install folder and size, and the save folder.
+    fn install_section(&mut self, ui: &mut Ui, w: f32) {
+        if let Some(b) = self.size_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            (self.install_size, self.size_rx) = (Some(b), None);
+        }
+        if let Some(r) = self.save_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.save_rx = None;
+            self.save_msg = match r {
+                Ok(Some(p)) => {
+                    self.save_dir = p.display().to_string();
+                    None
+                }
+                Ok(None) => Some("PCGamingWiki lists save locations, but none exist on this PC.".into()),
+                Err(e) => Some(format!("Not found on PCGamingWiki ({e}).")),
+            };
+        }
+        let steam = self.source == Source::Steam;
+        egui::Grid::new("ed_install").num_columns(2).spacing([14.0, 10.0]).min_col_width(110.0).show(ui, |ui| {
+            row(ui, "Install folder", |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!steam, |ui| text(ui, &mut self.install_dir, w - 90.0, "the game's folder"))
+                        .response
+                        .on_disabled_hover_text("Steam keeps this up to date.");
+                    if !steam && ui.button("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                            self.install_dir = p.display().to_string();
+                        }
+                    }
+                });
+            });
+            row(ui, "Size", |ui| {
+                ui.horizontal(|ui| {
+                    let dir = self.folder();
+                    ui.label(self.install_size.map(gamut_core::format_size).unwrap_or_else(|| "—".into()));
+                    if self.size_rx.is_some() {
+                        ui.spinner();
+                    } else if ui.add_enabled(dir.is_some(), egui::Button::new("Calculate")).clicked() {
+                        let (tx, rx) = unbounded();
+                        let ctx = ui.ctx().clone();
+                        let dir = dir.unwrap_or_default();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(gamut_core::dir_size(&dir) as i64);
+                            ctx.request_repaint();
+                        });
+                        self.size_rx = Some(rx);
+                    }
+                });
+            });
+            row(ui, "Save folder", |ui| {
+                ui.horizontal(|ui| {
+                    text(ui, &mut self.save_dir, w - 220.0, "where the game keeps its saves");
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                            self.save_dir = p.display().to_string();
+                        }
+                    }
+                    if self.save_rx.is_some() {
+                        ui.spinner();
+                    } else if ui.button("Find").on_hover_text("Look up the save location on PCGamingWiki").clicked() {
+                        let (tx, rx) = unbounded();
+                        let ctx = ui.ctx().clone();
+                        let mut g = self.orig.clone();
+                        g.install_dir = opt(&self.install_dir).or(g.install_dir);
+                        std::thread::spawn(move || {
+                            let _ = tx.send(gamut_core::pcgw::find_save_dir(&g).map_err(|e| format!("{e:#}")));
+                            ctx.request_repaint();
+                        });
+                        (self.save_rx, self.save_msg) = (Some(rx), None);
+                    }
+                });
+            });
+        });
+        if let Some(m) = &self.save_msg {
+            ui.label(theme::hint(m));
+        }
+    }
+
+    /// The folder the size is measured in.
+    fn folder(&self) -> Option<std::path::PathBuf> {
+        let mut g = self.orig.clone();
+        g.install_dir = opt(&self.install_dir).or(g.install_dir);
+        g.exe = opt(&self.exe).or(g.exe);
+        g.folder().filter(|d| d.is_dir())
+    }
+
+    fn actions_tab(&mut self, ui: &mut Ui) {
+        ui.add_space(4.0);
+        theme::section(ui, "Other ways to start it");
+        ui.label(theme::hint(
+            "Show up next to Play (mod managers, config tools, other versions). \"Counts as playing\" tracks time and applies Special K, ReShade and HDR.",
+        ));
+        ui.add_space(4.0);
+        let w = ui.available_width();
+        let mut remove = None;
+        for (i, a) in self.actions.iter_mut().enumerate() {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(w - 16.0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut a.name).hint_text("Name").desired_width(180.0));
+                    ui.add(egui::TextEdit::singleline(&mut a.path).hint_text("exe, file or URL").desired_width(w - 420.0));
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_file() {
+                            if a.name.trim().is_empty() {
+                                a.name = p.file_stem().unwrap_or_default().to_string_lossy().into();
+                            }
+                            a.path = p.display().to_string();
+                        }
+                    }
+                    if ui.button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut a.args).hint_text("Arguments").desired_width(300.0));
+                    ui.add(egui::TextEdit::singleline(&mut a.work_dir).hint_text("Working folder (default: its folder)").desired_width(260.0));
+                    ui.checkbox(&mut a.track, "Counts as playing");
+                });
+            });
+        }
+        if let Some(i) = remove {
+            self.actions.remove(i);
+        }
+        if ui.button("Add action").clicked() {
+            self.actions.push(PlayAction::default());
+        }
+        ui.add_space(14.0);
+        theme::section(ui, "Scripts");
+        ui.label(theme::hint(
+            "PowerShell. Before: runs and is waited for (up to 2 minutes) before the game starts. After: runs when the game exits. \
+             $env:GAMUT_GAME_NAME, GAMUT_GAME_DIR and GAMUT_GAME_EXE are set.",
+        ));
+        ui.add_space(4.0);
+        for (label, s) in [("Before starting", &mut self.script_before), ("After exiting", &mut self.script_after)] {
+            ui.label(label);
+            ui.add(egui::TextEdit::multiline(s).code_editor().desired_rows(5).desired_width(f32::INFINITY).hint_text("e.g. Start-Process \"C:\\Tools\\DSX.exe\""));
+            ui.add_space(6.0);
+        }
+    }
+
+    fn links_tab(&mut self, ui: &mut Ui, body_h: f32) {
+        ui.add_space(4.0);
+        theme::section(ui, "Links");
+        ui.label(theme::hint("Shown in the details view, after Steam store, PCGamingWiki, HowLongToBeat and the other automatic ones."));
+        ui.add_space(4.0);
+        let w = ui.available_width();
+        let (mut remove, mut swap) = (None, None);
+        let n = self.links.len();
+        for (i, l) in self.links.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut l.name).hint_text("Name").desired_width(180.0));
+                ui.add(egui::TextEdit::singleline(&mut l.url).hint_text("https://…").desired_width(w - 400.0));
+                if ui.add_enabled(i > 0, egui::Button::new("Up")).clicked() {
+                    swap = Some(i - 1);
+                }
+                if ui.add_enabled(i + 1 < n, egui::Button::new("Down")).clicked() {
+                    swap = Some(i);
+                }
+                if ui.button("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = swap {
+            self.links.swap(i, i + 1);
+        }
+        if let Some(i) = remove {
+            self.links.remove(i);
+        }
+        if ui.button("Add link").clicked() {
+            self.links.push(Link::default());
+        }
+        ui.add_space(14.0);
+        theme::section(ui, "Notes");
+        let h = (body_h - (ui.cursor().top() - ui.min_rect().top()) - 12.0).max(180.0);
+        ui.add_sized(vec2(ui.available_width(), h), egui::TextEdit::multiline(&mut self.notes).hint_text("Anything you want to remember about this game"));
     }
 
     fn media(&mut self, ui: &mut Ui) -> Option<EditorOutcome> {
@@ -659,6 +905,8 @@ impl Editor {
         }
         ui.label(theme::hint("Search SteamGridDB, IGDB, VNDB and Steam, or use a file from your PC."));
         ui.add_space(8.0);
+        self.icon_section(ui);
+        ui.add_space(10.0);
         self.poll_art(ui.ctx());
         let art = self.art.as_ref();
         let cover_h = 300.0;
@@ -683,6 +931,43 @@ impl Editor {
             });
         });
         out
+    }
+
+    /// Small square icon (for lists); replaced or removed on save.
+    fn icon_section(&mut self, ui: &mut Ui) {
+        if self.icon_tex.is_none() && self.icon_rx.is_none() {
+            let path = match &self.icon_file {
+                Some(p) => p.clone(),
+                None => self.icon_path.clone().filter(|p| p.exists()),
+            };
+            let (tx, rx) = unbounded();
+            let ctx = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(path.and_then(|p| crate::thumbs::load_large(&p, 128)));
+                ctx.request_repaint();
+            });
+            self.icon_rx = Some(rx);
+        }
+        if let Some(img) = self.icon_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.icon_tex = Some(img.map(|i| ui.ctx().load_texture("ed_icon", i, egui::TextureOptions::LINEAR)));
+            self.icon_rx = None;
+        }
+        theme::section(ui, "Icon");
+        ui.horizontal(|ui| {
+            art_box(ui, self.icon_tex.as_ref(), vec2(64.0, 64.0), "");
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                if ui.button("Choose file…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp"]).pick_file() {
+                        (self.icon_file, self.icon_tex) = (Some(Some(p)), None);
+                    }
+                }
+                let has = self.icon_tex.as_ref().is_some_and(|t| t.is_some());
+                if has && ui.button("Remove").clicked() {
+                    (self.icon_file, self.icon_tex) = (Some(None), Some(None));
+                }
+            });
+        });
     }
 
     /// Starts decoding the art files once, then turns finished images into textures.

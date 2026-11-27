@@ -95,6 +95,10 @@ enum Action {
     /// Play after the "another Steam game is running" warning.
     PlayAnyway(i64),
     Edit(i64),
+    /// One of the game's extra play actions (index into `Game::actions`).
+    RunAction(i64, usize),
+    OpenFolder(i64),
+    OpenSaves(i64),
     ToggleFav(i64),
     ToggleHidden(i64),
     Refresh(i64),
@@ -245,6 +249,8 @@ pub struct GamutApp {
     /// Details page tab: 0 = About, 1 = Achievements (kept while browsing games).
     detail_tab: usize,
     sessions: Option<crate::sessions_view::GameSessions>,
+    /// HowLongToBeat times of the selected game, from the cache.
+    hltb: Option<(i64, Option<gamut_core::hltb::Times>)>,
     key_checks: crate::keycheck::KeyChecks,
 }
 
@@ -346,6 +352,7 @@ impl GamutApp {
             stats_tab: None,
             detail_tab: 0,
             sessions: None,
+            hltb: None,
             key_checks: Default::default(),
         })
     }
@@ -416,6 +423,9 @@ impl GamutApp {
                     if self.sessions.as_ref().is_some_and(|s| s.id == id) {
                         self.sessions = None;
                     }
+                    if self.hltb.as_ref().is_some_and(|h| h.0 == id) {
+                        self.hltb = None;
+                    }
                     self.reload_one(id)
                 }
                 Event::Error(e) => self.toasts.error(e),
@@ -481,22 +491,22 @@ impl GamutApp {
             .collect();
         let gs = &self.games;
         match self.sort {
-            Sort::Name => v.sort_by_cached_key(|&i| util::nat_key(&gs[i].name)),
+            Sort::Name => v.sort_by_cached_key(|&i| util::nat_key(sort_name(&gs[i]))),
             Sort::LastPlayed => v.sort_by_key(|&i| std::cmp::Reverse(gs[i].last_played)),
             Sort::Playtime => v.sort_by_key(|&i| std::cmp::Reverse(gs[i].playtime_min)),
             Sort::Added => v.sort_by_key(|&i| std::cmp::Reverse((gs[i].added, gs[i].id))),
             // Highest first; games without a value go last, then by name.
             Sort::Released => v.sort_by_cached_key(|&i| {
                 let d = gs[i].release_date.as_deref().map(sortable_date).unwrap_or_default();
-                (d.is_empty(), std::cmp::Reverse(d), util::nat_key(&gs[i].name))
+                (d.is_empty(), std::cmp::Reverse(d), util::nat_key(sort_name(&gs[i])))
             }),
-            Sort::CriticScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].critic_score), util::nat_key(&gs[i].name))),
-            Sort::CommunityScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].community_score), util::nat_key(&gs[i].name))),
+            Sort::CriticScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].critic_score), util::nat_key(sort_name(&gs[i])))),
+            Sort::CommunityScore => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].community_score), util::nat_key(sort_name(&gs[i])))),
             Sort::PlayCount => v.sort_by_cached_key(|&i| (std::cmp::Reverse(gs[i].play_count), std::cmp::Reverse(gs[i].playtime_min))),
             Sort::Completion => v.sort_by_cached_key(|&i| {
                 let c = completion_of(&gs[i]);
                 let rank = COMPLETION_ORDER.iter().position(|s| *s == c).unwrap_or(COMPLETION_ORDER.len());
-                (rank, c.to_string(), util::nat_key(&gs[i].name))
+                (rank, c.to_string(), util::nat_key(sort_name(&gs[i])))
             }),
         }
         // Selected games that left the view (filtered, hidden) drop out of the selection.
@@ -542,6 +552,7 @@ impl GamutApp {
                     if let Some(g) = self.game(id) {
                         let mut ed = Editor::from_game(g);
                         ed.art_paths = Some((self.paths.cover(id), self.paths.hero(id)));
+                        ed.icon_path = Some(self.paths.icon(id));
                         self.editor = Some(ed);
                         self.ed_lists = editor_facets(&self.games);
                     }
@@ -562,6 +573,28 @@ impl GamutApp {
                     self.workers.kick();
                 }
                 Action::Remove(id) => self.confirm_remove = Some(id),
+                Action::RunAction(id, i) => {
+                    let Some(g) = self.game(id).cloned() else { return Ok(()) };
+                    let Some(a) = g.actions().get(i).cloned() else { return Ok(()) };
+                    if a.track {
+                        self.workers.play(g.with_action(&a))?;
+                    } else {
+                        gamut_core::launch::launch(&g.with_action(&a))?;
+                    }
+                }
+                Action::OpenFolder(id) => {
+                    let Some(d) = self.game(id).and_then(|g| g.folder()).filter(|d| d.is_dir()) else {
+                        anyhow::bail!("this game's folder isn't there");
+                    };
+                    open::that_detached(d)?;
+                }
+                Action::OpenSaves(id) => {
+                    let Some(g) = self.game(id).cloned() else { return Ok(()) };
+                    match g.save_dir.as_deref().filter(|d| std::path::Path::new(d).is_dir()) {
+                        Some(d) => open::that_detached(d)?,
+                        None => self.workers.find_saves(g),
+                    }
+                }
                 Action::Stop(id) => self.confirm_stop = Some(id),
                 Action::Bulk(op) => {
                     let ids: Vec<i64> = self.view.iter().map(|&i| self.games[i].id).filter(|id| self.multi.contains(id)).collect();
@@ -1281,6 +1314,14 @@ impl GamutApp {
             self.ach = Some(a);
         }
         let steam_ach = ach_src.is_some();
+        if self.hltb.as_ref().is_none_or(|h| h.0 != id) {
+            let t = self.lib.hltb(id).ok().flatten();
+            if t.is_none_or(|t| t.stale(gamut_core::now())) {
+                self.workers.hltb(id, g.name.clone());
+            }
+            self.hltb = Some((id, t));
+        }
+        let hltb = self.hltb.as_ref().and_then(|h| h.1).filter(|t| t.id > 0);
         for (hid, img) in self.hero_rx.try_iter() {
             if let (Some((cur, slot)), Some(img)) = (self.hero.as_mut(), img) {
                 if *cur == hid {
@@ -1427,7 +1468,13 @@ impl GamutApp {
                     });
                     ui.add_space(12.0);
                     ui.horizontal_wrapped(|ui| {
-                        for (label, url) in links(&g) {
+                        let own = g.links().into_iter().map(|l| (l.name, l.url));
+                        let auto = links(&g).into_iter().map(|(n, u)| (n.to_string(), u));
+                        let hltb_url = hltb.and_then(|t| t.url());
+                        for (label, url) in auto.map(|(n, u)| match (&hltb_url, n.as_str()) {
+                            (Some(h), "HowLongToBeat") => (n, h.clone()),
+                            _ => (n, u),
+                        }).chain(own) {
                             let b = egui::Button::new(RichText::new(label).size(12.5)).corner_radius(CornerRadius::same(12));
                             if ui.add(b).on_hover_text(&url).clicked() {
                                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -1503,6 +1550,24 @@ impl GamutApp {
                                 fact(ui, k, v);
                             }
                         }
+                        if let Some(s) = g.user_score {
+                            fact(ui, "Your score", &s.to_string());
+                        }
+                        if let Some(t) = hltb {
+                            let h = gamut_core::hltb::hours;
+                            ui.label(theme::caption("HowLongToBeat"));
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            for (k, v) in [("Main story", t.main), ("Main + extras", t.plus), ("Completionist", t.full)] {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(k).color(TEXT_DIM));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(h(v)));
+                                });
+                            }
+                            ui.add_space(8.0);
+                        }
+                        if let Some(b) = g.install_size {
+                            fact(ui, "Size on disk", &gamut_core::format_size(b));
+                        }
                         if let Some(a) = g.steam_appid() {
                             fact(ui, "Steam ID", &a.to_string());
                         }
@@ -1533,6 +1598,11 @@ impl GamutApp {
                     ui.set_width(right_w);
                     if let (true, Some(sv)) = (show_sessions, self.sessions.as_mut()) {
                         crate::sessions_view::section(ui, sv);
+                    }
+                    if let (false, false, Some(n)) = (show_ach, show_sessions, g.notes.as_deref()) {
+                        theme::section(ui, "Notes");
+                        ui.add(egui::Label::new(n).wrap());
+                        ui.add_space(14.0);
                     }
                     if !show_ach && !show_sessions {
                         theme::section(ui, "Description");
@@ -1613,6 +1683,15 @@ impl GamutApp {
         self.reload_one(id);
         (self.platforms, self.tags) = facets(&self.games);
         self.completions = completion_facets(&self.games);
+        match &ed.icon_file {
+            Some(Some(p)) => {
+                std::fs::copy(p, self.paths.icon(id))?;
+            }
+            Some(None) => {
+                let _ = std::fs::remove_file(self.paths.icon(id));
+            }
+            None => {}
+        }
         if let Some(p) = ed.cover_file {
             let bytes = std::fs::read(p)?;
             images::store_cover(&bytes, &self.paths.cover(id), &self.paths.thumb(id))?;
@@ -1641,6 +1720,7 @@ impl GamutApp {
         let mut sk_install = false;
         let mut rs_download = false;
         let mut pn_desc = false;
+        let mut pn_extras = false;
         let importing = self.workers.importing.1.load(Ordering::Relaxed) > 0;
         let detected = gamut_core::steam::steam_path()
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
@@ -1743,6 +1823,13 @@ impl GamutApp {
                                 .clicked()
                             {
                                 pn_desc = true;
+                            }
+                            if ui
+                                .add_enabled(!importing, egui::Button::new("Links, notes and more"))
+                                .on_hover_text("Brings over links, notes, your score, sorting names, other actions, scripts, install sizes and icons, for games that don't have them in Gamut yet.")
+                                .clicked()
+                            {
+                                pn_extras = true;
                             }
                         });
                         }
@@ -1864,6 +1951,9 @@ impl GamutApp {
         if pn_desc {
             self.workers.playnite_descriptions(None);
         }
+        if pn_extras {
+            self.workers.playnite_extras();
+        }
         if save {
             let new = self.settings.take().unwrap();
             let old = self.cfg.read().unwrap().clone();
@@ -1922,7 +2012,7 @@ impl GamutApp {
     fn remove_games(&mut self, ids: &[i64]) -> anyhow::Result<()> {
         let r = ids.iter().try_for_each(|&id| {
             self.lib.delete(id)?;
-            for p in [self.paths.cover(id), self.paths.thumb(id), self.paths.hero(id)] {
+            for p in [self.paths.cover(id), self.paths.thumb(id), self.paths.hero(id), self.paths.icon(id)] {
                 let _ = std::fs::remove_file(p);
             }
             if self.selected == Some(id) {
@@ -2407,12 +2497,20 @@ fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
         }
     };
     item(ui, if g.source == Source::Steam && !g.installed { "Install" } else { "Play" }, Action::Play(id));
+    for (i, a) in g.actions().iter().enumerate() {
+        item(ui, &a.name, Action::RunAction(id, i));
+    }
     item(ui, "Edit…", Action::Edit(id));
     item(ui, if g.favorite { "Unfavorite" } else { "Favorite" }, Action::ToggleFav(id));
     item(ui, if g.hidden { "Unhide" } else { "Hide" }, Action::ToggleHidden(id));
     item(ui, "Change cover…", Action::PickArt(id, ArtKind::Cover));
     item(ui, "Change banner…", Action::PickArt(id, ArtKind::Banner));
     item(ui, "Refresh metadata", Action::Refresh(id));
+    ui.separator();
+    if g.folder().is_some() {
+        item(ui, "Open install folder", Action::OpenFolder(id));
+    }
+    item(ui, "Open save folder", Action::OpenSaves(id));
     if g.source == Source::Custom {
         ui.separator();
         item(ui, "Remove…", Action::Remove(id));
@@ -2724,6 +2822,11 @@ fn editor_facets(games: &[Game]) -> (Vec<(String, usize)>, Vec<(String, usize)>)
 }
 
 /// External reference pages for a game (just links, nothing is fetched).
+/// What the grid sorts by: the sorting name when set.
+fn sort_name(g: &Game) -> &str {
+    g.sort_name.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or(&g.name)
+}
+
 fn links(g: &Game) -> Vec<(&'static str, String)> {
     let q = gamut_core::http::encode(&g.name);
     let mut v = Vec::new();

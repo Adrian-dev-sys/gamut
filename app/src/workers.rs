@@ -36,6 +36,8 @@ pub struct Workers {
     pub steam_running: Arc<AtomicU32>,
     /// Steam apps Gamut asked Steam to start, until Steam reports them running (or 90 s pass).
     pub steam_starting: Arc<Mutex<HashMap<u32, Instant>>>,
+    /// Games whose HowLongToBeat times are being fetched.
+    pub hltb_busy: Arc<Mutex<HashSet<i64>>>,
     /// Newer Special K release, when one was found; true while it installs.
     pub sk_update: Arc<Mutex<Option<specialk::update::Update>>>,
     pub sk_installing: Arc<AtomicBool>,
@@ -66,6 +68,7 @@ impl Workers {
             running: Default::default(),
             steam_running: Default::default(),
             steam_starting: Default::default(),
+            hltb_busy: Default::default(),
             sk_update: Default::default(),
             sk_installing: Default::default(),
             ach_tx,
@@ -285,6 +288,30 @@ impl Workers {
         });
     }
 
+    /// Re-reads links, notes, user score, sorting name, actions, scripts and icons from Playnite.
+    pub fn playnite_extras(&self) {
+        let (paths, tx, ctx) = (self.paths.clone(), self.tx.clone(), self.ctx.clone());
+        let _ = tx.send(Event::Info("Reading links, notes and more from Playnite…".into()));
+        std::thread::spawn(move || {
+            let r = (|| {
+                let dir = gamut_core::playnite::default_dir().ok_or_else(|| anyhow::anyhow!("Playnite folder not found"))?;
+                let items = gamut_core::playnite::load(&dir)?;
+                let mut lib = Library::open(&paths.db)?;
+                gamut_core::playnite::import_extras(&mut lib, &paths, &items)
+            })();
+            match r {
+                Ok(n) => {
+                    let _ = tx.send(Event::LibraryChanged);
+                    let _ = tx.send(Event::Info(format!("Brought over links, notes and more for {n} games. Values set in Gamut were kept.")));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("Reading from Playnite failed: {e:#}")));
+                }
+            }
+            ctx.request_repaint();
+        });
+    }
+
     pub fn rescan(&self) {
         self.scanner().run(false);
     }
@@ -463,6 +490,9 @@ impl Workers {
             } else {
                 None
             };
+            if let Err(e) = gamut_core::scripts::before(&g, Duration::from_secs(120)) {
+                let _ = t.tx.send(Event::Error(format!("{e:#}")));
+            }
             with_reshade(&g, &rs, &cache, &t.tx);
             let guard = if sk.mode == "off" && g.specialk != Some(true) { None } else { with_specialk(&g, &sk, &t.tx) };
             match launch::launch_with(&g, &specialk::game_env(&sk, &g)) {
@@ -473,7 +503,7 @@ impl Workers {
                         }
                         Err(e) => log::warn!("couldn't count the launch of {}: {e:#}", g.name),
                     }
-                    t.track(&g, l, guard, hdr)
+                    t.track(&g, l, guard, (hdr, gamut_core::scripts::After::new(&g)))
                 }
                 Err(e) => {
                     t.running.lock().unwrap().remove(&g.id);
@@ -483,6 +513,53 @@ impl Workers {
             t.ctx.request_repaint();
         });
         Ok(())
+    }
+
+    /// Looks up the save folder on PCGamingWiki, keeps it and opens it.
+    pub fn find_saves(&self, g: Game) {
+        let (paths, tx, ctx) = (self.paths.clone(), self.tx.clone(), self.ctx.clone());
+        let _ = tx.send(Event::Info(format!("Looking up where {} keeps its saves…", g.name)));
+        std::thread::spawn(move || {
+            match gamut_core::pcgw::find_save_dir(&g) {
+                Ok(Some(d)) => {
+                    let r = Library::open(&paths.db).and_then(|lib| lib.set_save_dir(g.id, &d.display().to_string()));
+                    if let Err(e) = r {
+                        log::warn!("saving the save folder of {} failed: {e:#}", g.name);
+                    }
+                    let _ = open::that_detached(&d);
+                    let _ = tx.send(Event::GameUpdated(g.id));
+                }
+                Ok(None) => {
+                    let _ = tx.send(Event::Error(format!(
+                        "PCGamingWiki lists save locations for {}, but none exist on this PC. Set it in Edit → Launch.",
+                        g.name
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("Couldn't find {}'s saves on PCGamingWiki ({e:#}). Set it in Edit → Launch.", g.name)));
+                }
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Fetches HowLongToBeat times for a game into the cache (one request per game at a time).
+    pub fn hltb(&self, id: i64, name: String) {
+        if !self.hltb_busy.lock().unwrap().insert(id) {
+            return;
+        }
+        let (paths, tx, ctx, busy) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.hltb_busy.clone());
+        std::thread::spawn(move || {
+            let r = gamut_core::hltb::lookup(&name).and_then(|t| Library::open(&paths.db)?.set_hltb(id, &t));
+            match r {
+                Ok(()) => {
+                    let _ = tx.send(Event::GameUpdated(id));
+                }
+                Err(e) => log::warn!("HowLongToBeat lookup for {name} failed: {e:#}"),
+            }
+            busy.lock().unwrap().remove(&id);
+            ctx.request_repaint();
+        });
     }
 
     /// Where the downloaded ReShade and shader packages live.
@@ -701,7 +778,8 @@ fn release_specialk(sk: SkGuard, name: String, exited: bool) {
 
 impl Tracker {
     /// Adds the session's playtime when a tracked game exits, and releases Special K and HDR.
-    fn track(&self, g: &Game, launched: Launched, sk: SkGuard, hdr: Option<gamut_core::hdr::Guard>) {
+    /// `hdr` also holds the "after" script; both are released when the game exits.
+    fn track(&self, g: &Game, launched: Launched, sk: SkGuard, hdr: (Option<gamut_core::hdr::Guard>, gamut_core::scripts::After)) {
         let (id, name) = (g.id, g.name.clone());
         let exit_stop = sk.as_ref().is_some_and(|s| s.2 == "exit");
         let Launched::Tracked(handle) = launched else {
@@ -709,7 +787,7 @@ impl Tracker {
             release_specialk(sk, name, false);
             // Steam playtime comes from Steam; custom shortcuts/URLs are timed by watching their folder.
             let custom = g.source == gamut_core::Source::Custom && !gamut_core::procs::game_dirs(g).is_empty();
-            if hdr.is_some() || custom || g.source == gamut_core::Source::Steam {
+            if hdr.0.is_some() || hdr.1.is_some() || custom || g.source == gamut_core::Source::Steam {
                 let (g, ach, paths, tx, ctx) =
                     (g.clone(), self.ach.clone(), self.paths.clone(), self.tx.clone(), self.ctx.clone());
                 std::thread::spawn(move || {

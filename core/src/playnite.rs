@@ -28,7 +28,24 @@ pub struct Item {
     pub game: Game,
     pub cover: Option<PathBuf>,
     pub background: Option<PathBuf>,
+    pub icon: Option<PathBuf>,
     pub launch: Launch,
+}
+
+/// Brings over links, notes, user score, sorting name, other actions, scripts, install size and icons,
+/// only where Gamut has none yet. Returns how many games got something.
+pub fn import_extras(lib: &mut Library, paths: &Paths, items: &[Item]) -> Result<usize> {
+    let games: Vec<&Game> = items.iter().map(|i| &i.game).collect();
+    let ids = lib.import_extras(&games)?;
+    let mut n = ids.iter().filter(|(_, changed)| *changed).count();
+    for ((id, changed), it) in ids.iter().zip(items) {
+        let (Some(id), Some(src)) = (id, &it.icon) else { continue };
+        let dst = paths.icon(*id);
+        if !dst.exists() && std::fs::copy(src, &dst).is_ok() && !changed {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Pulls only descriptions (with their images) from Playnite; nothing else in the library changes.
@@ -178,7 +195,59 @@ impl Tables {
             Launch::Exe | Launch::Emulator(_) | Launch::Url => playnite_installed || g.exe.is_some(),
             Launch::Unresolved(_) | Launch::None => false,
         };
-        Some(Item { cover: self.media(d, "CoverImage"), background: self.media(d, "BackgroundImage"), game: g, launch })
+        self.extras(d, &mut g);
+        Some(Item { cover: self.media(d, "CoverImage"), background: self.media(d, "BackgroundImage"), icon: self.media(d, "Icon"), game: g, launch })
+    }
+
+    /// Links, notes, scores, scripts and the actions besides the one Gamut launches.
+    fn extras(&self, d: &Doc, g: &mut Game) {
+        use crate::model::{to_json, Link, PlayAction};
+        let txt = |k: &str| s(d, k).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        g.sort_name = txt("SortingName");
+        g.notes = txt("Notes");
+        g.user_score = d.get("UserScore").and_then(Value::int);
+        g.install_size = d.get("InstallSize").and_then(Value::int).filter(|b| *b > 0);
+        g.script_before = txt("PreScript");
+        g.script_after = txt("PostScript");
+        let links: Vec<Link> = d
+            .get("Links")
+            .map(Value::array)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::doc)
+            .filter_map(|l| Some(Link { name: s(l, "Name").unwrap_or_default().to_string(), url: s(l, "Url")?.to_string() }))
+            .collect();
+        g.links = to_json(&links);
+        let dir = g.install_dir.clone().unwrap_or_default().trim_end_matches(['\\', '/']).to_string();
+        let vars = |v: &str| v.replace("{InstallDir}", &dir).replace("{InstallDirName}", dir_name(&dir));
+        let mut first_play = true;
+        let actions: Vec<PlayAction> = d
+            .get("GameActions")
+            .map(Value::array)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::doc)
+            .filter(|a| {
+                // The first play action is the game's own launch.
+                let play = a.get("IsPlayAction").is_some_and(Value::bool);
+                !(play && std::mem::replace(&mut first_play, false))
+            })
+            .filter_map(|a| {
+                let path = match s(a, "Type").unwrap_or("File") {
+                    "File" => absolute(&vars(s(a, "Path")?), &dir),
+                    "URL" => s(a, "Path")?.to_string(),
+                    _ => return None,
+                };
+                Some(PlayAction {
+                    name: s(a, "Name").unwrap_or("Action").to_string(),
+                    path,
+                    args: s(a, "Arguments").map(vars).unwrap_or_default(),
+                    work_dir: s(a, "WorkingDir").map(vars).unwrap_or_default(),
+                    track: a.get("IsPlayAction").is_some_and(Value::bool),
+                })
+            })
+            .collect();
+        g.actions = to_json(&actions);
     }
 
     fn launch(&self, d: &Doc, plugin: &str, g: &mut Game) -> Launch {
@@ -547,6 +616,7 @@ pub fn import(lib: &mut Library, paths: &Paths, items: &[Item], progress: &(dyn 
         hs.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
     });
     lib.apply_imported_art(&results)?;
+    import_extras(lib, paths, items)?;
     Ok(ImportStats {
         games: ids.len(),
         covers: results.iter().filter(|r| r.1).count(),
