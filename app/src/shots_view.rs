@@ -65,10 +65,9 @@ impl ShotsView {
             self.tex.insert(k, (t, self.frame));
             ctx.request_repaint();
         }
-        if self.tex.len() > 300 {
-            let f = self.frame;
-            self.tex.retain(|_, (t, seen)| t.is_none() || f - *seen < 120);
-        }
+        // Full-size images (tens of MB) go as soon as they're off screen; thumbnails past 300.
+        let (f, many) = (self.frame, self.tex.len() > 300);
+        self.tex.retain(|(_, w), (t, seen)| t.is_none() || f - *seen < if *w == FULL_W { 3 } else if many { 120 } else { u64::MAX });
     }
 
     fn texture(&mut self, path: &PathBuf, w: u32) -> Option<TextureHandle> {
@@ -194,7 +193,8 @@ pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
     egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, order.len(), |ui, range| {
         for id in &order[range] {
             let list = &by_game[id];
-            ui.allocate_ui(vec2(width, row_h), |ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(width, row_h), Sense::hover());
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                 ui.horizontal(|ui| {
                     let name = RichText::new(names[id]).size(16.0).color(TEXT).strong();
                     if ui.add(egui::Label::new(name).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

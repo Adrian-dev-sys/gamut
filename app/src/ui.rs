@@ -769,6 +769,7 @@ impl GamutApp {
                 Pad::Back if self.any_dialog() => {
                     (self.confirm_play, self.game_menu, self.confirm_stop, self.confirm_hooks) = (None, None, None, None);
                     (self.confirm_remove, self.confirm_refresh) = (None, None);
+                    self.shots.viewer = None;
                 }
                 _ if self.any_dialog() => {}
                 Pad::Menu => {
@@ -896,6 +897,7 @@ impl GamutApp {
             || self.game_menu.is_some()
             || self.scans.is_some()
             || self.health.is_some()
+            || self.shots.viewer.is_some()
     }
 
     /// Search, filters, sort and cover size for the library grid.
