@@ -46,7 +46,7 @@ impl Problem {
             Problem::FileMissing(p) => format!("File in the arguments not found: {p}"),
             Problem::FolderMissing(p) => format!("Folder not found: {p}"),
             Problem::DriveMissing(d) => format!("Drive {d} not found (disconnected?)"),
-            Problem::Duplicate => "Same name on the same platform".into(),
+            Problem::Duplicate => "Same name or install folder on the same platform".into(),
         }
     }
 }
@@ -99,6 +99,32 @@ pub fn check_with(games: &[Game], s: &Settings, exists: impl Fn(&Path) -> bool) 
             groups.entry(to).or_default().extend(gs);
         }
     }
+    // A PC copy renamed by metadata still sits in a folder named after the other copy
+    // ("Ouchi ni Kaeru…" in "Marshmallow All the Way Home"). Shared folders ("Binaries", "Half-Life 2") don't count.
+    let folders = |k: &(String, String), gs: &Vec<&Game>| -> Vec<String> {
+        let pc = k.0 == "pc (windows)";
+        gs.iter().filter(|g| pc && g.source == Source::Custom).filter_map(|g| folder_key(g)).collect()
+    };
+    let named: BTreeMap<String, (String, String)> =
+        groups.iter().flat_map(|(k, gs)| folders(k, gs).into_iter().filter(|f| *f == k.1).map(|f| (f, k.clone()))).collect();
+    let mut merges = Vec::new();
+    for (k, gs) in &groups {
+        for f in folders(k, gs) {
+            if let Some(to) = named.get(&f).filter(|to| *to != k) {
+                merges.push((k.clone(), to.clone()));
+            }
+        }
+    }
+    for (from, to) in merges {
+        if let Some(gs) = groups.remove(&from) {
+            match groups.get_mut(&to) {
+                Some(t) => t.extend(gs),
+                None => {
+                    groups.insert(from, gs);
+                }
+            }
+        }
+    }
     for ((plat, name), gs) in groups.into_iter().filter(|(_, gs)| gs.len() > 1) {
         // Bought on several stores (Steam + GOG) is on purpose; a store copy plus a scanned exe isn't.
         let stores: Vec<String> = gs.iter().map(|g| store(g).to_lowercase()).collect();
@@ -126,6 +152,16 @@ fn name_key(name: &str) -> String {
             c => c,
         })
         .collect()
+}
+
+/// The game's own folder name (install folder, else the exe's), when long enough to mean something.
+fn folder_key(g: &Game) -> Option<String> {
+    let dir = match g.install_dir.as_deref().filter(|d| drive(d).is_some()) {
+        Some(d) => Path::new(d.trim_end_matches(['\\', '/'])).to_path_buf(),
+        None => Path::new(g.exe.as_deref().filter(|e| drive(e).is_some())?).parent()?.to_path_buf(),
+    };
+    let k = name_key(&dir.file_name()?.to_string_lossy());
+    (k.len() >= 8).then_some(k)
 }
 
 fn store(g: &Game) -> &str {
@@ -210,6 +246,12 @@ mod tests {
             game(13, "Koikari - Love For Hire", "PC (Windows)", Some("D:\\G\\koikari.exe"), None),
             game(14, "Pokémon Violet", "Nintendo Switch", None, None),
             game(15, "Pokemon Violet", "Nintendo Switch", None, None),
+            {
+                let mut g = game(16, "Marshmallow All the Way Home", "PC (Windows)", None, None);
+                (g.installed, g.install_dir) = (false, Some("D:\\Old\\Marshmallow All the Way Home".into()));
+                g
+            },
+            game(17, "Ouchi ni Kaeru made ga Mashimaro Desu", "PC (Windows)", Some("D:\\G\\Marshmallow All the Way Home\\m.exe"), None),
         ];
         let s = Settings::default();
         let got: Vec<(Vec<i64>, Problem)> = check_with(&games, &s, exists).into_iter().map(|i| (i.ids, i.problem)).collect();
@@ -226,10 +268,13 @@ mod tests {
                 (vec![13], Problem::ExeMissing("D:\\G\\koikari.exe".into())),
                 (vec![14], Problem::NoLauncher),
                 (vec![15], Problem::NoLauncher),
+                (vec![16], Problem::NotInstalled),
+                (vec![17], Problem::FolderMissing("D:\\G\\Marshmallow All the Way Home".into())),
                 (vec![14, 15], Problem::Duplicate),
                 (vec![3, 8], Problem::Duplicate),
                 (vec![1, 10], Problem::Duplicate),
                 (vec![13, 12], Problem::Duplicate),
+                (vec![16, 17], Problem::Duplicate),
             ]
         );
         let s = Settings { skip_platforms: vec!["nintendo switch".into()], ignored: vec!["file:6".into(), "dup:pc (windows)|celeste".into()] };

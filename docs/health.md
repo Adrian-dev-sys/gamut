@@ -9,7 +9,7 @@
 - **Drive missing**: the drive root doesn't exist (unplugged disk). Not ignorable, since it fixes itself.
 - URLs (`goggalaxy://`), store names and Playnite `{placeholders}` aren't checked.
 - **Not installed** (collapsed section): custom games imported as not installed with no exe and no store (store entries like PlayStation are owned elsewhere).
-- **Duplicates**: same name (letters/digits, accents folded) on the same platform; a name whose subtitle after ": " / " - " (8+ chars) is another game's name joins that group (Steam counts as PC). The same game on different platforms is never a duplicate. A group where every copy is from a different store (Steam + GOG) is skipped as bought twice.
+- **Duplicates**: same name (letters/digits, accents folded) on the same platform; a name whose subtitle after ": " / " - " (8+ chars) is another game's name joins that group. A custom PC game whose install folder is named like another game joins that game (a copy renamed by metadata); generic shared folders ("Binaries", "Half-Life 2") don't match, and Steam games are left out (Steam counts as PC). The same game on different platforms is never a duplicate. A group where every copy is from a different store (Steam + GOG) is skipped as bought twice.
 
 ## Dialog
 - Two sections: **Can't start** (Edit / Remove / Ignore) and **Possible duplicates**.
