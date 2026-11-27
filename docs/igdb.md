@@ -32,6 +32,9 @@ Metadata and art for games not on Steam (`core/src/igdb.rs`).
 
 ## Manual
 - Cover/banner picker lists IGDB matches next to SteamGridDB and VNDB.
+  Each source keeps its best 3 by `scrape::best_matches` (same name > prefix > shared words; under half the best
+  dropped). VNDB matches on every title (English, romaji, Japanese, aliases), so an English name finds the
+  Japanese entry; a game tagged or with genre "Visual Novel" gets VNDB first.
 - Editor → "Fill from IGDB…": search, pick, and the entry's details replace the form's fields (unsaved until
   Save). Save stores the pick as the match and queues its cover if the game has none.
 - Editor → "Fill from VNDB…" (no key needed, `vndb::details`): description (BBCode stripped, spoilers

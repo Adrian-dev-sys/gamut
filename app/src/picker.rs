@@ -41,6 +41,9 @@ fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// "Name · IGDB · PS2, Wii" (at most three platforms).
+/// Name search results kept per source, best first.
+const PER_SOURCE: usize = 3;
+
 fn igdb_label(g: &igdb::IgdbGame) -> String {
     let mut p: Vec<&str> = g.platforms.iter().map(String::as_str).take(3).collect();
     if g.platforms.len() > 3 {
@@ -138,7 +141,7 @@ impl Picker {
             igdb_done: false,
             vndb_done: false,
             igdb_cfg: igdb::configured(cfg).then(|| cfg.clone()),
-            vn: tags.contains("visual novel"),
+            vn: tags.contains("visual novel") || g.genres.as_deref().unwrap_or("").to_lowercase().contains("visual novel"),
             chosen: None,
             tiles: Vec::new(),
             busy: false,
@@ -189,7 +192,7 @@ impl Picker {
             std::thread::spawn(move || {
                 let r = igdb::search(&cfg, &q).map_err(|e| format!("{e:#}")).map(|hits| {
                     let m = |h: &igdb::IgdbGame| SgdbMatch { path: format!("igdb/{}", h.id), year: h.year, name: igdb_label(h) };
-                    hits.iter().take(8).map(m).collect()
+                    scrape::best_matches(&q, hits, |h| vec![h.name.clone()], PER_SOURCE).iter().map(m).collect()
                 });
                 let _ = tx.send(Msg::Igdb(round, r));
                 ctx.request_repaint();
@@ -201,7 +204,7 @@ impl Picker {
         if !self.key.is_empty() {
             let (key, q, tx, ctx) = (self.key.clone(), self.query.trim().to_string(), self.tx.clone(), ctx.clone());
             std::thread::spawn(move || {
-                let r = scrape::sgdb_search(&key, &q).map_err(|e| format!("{e:#}"));
+                let r = scrape::sgdb_search(&key, &q).map_err(|e| format!("{e:#}")).map(|v| scrape::best_matches(&q, v, |m| vec![m.name.clone()], PER_SOURCE));
                 let _ = tx.send(Msg::Games(round, r));
                 ctx.request_repaint();
             });
@@ -209,15 +212,11 @@ impl Picker {
         let (q, vn, tx, ctx) = (self.query.trim().to_string(), self.vn, self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let r = gamut_core::vndb::search(&q).map_err(|e| format!("{e:#}")).map(|hits| {
-                // VNDB's search is fuzzy: outside visual novels, keep only titles that really match.
-                let want = scrape::normalize(&q);
-                let related = |t: &str| {
-                    let t = scrape::normalize(t);
-                    !t.is_empty() && (t.starts_with(&want) || want.starts_with(&t))
-                };
-                hits.into_iter()
-                    .filter(|h| vn || related(&h.title) || h.alttitle.as_deref().is_some_and(related))
-                    .take(5)
+                // Matched on every title (English, romaji, Japanese, aliases). VNDB's search is fuzzy:
+                // outside visual novels, keep only titles that really match.
+                let hits: Vec<_> = hits.into_iter().filter(|h| vn || h.all_titles().iter().any(|t| scrape::title_score(&q, t) >= 60)).collect();
+                scrape::best_matches(&q, hits, |h| h.all_titles(), PER_SOURCE)
+                    .into_iter()
                     .map(|h| SgdbMatch { path: format!("vndb/{}", h.id), year: h.year(), name: format!("{} · VNDB", h.title) })
                     .collect()
             });

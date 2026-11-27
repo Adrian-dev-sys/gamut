@@ -31,13 +31,36 @@ pub struct Vn {
     pub id: String,
     pub title: String,
     pub alttitle: Option<String>,
+    /// Every language's title (English, romaji…) and aliases, for matching a localized name.
+    #[serde(default)]
+    pub titles: Vec<VnTitle>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub released: Option<String>,
     /// Short codes like "win", "ps2".
     #[serde(default)]
     pub platforms: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct VnTitle {
+    pub title: String,
+    pub latin: Option<String>,
+}
+
 impl Vn {
+    /// All names it goes by.
+    pub fn all_titles(&self) -> Vec<String> {
+        let mut v = vec![self.title.clone()];
+        v.extend(self.alttitle.clone());
+        for t in &self.titles {
+            v.push(t.title.clone());
+            v.extend(t.latin.clone());
+        }
+        v.extend(self.aliases.iter().cloned());
+        v
+    }
+
     pub fn year(&self) -> Option<i32> {
         self.released.as_deref()?.get(..4)?.parse().ok()
     }
@@ -53,7 +76,7 @@ fn post<T: serde::de::DeserializeOwned>(endpoint: &str, body: serde_json::Value)
 pub fn search(name: &str) -> Result<Vec<Vn>> {
     let r: Resp<Vn> = post(
         "vn",
-        json!({"filters": ["search", "=", name], "fields": "title,alttitle,released,platforms", "sort": "searchrank", "results": 8}),
+        json!({"filters": ["search", "=", name], "fields": "title,alttitle,titles.title,titles.latin,aliases,released,platforms", "sort": "searchrank", "results": 8}),
     )?;
     Ok(r.results)
 }

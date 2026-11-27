@@ -291,6 +291,36 @@ pub fn normalize(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
+/// How well a search result's title fits the query: 100 same, 60 one starts the other, else shared words (0–50).
+pub fn title_score(query: &str, title: &str) -> u32 {
+    let (q, t) = (normalize(query), normalize(title));
+    if q.is_empty() || t.is_empty() {
+        return 0;
+    }
+    if q == t {
+        return 100;
+    }
+    if q.starts_with(&t) || t.starts_with(&q) {
+        return 60;
+    }
+    let words = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_lowercase()).collect()
+    };
+    let (qw, tw) = (words(query), words(title));
+    let shared = qw.iter().filter(|w| tw.contains(w)).count();
+    (shared * 50 / qw.len().max(tw.len()).max(1)) as u32
+}
+
+/// The best `n` results by `title_score` against any of their titles; weak ones (under half the best) are dropped.
+pub fn best_matches<T>(query: &str, items: Vec<T>, titles: impl Fn(&T) -> Vec<String>, n: usize) -> Vec<T> {
+    let mut scored: Vec<(u32, T)> =
+        items.into_iter().map(|i| (titles(&i).iter().map(|t| title_score(query, t)).max().unwrap_or(0), i)).collect();
+    // Stable: equal scores keep the source's own order.
+    scored.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
+    let best = scored.first().map(|(s, _)| *s).unwrap_or(0);
+    scored.into_iter().take_while(|(s, _)| *s * 2 >= best).take(n).map(|(_, i)| i).collect()
+}
+
 /// Crude HTML → text for Steam descriptions.
 /// Line prefix that keeps an image's URL in otherwise plain descriptions.
 pub const IMG_MARKER: &str = "[img]";
@@ -392,6 +422,16 @@ pub fn strip_html(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ranks_search_results() {
+        use super::{best_matches, title_score};
+        assert_eq!(title_score("Senren Banka", "Senren * Banka"), 100);
+        assert_eq!(title_score("Aokana", "Aokana EXTRA1"), 60);
+        assert_eq!(title_score("Black Souls II", "Dark Souls II"), 33);
+        let hits = vec!["Dark Souls II", "Black Souls", "Souls", "Black Souls II", "Demon's Souls", "Lords"];
+        assert_eq!(best_matches("Black Souls II", hits, |h| vec![h.to_string()], 3), ["Black Souls II", "Black Souls"]);
+    }
+
     use super::*;
     #[test]
     fn html_and_normalize() {
