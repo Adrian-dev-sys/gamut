@@ -206,6 +206,21 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some("local-ach") => {
+            use gamut_core::{achievements::Fetched, local_ach};
+            let names = local_ach::names(&paths.root.join("local-ach.json"), &local_ach::appids());
+            println!("{} apps with emulator achievement files: {names:?}", names.len());
+            for g in lib.all()? {
+                let Some(app) = local_ach::appid_for(&g, &names) else { continue };
+                match local_ach::fetch(&cfg.steam_api_key, app)? {
+                    Fetched::None => println!("{:<40} {app}: no achievements", g.name),
+                    Fetched::List { items, .. } => {
+                        let done = items.iter().filter(|a| a.unlocked > 0).count();
+                        println!("{:<40} {app}: {done} / {} unlocked", g.name, items.len());
+                    }
+                }
+            }
+        }
         Some("fetch") => {
             let n: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
             for g in lib.needing_cover()?.into_iter().take(n) {

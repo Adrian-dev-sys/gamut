@@ -45,6 +45,8 @@ pub struct Workers {
     ach_tx: Sender<i64>,
     /// Games whose achievements are being fetched right now.
     pub ach_busy: Arc<Mutex<HashSet<i64>>>,
+    /// Custom games with emulator achievement files: game id -> Steam appid.
+    pub local_ach: Arc<std::sync::RwLock<HashMap<i64, u32>>>,
     cfg: Arc<RwLock<Config>>,
     paths: Paths,
     ctx: Context,
@@ -73,6 +75,7 @@ impl Workers {
             sk_installing: Default::default(),
             ach_tx,
             ach_busy: Default::default(),
+            local_ach: Default::default(),
             cfg,
             paths,
             ctx: ctx.clone(),
@@ -426,10 +429,24 @@ impl Workers {
     /// Fetches requested games first; when idle, works through played games never fetched or played since.
     fn spawn_achievements(&self, rx: Receiver<i64>) {
         use crossbeam_channel::RecvTimeoutError;
-        let (paths, cfg, tx, ctx, busy) =
-            (self.paths.clone(), self.cfg.clone(), self.tx.clone(), self.ctx.clone(), self.ach_busy.clone());
+        let (paths, cfg, tx, ctx, busy, local) =
+            (self.paths.clone(), self.cfg.clone(), self.tx.clone(), self.ctx.clone(), self.ach_busy.clone(), self.local_ach.clone());
         std::thread::spawn(move || {
             let Ok(mut lib) = Library::open(&paths.db) else { return };
+            // Which custom games have emulator achievement files; redone when the sweep resumes after a scan.
+            let find_local = |lib: &Library| {
+                let names = gamut_core::local_ach::names(&paths.root.join("local-ach.json"), &gamut_core::local_ach::appids());
+                let m: HashMap<i64, u32> = lib
+                    .all()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|g| Some((g.id, gamut_core::local_ach::appid_for(g, &names)?)))
+                    .collect();
+                log::info!("local achievements: {} games", m.len());
+                *local.write().unwrap() = m;
+                ctx.request_repaint();
+            };
+            find_local(&lib);
             // Let the startup scan and art go first.
             let mut sweep_at = Instant::now() + Duration::from_secs(30);
             const LATER: Duration = Duration::from_secs(30 * 60);
@@ -442,12 +459,13 @@ impl Workers {
                 let (steam_ok, ra_ok) = (!key.is_empty() && !sid.is_empty(), !ra.0.is_empty() && !ra.1.is_empty());
                 let (id, asked) = match req {
                     Ok(0) => {
+                        find_local(&lib);
                         sweep_at = sweep_at.min(Instant::now() + Duration::from_secs(5));
                         continue;
                     }
                     Ok(id) => (id, true),
                     Err(RecvTimeoutError::Disconnected) => return,
-                    Err(RecvTimeoutError::Timeout) => match lib.achievements_due(steam_ok, ra_ok) {
+                    Err(RecvTimeoutError::Timeout) => match local_due(&lib, &local.read().unwrap()).map(Ok).unwrap_or_else(|| lib.achievements_due(steam_ok, ra_ok)) {
                         Ok(Some(g)) => (g.id, false),
                         _ => {
                             sweep_at = Instant::now() + LATER;
@@ -456,6 +474,20 @@ impl Workers {
                     },
                 };
                 let Ok(Some(g)) = lib.get(id) else { continue };
+                let local_app = local.read().unwrap().get(&id).copied();
+                if let Some(app) = local_app {
+                    busy.lock().unwrap().insert(id);
+                    ctx.request_repaint();
+                    let r = gamut_core::local_ach::fetch(&key, app).and_then(|f| lib.save_achievements(id, &f));
+                    busy.lock().unwrap().remove(&id);
+                    if let Err(e) = r {
+                        log::warn!("Local achievements for {} failed: {e:#}", g.name);
+                        let _ = lib.save_achievement_error(id, &format!("{e:#}"));
+                    }
+                    let _ = tx.send(Event::Achievements(id));
+                    ctx.request_repaint();
+                    continue;
+                }
                 let steam_app = g.steam_appid().filter(|_| g.source == gamut_core::Source::Steam);
                 if g.source == gamut_core::Source::Steam && steam_app.is_none() {
                     // Recorded so the sweep doesn't pick it again right away.
@@ -705,6 +737,15 @@ struct Tracker {
 }
 
 /// Unlocks only, unless names/rarity are a week old or the cached list doesn't match.
+/// A custom game with local achievements that was never fetched or was played since.
+fn local_due(lib: &Library, local: &HashMap<i64, u32>) -> Option<Option<Game>> {
+    local.keys().find_map(|&id| {
+        let g = lib.get(id).ok()??;
+        let st = lib.achievement_state(id).ok()?;
+        st.is_none_or(|s| g.last_played > s.fetched).then_some(Some(g))
+    })
+}
+
 fn fetch_steam_achievements(lib: &mut Library, id: i64, app: u32, key: &str, sid: &str) -> anyhow::Result<()> {
     let stale = gamut_core::now() - 7 * 86400;
     let full = lib.achievement_state(id)?.is_none_or(|s| s.schema_at < stale);

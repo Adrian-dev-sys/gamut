@@ -132,11 +132,33 @@ pub fn steam(key: &str, steam_id: &str, appid: u32, full: bool) -> Result<Fetche
     if !full {
         return Ok(Fetched::List { items, full: false });
     }
+    let (schema, pct) = schema(&k, appid)?;
+    merge_schema(&mut items, schema, &pct);
+    Ok(Fetched::List { items, full: true })
+}
+
+/// Names, icons and rarity; `k` is the URL-encoded key.
+fn schema(k: &str, appid: u32) -> Result<(Vec<SchemaAch>, HashMap<String, f32>)> {
     let url = format!("https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={k}&appid={appid}&l=english");
     let schema: SchemaResp = crate::http::get_json(&url).ok().context("Steam achievement names request failed")?;
     let url = format!("https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/?gameid={appid}");
     let pct = crate::http::get_json::<Value>(&url).map(|v| percentages(&v)).unwrap_or_default();
-    merge_schema(&mut items, schema.game.stats.map(|s| s.achievements).unwrap_or_default(), &pct);
+    Ok((schema.game.stats.map(|s| s.achievements).unwrap_or_default(), pct))
+}
+
+/// Every achievement of `appid` from the schema, with unlock times from `unlocks` (keys matched case-insensitively).
+/// Doesn't need the account to own the game.
+pub fn steam_with_unlocks(key: &str, appid: u32, unlocks: &HashMap<String, i64>) -> Result<Fetched> {
+    let (schema, pct) = schema(&crate::http::encode(key), appid)?;
+    if schema.is_empty() {
+        return Ok(Fetched::None);
+    }
+    let lower: HashMap<String, i64> = unlocks.iter().map(|(k, v)| (k.to_lowercase(), *v)).collect();
+    let mut items: Vec<Achievement> = schema
+        .iter()
+        .map(|s| Achievement { key: s.name.clone(), unlocked: lower.get(&s.name.to_lowercase()).copied().unwrap_or(0), ..Default::default() })
+        .collect();
+    merge_schema(&mut items, schema, &pct);
     Ok(Fetched::List { items, full: true })
 }
 

@@ -1304,7 +1304,8 @@ impl GamutApp {
             });
         }
         // Achievements: from the cache now, refreshed in the background when stale.
-        let ach_src = crate::achievements::Source::of(&g, &self.cfg.read().unwrap());
+        let local = self.workers.local_ach.read().unwrap().contains_key(&id);
+        let ach_src = crate::achievements::Source::of(&g, &self.cfg.read().unwrap(), local);
         if ach_src.is_some() && self.ach.as_ref().map(|a| a.id) != Some(id) {
             let a = crate::achievements::GameAch::load(&self.lib, id);
             let due = match ach_src {

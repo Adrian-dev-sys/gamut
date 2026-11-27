@@ -13,6 +13,7 @@ pub mod pcgw;
 pub mod images;
 pub mod launch;
 pub mod litedb;
+pub mod local_ach;
 pub mod model;
 pub mod playnite;
 pub mod procs;

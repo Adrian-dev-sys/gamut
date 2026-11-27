@@ -45,14 +45,19 @@ pub fn tile(a: &GameAch) -> Option<String> {
 #[derive(Clone, Copy, PartialEq)]
 pub enum Source {
     Steam { has_key: bool },
+    /// Steam emulator files on disk (GSE, CODEX, RUNE…), names from Steam.
+    Local { has_key: bool },
     /// RetroAchievements game id as stored on the game (see `retro::NOT_FOUND` / `UNSUPPORTED`).
     Retro { ra_id: Option<i64> },
 }
 
 impl Source {
     /// Which source a game uses; None when it has none (or RA isn't set up).
-    pub fn of(g: &gamut_core::Game, cfg: &gamut_core::Config) -> Option<Source> {
+    pub fn of(g: &gamut_core::Game, cfg: &gamut_core::Config, local: bool) -> Option<Source> {
         use gamut_core::{retro, Source as S};
+        if local {
+            return Some(Source::Local { has_key: !cfg.steam_api_key.trim().is_empty() });
+        }
         match g.source {
             S::Steam if g.steam_appid().is_some() => Some(Source::Steam { has_key: !cfg.steam_api_key.trim().is_empty() }),
             S::Custom if !cfg.ra_user.trim().is_empty() && !cfg.ra_api_key.trim().is_empty() && g.platform.is_some() => {
@@ -103,7 +108,7 @@ pub fn section(ui: &mut Ui, a: &mut GameAch, src: Source, busy: bool) -> Option<
         let err = a.state.as_ref().and_then(|s| s.error.as_deref());
         let lookup = "Looking this game up on RetroAchievements…";
         match (src, err) {
-            (Source::Steam { has_key: false }, _) => note(ui, "Add a Steam Web API key in Settings to see achievements."),
+            (Source::Steam { has_key: false } | Source::Local { has_key: false }, _) => note(ui, "Add a Steam Web API key in Settings to see achievements."),
             (Source::Retro { ra_id: None }, _) if busy => spinner(ui, lookup),
             _ if busy => spinner(ui, "Loading achievements…"),
             (_, Some(PRIVATE)) => note(

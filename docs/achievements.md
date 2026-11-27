@@ -21,6 +21,12 @@ Per-game achievements on the details page, cached in the library DB. Steam games
 - `API_GetGameInfoAndUserProgress`: `Achievements` is an object keyed by id (or `[]` when empty). Unlock = `DateEarnedHardcore` else `DateEarned` (UTC). Rarity = NumAwarded / NumDistinctPlayers. Badges: `media.retroachievements.org/Badge/<BadgeName>.png`, locked `<BadgeName>_lock.png`.
 - No ROM hashing yet; that would replace title matching for exact ids.
 
+## Local (`core/src/local_ach.rs`)
+- Custom games on PC (or no platform) whose unlocks a Steam emulator keeps on disk: `%APPDATA%\GSE Saves` / `Goldberg SteamEmu Saves` (`<appid>\achievements.json`), `%PUBLIC%\Documents\Steam\CODEX|RUNE` and `%APPDATA%\Steam\CODEX` (`achievements.ini`), `%PUBLIC%\Documents\OnlineFix` (`Stats\Achievements.ini`). Files for one appid are merged; ini sections other than `[SteamAchievements]` with `Achieved=1`/`true` count.
+- Appid: the game's Steam id, a `steam_appid.txt` (or `steam_settings\steam_appid.txt`) in its folder, else the store name of an appid folder (`same_game` on the name variants). Store names are cached in `<data>\local-ach.json`. Duplicates all get the list.
+- The list, names, icons and rarity come from `GetSchemaForGame` (Steam key needed, ownership not), the unlocks from the files (keys case-insensitive). Checked before RetroAchievements.
+- The worker keeps `Workers::local_ach` (game id → appid), rebuilt at start and when the sweep resumes after a scan. `gamut-cli local-ach` prints the matches and counts.
+
 ## When it fetches (`app/src/workers.rs`, one thread)
 - Opening a game's details: when never fetched or older than 6 h (RA: also when not looked up yet). Errors from these show in the section.
 - 15 s after a launched game exits (Steam games are watched via the registry's RunningAppID; custom games via their process).

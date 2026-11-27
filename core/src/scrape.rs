@@ -17,6 +17,8 @@ struct AppData {
     #[serde(rename = "type", default)]
     kind: String,
     #[serde(default)]
+    name: String,
+    #[serde(default)]
     short_description: String,
     #[serde(default)]
     about_the_game: String,
@@ -50,6 +52,7 @@ struct Release {
 
 pub struct SteamDetails {
     pub kind: String,
+    pub name: String,
     /// For demos/playtests: the game they belong to.
     pub fullgame: Option<u32>,
     pub meta: Metadata,
@@ -71,6 +74,7 @@ pub fn steam_details(appid: u32) -> Result<Option<SteamDetails>> {
     });
     Ok(Some(SteamDetails {
         kind: d.kind,
+        name: d.name,
         fullgame,
         meta: Metadata {
             description: (!desc.trim().is_empty()).then(|| desc.trim().to_string()),
