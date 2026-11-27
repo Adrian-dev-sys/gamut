@@ -122,7 +122,7 @@ impl HealthDialog {
                 if !dups.is_empty() {
                     theme::section(ui, &format!("POSSIBLE DUPLICATES ({})", dups.len()));
                     ui.label(theme::hint(
-                        "The same game was added more than once for one platform. Pick the copy to keep (the one marked "suggested" \
+                        "The same game was added more than once for one platform. Pick the copy to keep (the one marked \"suggested\" \
                          it can start and has the most playtime and details). \"Not a duplicate\" hides the group.",
                     ));
                     for issue in &dups {
