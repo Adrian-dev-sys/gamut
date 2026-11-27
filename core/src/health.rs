@@ -127,7 +127,11 @@ pub fn check_with(games: &[Game], s: &Settings, exists: impl Fn(&Path) -> bool) 
     }
     for ((plat, name), gs) in groups.into_iter().filter(|(_, gs)| gs.len() > 1) {
         // Bought on several stores (Steam + GOG) is on purpose; a store copy plus a scanned exe isn't.
-        let stores: Vec<String> = gs.iter().map(|g| store(g).to_lowercase()).collect();
+        // Each Steam appid is its own product (GTA III 12100 and 12230); Steam re-adds removed ones every scan.
+        let stores: Vec<String> = gs
+            .iter()
+            .map(|g| if g.source == Source::Steam { format!("steam:{}", g.source_id) } else { store(g).to_lowercase() })
+            .collect();
         if stores.iter().all(|x| !x.is_empty()) && stores.iter().enumerate().all(|(i, x)| !stores[..i].contains(x)) {
             continue;
         }
@@ -283,6 +287,8 @@ mod tests {
         // Different stores of one game aren't duplicates.
         let mut gog = game(11, "Celeste", "PC (Windows)", Some("goggalaxy://x"), None);
         gog.store = Some("GOG".into());
-        assert!(check_with(&[games[9].clone(), gog], &Settings::default(), exists).is_empty());
+        let mut steam2 = games[9].clone();
+        (steam2.id, steam2.source_id) = (12, "12100".into());
+        assert!(check_with(&[games[9].clone(), gog, steam2], &Settings::default(), exists).is_empty());
     }
 }
