@@ -7,6 +7,8 @@ Find games in a folder and add them as custom entries (`core/src/scanner.rs`, UI
   (comma separated, default `exe`), exclusions (one per line, `*`/`?`; a bare name matches any folder/file
   name, a pattern with `\` the path inside the scanned folder), platform (dropdown of library platforms) and
   tags (chips with suggestions) given to added games, and `ignored` folders.
+- Tag rules (`tag_rules`, `Scanner::tags_for`): one per line, `word = Tag, Tag`; the word matches anywhere in the
+  game folder's name (or a `*`/`?` pattern), e.g. `recomp = Recompilation`. Shown per row in the review.
 - No depth setting: each game folder is walked fully (safety stop `MAX_DEPTH` = 12, junk folders skipped).
 - Top bar → "Scan folders" opens the list/editor; Scan runs `scanner::scan` on a thread.
 - `gamut-cli scanfolder DIR [KNOWN]` prints what a default scanner finds (read-only, safe while Gamut runs);

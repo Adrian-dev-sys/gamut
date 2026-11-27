@@ -1975,11 +1975,13 @@ impl GamutApp {
     }
 
     /// Adds scanned games as custom entries (exe, its folder as working dir, the scanner's platform/tags).
-    fn import_scanned(&mut self, s: &gamut_core::scanner::Scanner, picked: &[(String, std::path::PathBuf)]) -> anyhow::Result<usize> {
-        let rows: Vec<(String, String, Option<String>)> =
-            picked.iter().map(|(n, e)| (n.clone(), e.display().to_string(), e.parent().map(|p| p.display().to_string()))).collect();
+    fn import_scanned(&mut self, s: &gamut_core::scanner::Scanner, picked: &[(String, std::path::PathBuf, String)]) -> anyhow::Result<usize> {
+        let rows: Vec<_> = picked
+            .iter()
+            .map(|(n, e, t)| (n.clone(), e.display().to_string(), e.parent().map(|p| p.display().to_string()), t.clone()))
+            .collect();
         // One transaction: quick even for hundreds of games.
-        self.lib.add_scanned(&rows, &s.platform, &s.tags)?;
+        self.lib.add_scanned(&rows, &s.platform)?;
         log::info!("scanner \"{}\": added {} games from {}", s.name, picked.len(), s.dir);
         self.reload_all();
         (self.platforms, self.tags) = facets(&self.games);

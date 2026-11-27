@@ -407,10 +407,11 @@ impl Library {
     }
 
     /// Adds scanned games (name, exe, working dir) in one transaction, with a platform/tags ("" = none).
-    pub fn add_scanned(&mut self, games: &[(String, String, Option<String>)], platform: &str, tags: &str) -> Result<usize> {
+    /// `games`: name, exe, working dir, tags (comma separated).
+    pub fn add_scanned(&mut self, games: &[(String, String, Option<String>, String)], platform: &str) -> Result<usize> {
         let tx = self.conn.transaction()?;
         let opt = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
-        for (name, exe, dir) in games {
+        for (name, exe, dir, tags) in games {
             tx.execute(
                 "INSERT INTO games (source, source_id, name, installed, exe, work_dir, added, platform, tags)
                  VALUES ('custom', '', ?1, 1, ?2, ?3, ?4, ?5, ?6)",
@@ -901,14 +902,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut lib = Library::open(&path).unwrap();
         let rows = vec![
-            ("Celeste".to_string(), r"D:\G\Celeste\Celeste.exe".to_string(), Some(r"D:\G\Celeste".to_string())),
-            ("Hades".to_string(), r"D:\G\Hades\Hades.exe".to_string(), None),
+            ("Celeste".to_string(), r"D:\G\Celeste\Celeste.exe".to_string(), Some(r"D:\G\Celeste".to_string()), " ".to_string()),
+            ("Hades".to_string(), r"D:\G\Hades\Hades.exe".to_string(), None, "Roguelike, Fan port".to_string()),
         ];
-        assert_eq!(lib.add_scanned(&rows, "PC (Windows)", " ").unwrap(), 2);
+        assert_eq!(lib.add_scanned(&rows, "PC (Windows)").unwrap(), 2);
         let all = lib.all().unwrap();
         let c = all.iter().find(|g| g.name == "Celeste").unwrap();
         assert_eq!((c.source, c.exe.as_deref(), c.work_dir.as_deref()), (Source::Custom, Some(r"D:\G\Celeste\Celeste.exe"), Some(r"D:\G\Celeste")));
         assert_eq!((c.platform.as_deref(), c.tags.as_deref()), (Some("PC (Windows)"), None));
+        assert_eq!(all.iter().find(|g| g.name == "Hades").unwrap().tags.as_deref(), Some("Roguelike, Fan port"));
         drop(lib);
         let _ = std::fs::remove_dir_all(&dir);
     }

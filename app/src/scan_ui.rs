@@ -37,7 +37,8 @@ pub enum ScanOut {
     /// Closed; save the scanners.
     Close,
     /// Add these (name, exe) with the scanner's platform/tags; the dialog closes.
-    Import(Scanner, Vec<(String, PathBuf)>),
+    /// Name, exe, tags per picked game.
+    Import(Scanner, Vec<(String, PathBuf, String)>),
 }
 
 impl ScanDialog {
@@ -87,7 +88,7 @@ impl ScanDialog {
                     dialog_header(ui, "Review found games", &mut open);
                     match review(ui, r) {
                         Some(true) => {
-                            let picked = r.rows.iter().filter(|w| w.on && !w.c.existing && !w.name.trim().is_empty()).map(|w| (w.name.trim().to_string(), w.c.exes[w.exe].clone())).collect();
+                            let picked = r.rows.iter().filter(|w| w.on && !w.c.existing && !w.name.trim().is_empty()).map(|w| (w.name.trim().to_string(), w.c.exes[w.exe].clone(), w.c.tags.clone())).collect();
                             // Unticked new games aren't offered again; ticked ones leave the list.
                             if let Some(s) = self.scanners.get_mut(r.idx) {
                                 for w in r.rows.iter().filter(|w| !w.c.existing) {
@@ -177,6 +178,14 @@ impl ScanDialog {
                         crate::editor::chips(ui, "scan_tags", &mut list, &mut self.tag_input, tags, "Add tag…");
                         s.tags = list.join(", ");
                     });
+                    ui.end_row();
+                    ui.label("Tag rules").on_hover_text("Extra tags for games whose folder name contains a word.");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut s.tag_rules)
+                            .hint_text("one per line: word in the folder name = tags\nrecomp = Recompilation\npc port = PC Port")
+                            .desired_rows(3)
+                            .desired_width(w),
+                    );
                     ui.end_row();
                     ui.label("Exclude");
                     ui.add(
@@ -297,6 +306,9 @@ fn review(ui: &mut Ui, r: &mut Review) -> Option<bool> {
                             });
                     } else {
                         ui.label(RichText::new(rel(&w.c.exes[w.exe])).color(TEXT_DIM));
+                    }
+                    if !w.c.tags.is_empty() {
+                        ui.label(theme::hint(&w.c.tags));
                     }
                 });
                 ui.end_row();

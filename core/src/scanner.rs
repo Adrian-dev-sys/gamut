@@ -19,6 +19,8 @@ pub struct Scanner {
     pub tags: String,
     /// Folders left unticked when adding (`key` form): not offered again unless asked.
     pub ignored: Vec<String>,
+    /// Extra tags by folder name, one rule per line: `recomp = Recompilation` (`*`/`?` allowed, else "contains").
+    pub tag_rules: String,
     /// Other scanners' folders inside this one (`key` form), skipped; filled in before a scan.
     #[serde(skip)]
     pub nested: Vec<String>,
@@ -37,6 +39,7 @@ impl Default for Scanner {
             platform: String::new(),
             tags: String::new(),
             ignored: Vec::new(),
+            tag_rules: String::new(),
             nested: Vec::new(),
         }
     }
@@ -53,6 +56,29 @@ pub struct Candidate {
     pub existing: bool,
     /// Left unticked in an earlier scan.
     pub ignored: bool,
+    /// The scanner's tags plus those its rules give this folder name, comma separated.
+    pub tags: String,
+}
+
+impl Scanner {
+    /// Tags for a game folder: the scanner's own, then every matching rule's (no duplicates).
+    pub fn tags_for(&self, folder_name: &str) -> String {
+        let split = |s: &str| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect::<Vec<_>>();
+        let name = folder_name.to_lowercase();
+        let mut tags = split(&self.tags);
+        for (pat, add) in self.tag_rules.lines().filter_map(|l| l.split_once('=')) {
+            let pat = pat.trim().to_lowercase();
+            let pat = if pat.contains(['*', '?']) { pat } else { format!("*{pat}*") };
+            if pat != "**" && wildcard(&pat, &name) {
+                for t in split(add) {
+                    if !tags.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+                        tags.push(t);
+                    }
+                }
+            }
+        }
+        tags.join(", ")
+    }
 }
 
 /// Helpers, installers, crash reporters and anti-cheat that are never the game.
@@ -108,11 +134,11 @@ pub fn scan(s: &Scanner, known: &HashSet<String>) -> anyhow::Result<Vec<Candidat
                 }
                 let folder_name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
                 rank(&dir, &folder_name, &mut files);
-                out.push(Candidate { name: clean_name(&folder_name), existing: false, ignored: false, exes: files, folder: dir });
+                out.push(Candidate { name: clean_name(&folder_name), existing: false, ignored: false, tags: String::new(), exes: files, folder: dir });
             }
         } else if matches_ext(&path, &exts) && !is_junk_file(&path) {
             let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            out.push(Candidate { name: clean_name(&stem), existing: false, ignored: false, exes: vec![path.clone()], folder: path });
+            out.push(Candidate { name: clean_name(&stem), existing: false, ignored: false, tags: String::new(), exes: vec![path.clone()], folder: path });
         }
     }
     // Known: exe paths and install folders of games already in the library. A known exe anywhere inside
@@ -120,6 +146,8 @@ pub fn scan(s: &Scanner, known: &HashSet<String>) -> anyhow::Result<Vec<Candidat
     for c in &mut out {
         let folder = key(&c.folder);
         c.ignored = s.ignored.contains(&folder);
+        let name = if c.folder.is_dir() { c.folder.file_name() } else { c.folder.file_stem() };
+        c.tags = s.tags_for(&name.unwrap_or_default().to_string_lossy());
         let inside = format!("{folder}\\");
         c.existing = known.contains(&folder)
             || c.exes.iter().any(|e| known.contains(&key(e)))
@@ -374,6 +402,15 @@ mod tests {
         ] {
             assert_eq!(clean_name(raw), want, "{raw}");
         }
+    }
+
+    #[test]
+    fn tag_rules() {
+        let s = Scanner { tags: "Emulation".into(), tag_rules: "recomp = Recompilation\ndecomp=Decompilation, Fan port\n*pc port* = Fan port\nbad line".into(), ..Default::default() };
+        assert_eq!(s.tags_for("Breath of the Wild recomp - Savage Wind"), "Emulation, Recompilation");
+        assert_eq!(s.tags_for("Ocarina of Time 64 PC port"), "Emulation, Fan port");
+        assert_eq!(s.tags_for("Mario Decomp PC Port"), "Emulation, Decompilation, Fan port");
+        assert_eq!(s.tags_for("Celeste"), "Emulation");
     }
 
     #[test]
