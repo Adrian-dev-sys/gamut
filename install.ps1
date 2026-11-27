@@ -8,7 +8,13 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\Gamut'
 New-Item -ItemType Directory -Force $dir | Out-Null
-if (Get-Process gamut -ErrorAction SilentlyContinue) { throw "Gamut is running - close it and run this again." }
+# Closing Gamut's window only hides it in the tray; --quit asks it to exit (saving its state).
+if (Get-Process gamut -ErrorAction SilentlyContinue) {
+    $exe = Join-Path $dir 'gamut.exe'
+    if (Test-Path $exe) { & $exe --quit }
+    Wait-Process gamut -Timeout 15 -ErrorAction SilentlyContinue
+}
+if (Get-Process gamut -ErrorAction SilentlyContinue) { throw "Gamut is running - exit it from the tray and run this again." }
 # Honor CARGO_TARGET_DIR, else a stale target\release exe gets installed.
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
 Copy-Item (Join-Path $target 'release\gamut.exe') (Join-Path $dir 'gamut.exe') -Force

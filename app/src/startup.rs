@@ -2,6 +2,12 @@
 //! maximized, before anything is drawn, so we keep it cloaked (invisible to the compositor) until then.
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+/// The main window's handle (for cloaking).
+pub fn hwnd(cc: &eframe::CreationContext) -> Option<isize> {
+    let RawWindowHandle::Win32(h) = cc.window_handle().ok()?.as_raw() else { return None };
+    Some(h.hwnd.get())
+}
+
 pub struct Startup {
     hwnd: isize,
     frames: u32,
@@ -34,7 +40,7 @@ impl Startup {
     }
 }
 
-fn cloak(hwnd: isize, on: bool) {
+pub fn cloak(hwnd: isize, on: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
     let v = i32::from(on);
     // SAFETY: hwnd is our live top-level window; the attribute is a 4-byte BOOL.

@@ -7,6 +7,8 @@ use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIc
 /// Games listed in the menu.
 pub const RECENT: usize = 10;
 const SHOW_EVENT: &str = "Local\\GamutShowWindow";
+/// `gamut.exe --quit` (used by install.ps1): exit for real, even when closing would only hide.
+const QUIT_EVENT: &str = "Local\\GamutQuit";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Cmd {
@@ -48,7 +50,6 @@ impl Tray {
                 c.request_repaint();
             }
         }));
-        listen_for_show(tx, ctx.clone());
 
         let img = image::load_from_memory(include_bytes!("../assets/gamut.png")).ok()?.resize(32, 32, image::imageops::FilterType::Lanczos3).into_rgba8();
         let icon = tray_icon::Icon::from_rgba(img.to_vec(), img.width(), img.height()).ok()?;
@@ -60,6 +61,9 @@ impl Tray {
             .build()
             .map_err(|e| log::warn!("tray icon unavailable: {e}"))
             .ok()?;
+        log::info!("tray icon ready");
+        listen(SHOW_EVENT, Cmd::Show, tx.clone(), ctx.clone());
+        listen(QUIT_EVENT, Cmd::Quit, tx, ctx.clone());
         Some(Tray { icon, rx, recent: Vec::new() })
     }
 
@@ -92,10 +96,10 @@ fn menu(recent: &[(i64, String)]) -> Menu {
     m
 }
 
-/// Waits on a named event that a second gamut.exe sets to bring this window back.
-fn listen_for_show(tx: crossbeam_channel::Sender<Cmd>, ctx: egui::Context) {
+/// Waits on a named event another gamut.exe sets (show the window / quit).
+fn listen(event: &str, cmd: Cmd, tx: crossbeam_channel::Sender<Cmd>, ctx: egui::Context) {
     use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
-    let name: Vec<u16> = SHOW_EVENT.encode_utf16().chain([0]).collect();
+    let name: Vec<u16> = event.encode_utf16().chain([0]).collect();
     // Auto-reset event; the handle lives as long as the process.
     let ev = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) } as usize;
     if ev == 0 {
@@ -105,16 +109,25 @@ fn listen_for_show(tx: crossbeam_channel::Sender<Cmd>, ctx: egui::Context) {
         if unsafe { WaitForSingleObject(ev as _, INFINITE) } != 0 {
             return;
         }
-        let _ = tx.send(Cmd::Show);
+        let _ = tx.send(cmd);
         ctx.request_repaint();
     });
 }
 
 /// From a second launch: asks the running Gamut to show its window. False if none is listening.
 pub fn signal_running() -> bool {
+    signal(SHOW_EVENT)
+}
+
+/// `--quit`: asks the running Gamut to exit. False if none is listening.
+pub fn signal_quit() -> bool {
+    signal(QUIT_EVENT)
+}
+
+fn signal(event: &str) -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
-    let name: Vec<u16> = SHOW_EVENT.encode_utf16().chain([0]).collect();
+    let name: Vec<u16> = event.encode_utf16().chain([0]).collect();
     unsafe {
         let ev = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
         if ev.is_null() {
@@ -143,5 +156,6 @@ pub fn set_autostart(on: bool) -> anyhow::Result<()> {
         }
     };
     anyhow::ensure!(r == 0, "registry error {r}");
+    log::info!("start with Windows {}", if on { "on" } else { "off" });
     Ok(())
 }

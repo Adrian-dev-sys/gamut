@@ -140,6 +140,11 @@ pub struct GamutApp {
     quitting: bool,
     /// Frames left to keep the window hidden after starting in the tray (eframe shows it after the first paint).
     keep_hidden: u8,
+    /// The window is hidden in the tray (egui's `visible()` only tracks minimized/occluded).
+    hidden: bool,
+    hwnd: Option<isize>,
+    /// Restore maximized on the first show after starting in the tray.
+    maximize_on_show: bool,
     tray_refreshed: Option<std::time::Instant>,
     paths: Paths,
     cfg: Arc<RwLock<Config>>,
@@ -260,6 +265,9 @@ impl GamutApp {
             tray,
             quitting: false,
             keep_hidden: 0,
+            hidden: false,
+            hwnd: crate::startup::hwnd(cc),
+            maximize_on_show: false,
             tray_refreshed: None,
             thumbs: ThumbCache::new(&cc.egui_ctx, paths.clone(), 3),
             small_thumbs: ThumbCache::new(&cc.egui_ctx, paths.clone(), 2),
@@ -761,14 +769,27 @@ impl GamutApp {
     }
 
     pub fn start_in_tray(&mut self) {
-        if self.tray.is_some() {
-            self.keep_hidden = 3;
-        }
+        let Some(h) = self.hwnd.filter(|_| self.tray.is_some()) else { return };
+        crate::startup::cloak(h, true);
+        self.keep_hidden = 6;
+        self.hidden = true;
+        // Maximizing would show the window; do it on the first show instead.
+        self.maximize_on_show = self.startup.take().is_some();
+        log::info!("started in the tray");
     }
 
     fn show_window(&mut self, ctx: &egui::Context) {
-        self.keep_hidden = 0;
+        if self.keep_hidden > 0 {
+            self.keep_hidden = 0;
+            if let Some(h) = self.hwnd {
+                crate::startup::cloak(h, false);
+            }
+        }
+        self.hidden = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        if std::mem::take(&mut self.maximize_on_show) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
@@ -2839,13 +2860,19 @@ impl eframe::App for GamutApp {
     /// Runs even while the window is hidden in the tray.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         use crate::tray::Cmd;
+        // Starting in the tray: eframe shows the window after its first paint, so hide it again for a few
+        // frames while it's cloaked, then uncloak (a hidden window stays hidden).
         if self.keep_hidden > 0 {
             self.keep_hidden -= 1;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.request_repaint();
+            if self.keep_hidden == 0 {
+                if let Some(h) = self.hwnd {
+                    crate::startup::cloak(h, false);
+                }
+            }
         }
-        let hidden = !ctx.input(|i| i.viewport().visible().unwrap_or(true));
-        if hidden {
+        if self.hidden {
             self.handle_events();
             // Controller presses made in a game mustn't replay when the window comes back.
             self.pad.try_iter().for_each(drop);
@@ -2869,8 +2896,10 @@ impl eframe::App for GamutApp {
                     }
                 }
                 Cmd::Quit => {
+                    log::info!("exiting from the tray");
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint();
                 }
             }
         }
@@ -2878,7 +2907,9 @@ impl eframe::App for GamutApp {
         if to_tray && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden = true;
             self.save_prefs();
+            log::info!("hidden in the tray");
         }
         // Recently played games for the tray menu, every few seconds.
         if self.tray_refreshed.is_none_or(|t| t.elapsed().as_secs() >= 3) {

@@ -24,6 +24,10 @@ mod video;
 mod workers;
 
 fn main() -> eframe::Result {
+    if std::env::args().any(|a| a == "--quit") {
+        tray::signal_quit();
+        return Ok(());
+    }
     let paths = gamut_core::Paths::resolve().expect("cannot create data folder");
     // One instance at a time: two would fight over the library and settings.
     let Some(_lock) = paths.lock() else {
