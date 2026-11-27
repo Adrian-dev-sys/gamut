@@ -101,7 +101,8 @@ pub fn index(games: &[Game]) -> Vec<Shot> {
     out
 }
 
-/// Saves `img` as PNG in `dir` (named by local date and time) with a JPEG preview in `.thumbs`.
+/// Saves `img` as JPEG (quality 92: ~10x smaller than PNG, no visible loss) in `dir`, named by local date and
+/// time, with a 640 px preview in `.thumbs`.
 pub fn save(img: &image::RgbaImage, dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(dir.join(".thumbs")).with_context(|| format!("creating {}", dir.display()))?;
     let t = crate::now() + crate::utc_offset();
@@ -109,14 +110,21 @@ pub fn save(img: &image::RgbaImage, dir: &Path) -> Result<PathBuf> {
     let (y, m, d) = civil(days);
     let mut stem = format!("{y:04}-{m:02}-{d:02} {:02}-{:02}-{:02}", secs / 3600, secs / 60 % 60, secs % 60);
     let mut n = 2;
-    while dir.join(format!("{stem}.png")).exists() {
+    while dir.join(format!("{stem}.jpg")).exists() {
         stem = format!("{} ({n})", stem.split(" (").next().unwrap_or(&stem));
         n += 1;
     }
-    let path = dir.join(format!("{stem}.png"));
-    img.save_with_format(&path, image::ImageFormat::Png).context("saving the screenshot")?;
-    let thumb = image::DynamicImage::ImageRgba8(img.clone()).thumbnail(480, 480).to_rgb8();
-    thumb.save_with_format(dir.join(".thumbs").join(format!("{stem}.jpg")), image::ImageFormat::Jpeg)?;
+    let path = dir.join(format!("{stem}.jpg"));
+    let rgb = image::DynamicImage::ImageRgba8(img.clone()).to_rgb8();
+    let jpeg = |p: &Path, im: &image::RgbImage, q: u8| -> Result<()> {
+        let f = std::io::BufWriter::new(std::fs::File::create(p)?);
+        image::codecs::jpeg::JpegEncoder::new_with_quality(f, q).encode_image(im)?;
+        Ok(())
+    };
+    jpeg(&path, &rgb, 92).context("saving the screenshot")?;
+    let w = rgb.width().min(640);
+    let thumb = image::imageops::resize(&rgb, w, (rgb.height() as u64 * w as u64 / rgb.width() as u64).max(1) as u32, image::imageops::FilterType::Triangle);
+    jpeg(&dir.join(".thumbs").join(format!("{stem}.jpg")), &thumb, 85)?;
     Ok(path)
 }
 

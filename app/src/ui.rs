@@ -782,7 +782,7 @@ impl GamutApp {
                 Pad::Nav(Nav::PageUp) if self.selected.is_some() => self.scroll_details(-420.0),
                 Pad::Nav(Nav::PageDown) if self.selected.is_some() => self.scroll_details(420.0),
                 Pad::Scroll(d) if self.selected.is_some() => self.scroll_details(d as f32 * 60.0),
-                Pad::Scroll(_) => {}
+                Pad::Scroll(_) | Pad::Screenshot => {}
                 Pad::Nav(_) => {}
                 Pad::Search if self.selected.is_none() => {
                     (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);

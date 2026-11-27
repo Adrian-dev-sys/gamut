@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-const THUMB_W: u32 = 480;
+const THUMB_W: u32 = 640;
 const FULL_W: u32 = 3840;
 
 type Key2 = (PathBuf, u32);
@@ -18,10 +18,13 @@ pub struct ShotsView {
     pub all: Arc<Vec<Shot>>,
     /// Texture (None while loading) and the frame it was last drawn.
     tex: HashMap<Key2, (Option<TextureHandle>, u64)>,
-    req: Sender<Key2>,
+    /// What to decode, and a preview file to use instead when it's at least that wide.
+    req: Sender<(Key2, Option<PathBuf>)>,
     done: Receiver<(Key2, Option<ColorImage>)>,
     frame: u64,
     pub viewer: Option<Viewer>,
+    /// The viewer put the window in full screen (undone when it closes).
+    full_screen: bool,
 }
 
 pub struct Viewer {
@@ -37,20 +40,22 @@ pub enum Ask {
 
 impl ShotsView {
     pub fn new() -> Self {
-        let (req, rx) = unbounded::<Key2>();
+        let (req, rx) = unbounded::<(Key2, Option<PathBuf>)>();
         let (tx, done) = unbounded();
         for _ in 0..3 {
             let (rx, tx) = (rx.clone(), tx.clone());
             std::thread::spawn(move || {
-                for k in rx {
-                    let img = crate::thumbs::load_large(&k.0, k.1);
+                for (k, preview) in rx {
+                    // Steam's previews are 200 px wide: too small, so the full image is decoded then.
+                    let src = preview.filter(|p| image::image_dimensions(p).is_ok_and(|(w, _)| w >= k.1)).unwrap_or_else(|| k.0.clone());
+                    let img = crate::thumbs::load_large(&src, k.1);
                     if tx.send((k, img)).is_err() {
                         return;
                     }
                 }
             });
         }
-        ShotsView { all: Arc::new(Vec::new()), tex: HashMap::new(), req, done, frame: 0, viewer: None }
+        ShotsView { all: Arc::new(Vec::new()), tex: HashMap::new(), req, done, frame: 0, viewer: None, full_screen: false }
     }
 
     pub fn count(&self, game: i64) -> usize {
@@ -61,7 +66,8 @@ impl ShotsView {
     pub fn begin_frame(&mut self, ctx: &egui::Context) {
         self.frame += 1;
         while let Ok((k, img)) = self.done.try_recv() {
-            let t = img.map(|i| ctx.load_texture(format!("shot:{}:{}", k.0.display(), k.1), i, egui::TextureOptions::LINEAR));
+            let opts = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
+            let t = img.map(|i| ctx.load_texture(format!("shot:{}:{}", k.0.display(), k.1), i, opts));
             self.tex.insert(k, (t, self.frame));
             ctx.request_repaint();
         }
@@ -70,7 +76,7 @@ impl ShotsView {
         self.tex.retain(|(_, w), (t, seen)| t.is_none() || f - *seen < if *w == FULL_W { 3 } else if many { 120 } else { u64::MAX });
     }
 
-    fn texture(&mut self, path: &PathBuf, w: u32) -> Option<TextureHandle> {
+    fn texture(&mut self, path: &PathBuf, w: u32, preview: Option<&PathBuf>) -> Option<TextureHandle> {
         let k = (path.clone(), w);
         match self.tex.get_mut(&k) {
             Some((t, seen)) => {
@@ -79,7 +85,7 @@ impl ShotsView {
             }
             None => {
                 self.tex.insert(k.clone(), (None, self.frame));
-                let _ = self.req.send(k);
+                let _ = self.req.send((k, preview.cloned()));
                 None
             }
         }
@@ -92,10 +98,10 @@ impl ShotsView {
             return;
         }
         let s = &self.all[list[pos]];
-        let src = s.thumb.clone().unwrap_or_else(|| s.path.clone());
+        let (path, preview) = (s.path.clone(), s.thumb.clone());
         let radius = CornerRadius::same(6);
         ui.painter().rect_filled(rect, radius, CARD);
-        if let Some(t) = self.texture(&src, THUMB_W) {
+        if let Some(t) = self.texture(&path, THUMB_W, preview.as_ref()) {
             let [tw, th] = t.size().map(|v| v as f32);
             // Cover: crop the longer side.
             let (ia, ra) = (tw / th, rect.width() / rect.height());
@@ -188,12 +194,25 @@ pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
     }
     let width = ui.available_width() - 16.0;
     let (cols, size) = tile_size(width);
-    let row_h = 34.0 + size.y + 22.0;
+    // Every shot, grouped by game; only groups in view are laid out.
+    const HEAD: f32 = 34.0;
+    const GAP: f32 = 22.0;
+    let row = size.y + 8.0;
+    let heights: Vec<f32> = order.iter().map(|id| HEAD + by_game[id].len().div_ceil(cols) as f32 * row + GAP).collect();
+    let total: f32 = heights.iter().sum();
     let mut ask = None;
-    egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, order.len(), |ui, range| {
-        for id in &order[range] {
+    egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, view| {
+        ui.set_height(total);
+        let origin = ui.min_rect().min;
+        let mut top = 0.0;
+        for (id, h) in order.iter().zip(&heights) {
+            let (y, h) = (top, *h);
+            top += h;
+            if y + h < view.min.y || y > view.max.y {
+                continue;
+            }
             let list = &by_game[id];
-            let (rect, _) = ui.allocate_exact_size(vec2(width, row_h), Sense::hover());
+            let rect = Rect::from_min_size(origin + vec2(0.0, y), vec2(width, h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                 ui.horizontal(|ui| {
                     let name = RichText::new(names[id]).size(16.0).color(TEXT).strong();
@@ -202,18 +221,17 @@ pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
                     }
                     let latest = crate::util::date(v.all[list[0]].taken + gamut_core::utc_offset());
                     ui.label(RichText::new(format!("{} · latest {latest}", list.len())).color(TEXT_DIM));
-                    if list.len() > cols && ui.button(RichText::new(format!("All {}", list.len())).size(12.5)).clicked() {
-                        ask = Some(Ask::OpenGame(*id));
-                    }
                 });
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    for p in 0..list.len().min(cols) {
-                        v.thumb(ui, size, list, p);
-                    }
-                });
-                ui.add_space(22.0);
+                ui.add_space(HEAD - 26.0);
+                for chunk in (0..list.len()).collect::<Vec<_>>().chunks(cols) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        for &p in chunk {
+                            v.thumb(ui, size, list, p);
+                        }
+                    });
+                    ui.add_space(8.0 - ui.spacing().item_spacing.y);
+                }
             });
         }
     });
@@ -238,6 +256,7 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
         pos += 1;
     }
     let shot = v.all[vw.list[pos]].clone();
+    let mut fs_toggle = None;
     let list = vw.list.clone();
     let screen = ctx.content_rect();
     egui::Area::new(egui::Id::unique("shot_viewer")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
@@ -245,8 +264,8 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
         ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(235));
         let area = rect.shrink2(vec2(24.0, 64.0));
         // The thumbnail shows until the full image is decoded.
-        let full = v.texture(&shot.path, FULL_W);
-        let thumb = shot.thumb.as_ref().and_then(|t| v.tex.get(&(t.clone(), THUMB_W)).and_then(|x| x.0.clone()));
+        let full = v.texture(&shot.path, FULL_W, None);
+        let thumb = v.tex.get(&(shot.path.clone(), THUMB_W)).and_then(|x| x.0.clone());
         if let Some(t) = full.or(thumb) {
             let [tw, th] = t.size().map(|v| v as f32);
             let s = (area.width() / tw).min(area.height() / th);
@@ -260,13 +279,18 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
         let secs = (shot.taken + gamut_core::utc_offset()).rem_euclid(86_400);
         let text = format!("{name}  ·  {when} {:02}:{:02}  ·  {} / {n}{}", secs / 3600, secs / 60 % 60, pos + 1, if shot.steam { "  ·  Steam" } else { "" });
         ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), TEXT);
-        let bar = Rect::from_min_size(egui::pos2(rect.right() - 380.0, rect.top() + 14.0), vec2(356.0, 32.0));
+        let bar = Rect::from_min_size(egui::pos2(rect.right() - 520.0, rect.top() + 14.0), vec2(496.0, 32.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             if ui.button("Close").clicked() {
                 close = true;
             }
+            let full = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            if ui.button(if full { "Exit full screen" } else { "Full screen" }).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+                fs_toggle = Some(!full);
+            }
             if ui.button("Show in folder").clicked() {
-                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", shot.path.display())).spawn();
+                show_in_folder(&shot.path);
             }
             if ui.button("Open").clicked() {
                 let _ = open::that_detached(&shot.path);
@@ -292,9 +316,27 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
         for p in [pos.wrapping_sub(1), pos + 1] {
             if let Some(&i) = list.get(p) {
                 let path = v.all[i].path.clone();
-                let _ = v.texture(&path, FULL_W);
+                let _ = v.texture(&path, FULL_W, None);
             }
         }
     });
+    if let Some(on) = fs_toggle {
+        v.full_screen = on;
+    }
+    if close && v.full_screen {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        v.full_screen = false;
+    }
     v.viewer = (!close).then_some(Viewer { list, pos });
+}
+
+/// Explorer with the file selected (`/select,"path"` must reach it unquoted as a whole).
+fn show_in_folder(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
+    }
+    #[cfg(not(windows))]
+    let _ = open::that_detached(path.parent().unwrap_or(path));
 }

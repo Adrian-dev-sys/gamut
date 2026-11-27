@@ -8,11 +8,12 @@
 
 ## F12 (`app/src/shots.rs`, `app/src/capture.rs`)
 - A `WH_KEYBOARD_LL` hook on its own thread watches F12 (never swallows it; one shot per press; injected keys ignored) and hands off to a worker. Off with `no_screenshot_key`.
+- Controller: Steam's chord, PS/Guide + R1, or Create/View + R1 (Windows hides an Xbox pad's Guide button), read on the gamepad thread even while a game has focus (`Pad::Screenshot` → `shots::trigger`).
 - Game in front (`game_for`): a game Gamut started whose exe (emulators) or folder holds the foreground process, else the library game whose folder holds it (deepest; exes shared by several games are emulators and are skipped). Steam games, `steamapps\common` and Gamut itself are left to Steam / ignored; unknown apps are ignored (F12 is browser dev tools too).
 - Capture: DXGI desktop duplication of the window's monitor, cropped to its client area. HDR is checked per monitor first (`IDXGIOutput6` color space PQ/BT.2020): then the FP16 scRGB desktop is tone-mapped to SDR (`tonemap`: divided by Windows' SDR white level from `DisplayConfigGetDeviceInfo`, brightest channel rolled off above 0.75 so hue and saturation stay, sRGB encoded); SDR desktops are copied as they are. Fallback: GDI screen copy.
-- Saved as PNG (`YYYY-MM-DD HH-MM-SS.png`, local time) with a 480 px JPEG preview; a popup shows the game and a square preview. Popups use `WDA_EXCLUDEFROMCAPTURE`, so they never end up in shots.
+- Saved as JPEG quality 92 (`YYYY-MM-DD HH-MM-SS.jpg`, local time; ~10x smaller than PNG) with a 640 px preview; a popup shows the game and a square preview. Popups use `WDA_EXCLUDEFROMCAPTURE`, so they never end up in shots.
 
 ## Views (`app/src/shots_view.rs`)
-- Top-bar tab "Screenshots": games by latest shot, one row of the newest each (virtualized rows); the name or "All N" opens the game on its Screenshots tab.
+- Top-bar tab "Screenshots": games by latest shot, every shot grouped by game (only groups in view are laid out); the name opens the game on its Screenshots tab.
 - Details tab "Screenshots N": grouped by local day.
-- Viewer: full window, ←/→/Esc, Open, Show in folder; neighbours preload. Thumbnails decode on 3 threads, only when visible; unseen textures are dropped past 300.
+- Viewer: full window, ←/→/Esc, Full screen (undone on close), Open, Show in folder (`explorer /select,"path"` via `raw_arg`); neighbours preload. Thumbnails are 640 px with mipmaps, decoded on 3 threads only when visible; Steam's own previews (200 px) are too small, so the full image is decoded instead; unseen textures are dropped past 300.

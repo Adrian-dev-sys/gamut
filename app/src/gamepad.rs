@@ -27,6 +27,8 @@ pub enum Pad {
     Search,
     /// Right stick held up (-1) / down (1), repeated while held.
     Scroll(i8),
+    /// PS/Guide or Create/View held + R1/RB (Steam's chord): screenshot, even while a game has focus.
+    Screenshot,
 }
 
 /// Held-direction repeat: first repeat after `DELAY`, then every `RATE`.
@@ -91,6 +93,10 @@ impl Src {
             if new.buttons[i] && !self.state.buttons[i] {
                 out.push(*a);
             }
+        }
+        // R1 (4) pressed while PS (8) or Create (7) is held.
+        if new.buttons[4] && !self.state.buttons[4] && (new.buttons[8] || new.buttons[7]) {
+            out.push(Pad::Screenshot);
         }
         if new.dir != self.state.dir {
             self.due = new.dir.map(|d| {
@@ -174,6 +180,11 @@ fn run(tx: Sender<Pad>, ctx: egui::Context) {
                     if let Some(p) = gilrs_action(b) {
                         out.push((usize::from(ev.id) as u64, p));
                     }
+                    // Windows doesn't report an Xbox pad's Guide button; View + RB works there.
+                    let pad = g.gamepad(ev.id);
+                    if b == Button::RightTrigger && (pad.is_pressed(Button::Mode) || pad.is_pressed(Button::Select)) {
+                        out.push((usize::from(ev.id) as u64, Pad::Screenshot));
+                    }
                 }
             }
             for (id, p) in g.gamepads() {
@@ -231,6 +242,10 @@ fn run(tx: Sender<Pad>, ctx: egui::Context) {
 
         for (src, p) in out.drain(..) {
             if lead.accept(src, now) {
+                if p == Pad::Screenshot {
+                    crate::shots::trigger();
+                    continue;
+                }
                 let _ = tx.send(p);
                 ctx.request_repaint();
             }
@@ -396,6 +411,17 @@ mod tests {
         assert!(l.accept(1, ms(60))); // second quick tap
         assert!(!l.accept(2, ms(90)));
         assert!(l.accept(2, ms(1000))); // other device after the first went quiet
+    }
+
+    #[test]
+    fn ps_plus_r1_is_a_screenshot() {
+        let (t, mut s, mut out) = (Instant::now(), Src::default(), Vec::new());
+        let mut ps = PadState::default();
+        ps.buttons[8] = true;
+        s.update(ps, t, &mut out);
+        ps.buttons[4] = true;
+        s.update(ps, t, &mut out);
+        assert_eq!(out, [Pad::BigScreen, Pad::NextTab, Pad::Screenshot]);
     }
 
     #[test]

@@ -8,6 +8,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static KEY: OnceLock<Sender<()>> = OnceLock::new();
 
+/// Takes a screenshot as if F12 was pressed (the controller chord).
+pub fn trigger() {
+    if let Some(tx) = KEY.get() {
+        let _ = tx.send(());
+    }
+}
+
 /// Starts the hook; `on_saved` runs after each saved shot. `enabled` is read at each press.
 pub fn start(paths: Paths, running: Arc<Mutex<HashSet<i64>>>, enabled: impl Fn() -> bool + Send + 'static, on_saved: impl Fn(i64) + Send + 'static) {
     let (tx, rx) = channel::<()>();
