@@ -20,6 +20,7 @@ pub mod procs;
 pub mod reshade;
 pub mod retro;
 pub mod scrape;
+pub mod screenshots;
 pub mod scripts;
 pub mod specialk;
 pub mod steam;

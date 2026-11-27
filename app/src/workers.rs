@@ -18,6 +18,10 @@ pub enum Event {
     PlayniteImported(Result<String, String>),
     /// Achievement cache changed for this game.
     Achievements(i64),
+    /// Fresh screenshot index (newest first).
+    Shots(Arc<Vec<gamut_core::screenshots::Shot>>),
+    /// F12 saved a screenshot of this game.
+    ShotTaken,
 }
 
 pub struct Workers {
@@ -86,6 +90,14 @@ impl Workers {
         w.spawn_scraper(km_rx, w.pending_meta.clone(), true);
         w.spawn_sk_update_check();
         w.spawn_achievements(ach_rx);
+        {
+            let (cfg, tx, ctx) = (w.cfg.clone(), w.tx.clone(), w.ctx.clone());
+            crate::shots::start(w.paths.clone(), w.running.clone(), move || !cfg.read().unwrap().no_screenshot_key, move |_| {
+                let _ = tx.send(Event::ShotTaken);
+                ctx.request_repaint();
+            });
+        }
+        w.index_shots();
         let (steam, ctx, starting) = (w.steam_running.clone(), w.ctx.clone(), w.steam_starting.clone());
         let scanner = w.scanner();
         // Steam is the source of truth for Steam playtime: when any Steam game closes (started from Gamut or
@@ -317,6 +329,16 @@ impl Workers {
 
     pub fn rescan(&self) {
         self.scanner().run(false);
+    }
+
+    /// Rebuilds the screenshot index from disk (Gamut's folder and Steam's).
+    pub fn index_shots(&self) {
+        let (paths, tx, ctx) = (self.paths.clone(), self.tx.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let games = Library::open(&paths.db).and_then(|l| l.all()).unwrap_or_default();
+            let _ = tx.send(Event::Shots(Arc::new(gamut_core::screenshots::index(&games))));
+            ctx.request_repaint();
+        });
     }
 
     fn scanner(&self) -> Scanner {

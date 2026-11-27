@@ -3,6 +3,7 @@
 mod ach_tab;
 mod achievements;
 mod avif;
+mod capture;
 mod editor;
 mod gamepad;
 mod health_ui;
@@ -13,6 +14,8 @@ mod osk;
 mod popup;
 mod scan_ui;
 mod search_pop;
+mod shots;
+mod shots_view;
 mod lookup;
 mod notify;
 mod picker;

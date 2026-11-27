@@ -30,4 +30,5 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 - `docs/scanners.md` – folder scanners: finding game folders/collections, main exe guess, name cleanup, review and import.
 - `docs/game-details.md` – sorting name, user score, notes, links, extra actions, before/after scripts, install size, icon, save folder (PCGamingWiki), HowLongToBeat, Playnite extras.
 - `docs/health.md` – Library health: missing exe/ROM/folder/drive, no launcher, same-platform duplicates, skip/ignore settings.
+- `docs/screenshots.md` – F12 capture for non-Steam games (HDR tone-mapping), Steam screenshot import, Screenshots tabs and viewer.
 - `docs/igdb.md` – IGDB metadata/art for non-Steam games: Twitch credentials, strict matching, pipeline, manual fill (Steam, GOG, IGDB, VNDB).

@@ -87,6 +87,8 @@ mod sys {
                     continue;
                 }
                 SetLayeredWindowAttributes(hwnd, 0, 242, LWA_ALPHA);
+                // Keep popups out of screenshots and recordings.
+                SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
                 let r = (16.0 * s) as i32;
                 SetWindowRgn(hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), 1);
                 ShowWindow(hwnd, SW_SHOWNOACTIVATE);

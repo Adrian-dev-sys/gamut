@@ -1,0 +1,300 @@
+//! Screenshots: a game's tab (grouped by day), the all-games tab (grouped by game) and a full-size viewer.
+//! Thumbnails decode on worker threads, only for what's on screen.
+use crate::theme::{self, CARD, TEXT, TEXT_DIM};
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use egui::{vec2, Align2, Color32, ColorImage, CornerRadius, FontId, Key, Rect, RichText, Sense, TextureHandle, Ui};
+use gamut_core::screenshots::Shot;
+use gamut_core::Game;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+const THUMB_W: u32 = 480;
+const FULL_W: u32 = 3840;
+
+type Key2 = (PathBuf, u32);
+
+pub struct ShotsView {
+    pub all: Arc<Vec<Shot>>,
+    /// Texture (None while loading) and the frame it was last drawn.
+    tex: HashMap<Key2, (Option<TextureHandle>, u64)>,
+    req: Sender<Key2>,
+    done: Receiver<(Key2, Option<ColorImage>)>,
+    frame: u64,
+    pub viewer: Option<Viewer>,
+}
+
+pub struct Viewer {
+    /// Indices into `all`.
+    list: Vec<usize>,
+    pos: usize,
+}
+
+/// What a view asks the page to do.
+pub enum Ask {
+    OpenGame(i64),
+}
+
+impl ShotsView {
+    pub fn new() -> Self {
+        let (req, rx) = unbounded::<Key2>();
+        let (tx, done) = unbounded();
+        for _ in 0..3 {
+            let (rx, tx) = (rx.clone(), tx.clone());
+            std::thread::spawn(move || {
+                for k in rx {
+                    let img = crate::thumbs::load_large(&k.0, k.1);
+                    if tx.send((k, img)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        ShotsView { all: Arc::new(Vec::new()), tex: HashMap::new(), req, done, frame: 0, viewer: None }
+    }
+
+    pub fn count(&self, game: i64) -> usize {
+        self.all.iter().filter(|s| s.game_id == game).count()
+    }
+
+    /// Uploads finished decodes and drops textures unseen for a while.
+    pub fn begin_frame(&mut self, ctx: &egui::Context) {
+        self.frame += 1;
+        while let Ok((k, img)) = self.done.try_recv() {
+            let t = img.map(|i| ctx.load_texture(format!("shot:{}:{}", k.0.display(), k.1), i, egui::TextureOptions::LINEAR));
+            self.tex.insert(k, (t, self.frame));
+            ctx.request_repaint();
+        }
+        if self.tex.len() > 300 {
+            let f = self.frame;
+            self.tex.retain(|_, (t, seen)| t.is_none() || f - *seen < 120);
+        }
+    }
+
+    fn texture(&mut self, path: &PathBuf, w: u32) -> Option<TextureHandle> {
+        let k = (path.clone(), w);
+        match self.tex.get_mut(&k) {
+            Some((t, seen)) => {
+                *seen = self.frame;
+                t.clone()
+            }
+            None => {
+                self.tex.insert(k.clone(), (None, self.frame));
+                let _ = self.req.send(k);
+                None
+            }
+        }
+    }
+
+    /// One thumbnail, cropped to fill `size`; clicked opens the viewer on `list` at `pos`.
+    fn thumb(&mut self, ui: &mut Ui, size: egui::Vec2, list: &[usize], pos: usize) {
+        let (rect, r) = ui.allocate_exact_size(size, Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let s = &self.all[list[pos]];
+        let src = s.thumb.clone().unwrap_or_else(|| s.path.clone());
+        let radius = CornerRadius::same(6);
+        ui.painter().rect_filled(rect, radius, CARD);
+        if let Some(t) = self.texture(&src, THUMB_W) {
+            let [tw, th] = t.size().map(|v| v as f32);
+            // Cover: crop the longer side.
+            let (ia, ra) = (tw / th, rect.width() / rect.height());
+            let uv = if ia > ra {
+                let w = ra / ia;
+                Rect::from_min_max(egui::pos2((1.0 - w) / 2.0, 0.0), egui::pos2((1.0 + w) / 2.0, 1.0))
+            } else {
+                let h = ia / ra;
+                Rect::from_min_max(egui::pos2(0.0, (1.0 - h) / 2.0), egui::pos2(1.0, (1.0 + h) / 2.0))
+            };
+            egui::Image::new(&t).uv(uv).corner_radius(radius).paint_at(ui, rect);
+        }
+        if r.hovered() {
+            ui.painter().rect_stroke(rect, radius, egui::Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Inside);
+        }
+        if r.clicked() {
+            self.viewer = Some(Viewer { list: list.to_vec(), pos });
+        }
+    }
+}
+
+fn tile_size(width: f32) -> (usize, egui::Vec2) {
+    let cols = ((width + 8.0) / (240.0 + 8.0)).floor().max(1.0) as usize;
+    let w = (width - 8.0 * (cols - 1) as f32) / cols as f32;
+    (cols, vec2(w, (w * 9.0 / 16.0).round()))
+}
+
+fn day(taken: i64) -> i64 {
+    (taken + gamut_core::utc_offset()).div_euclid(86_400)
+}
+
+/// A game's screenshots, newest first, grouped by day.
+pub fn game_tab(ui: &mut Ui, v: &mut ShotsView, game: &Game) {
+    let list: Vec<usize> = (0..v.all.len()).filter(|&i| v.all[i].game_id == game.id).collect();
+    if list.is_empty() {
+        let key = if game.source == gamut_core::Source::Steam { "Steam's screenshot key" } else { "F12" };
+        ui.label(RichText::new(format!("No screenshots yet. Press {key} while playing.")).color(TEXT_DIM));
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{} screenshots", list.len())).size(15.0).color(TEXT));
+        if let Some(dir) = v.all[list[0]].path.parent().map(PathBuf::from) {
+            if ui.button(RichText::new("Open folder").size(12.5)).clicked() {
+                let _ = open::that_detached(dir);
+            }
+        }
+    });
+    ui.add_space(8.0);
+    let (cols, size) = tile_size(ui.available_width());
+    let mut i = 0;
+    while i < list.len() {
+        let d = day(v.all[list[i]].taken);
+        let end = (i..list.len()).find(|&j| day(v.all[list[j]].taken) != d).unwrap_or(list.len());
+        ui.label(theme::caption(&crate::util::date(d * 86_400)));
+        ui.add_space(4.0);
+        for row in (i..end).collect::<Vec<_>>().chunks(cols) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for &p in row {
+                    v.thumb(ui, size, &list, p);
+                }
+            });
+            ui.add_space(8.0);
+        }
+        ui.add_space(6.0);
+        i = end;
+    }
+}
+
+/// Every game with screenshots, the most recent first; one row of the newest per game.
+pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
+    let mut order: Vec<i64> = Vec::new();
+    let mut by_game: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (i, s) in v.all.iter().enumerate() {
+        by_game.entry(s.game_id).or_insert_with(|| {
+            order.push(s.game_id);
+            Vec::new()
+        });
+        by_game.get_mut(&s.game_id).unwrap().push(i);
+    }
+    let names: HashMap<i64, &str> = games.iter().filter(|g| !g.hidden).map(|g| (g.id, g.name.as_str())).collect();
+    order.retain(|id| names.contains_key(id));
+    ui.horizontal(|ui| {
+        theme::section(ui, "Screenshots");
+        ui.label(RichText::new(format!("{} in {} games · F12 in non-Steam games, Steam's key in Steam games", v.all.len(), order.len())).color(TEXT_DIM));
+    });
+    if order.is_empty() {
+        ui.label(RichText::new("No screenshots yet.").color(TEXT_DIM));
+        return None;
+    }
+    let width = ui.available_width() - 16.0;
+    let (cols, size) = tile_size(width);
+    let row_h = 34.0 + size.y + 22.0;
+    let mut ask = None;
+    egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, order.len(), |ui, range| {
+        for id in &order[range] {
+            let list = &by_game[id];
+            ui.allocate_ui(vec2(width, row_h), |ui| {
+                ui.horizontal(|ui| {
+                    let name = RichText::new(names[id]).size(16.0).color(TEXT).strong();
+                    if ui.add(egui::Label::new(name).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        ask = Some(Ask::OpenGame(*id));
+                    }
+                    let latest = crate::util::date(v.all[list[0]].taken + gamut_core::utc_offset());
+                    ui.label(RichText::new(format!("{} · latest {latest}", list.len())).color(TEXT_DIM));
+                    if list.len() > cols && ui.button(RichText::new(format!("All {}", list.len())).size(12.5)).clicked() {
+                        ask = Some(Ask::OpenGame(*id));
+                    }
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for p in 0..list.len().min(cols) {
+                        v.thumb(ui, size, list, p);
+                    }
+                });
+                ui.add_space(22.0);
+            });
+        }
+    });
+    ask
+}
+
+/// Full-size viewer over everything: ←/→ to browse, Esc to close. Runs before other key handling.
+pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
+    let Some(vw) = v.viewer.as_ref() else { return };
+    let (n, mut pos) = (vw.list.len(), vw.pos);
+    let (mut close, left, right) = ctx.input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::NONE, Key::Escape),
+            i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft),
+            i.consume_key(egui::Modifiers::NONE, Key::ArrowRight),
+        )
+    });
+    if left && pos > 0 {
+        pos -= 1;
+    }
+    if right && pos + 1 < n {
+        pos += 1;
+    }
+    let shot = v.all[vw.list[pos]].clone();
+    let list = vw.list.clone();
+    let screen = ctx.content_rect();
+    egui::Area::new(egui::Id::unique("shot_viewer")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+        let (rect, bg) = ui.allocate_exact_size(screen.size(), Sense::click());
+        ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(235));
+        let area = rect.shrink2(vec2(24.0, 64.0));
+        // The thumbnail shows until the full image is decoded.
+        let full = v.texture(&shot.path, FULL_W);
+        let thumb = shot.thumb.as_ref().and_then(|t| v.tex.get(&(t.clone(), THUMB_W)).and_then(|x| x.0.clone()));
+        if let Some(t) = full.or(thumb) {
+            let [tw, th] = t.size().map(|v| v as f32);
+            let s = (area.width() / tw).min(area.height() / th);
+            let r = Rect::from_center_size(area.center(), vec2(tw * s, th * s));
+            egui::Image::new(&t).paint_at(ui, r);
+        } else {
+            ui.put(Rect::from_center_size(area.center(), vec2(30.0, 30.0)), egui::Spinner::new());
+        }
+        let name = games.iter().find(|g| g.id == shot.game_id).map_or("", |g| g.name.as_str());
+        let when = crate::util::date(shot.taken + gamut_core::utc_offset());
+        let secs = (shot.taken + gamut_core::utc_offset()).rem_euclid(86_400);
+        let text = format!("{name}  ·  {when} {:02}:{:02}  ·  {} / {n}{}", secs / 3600, secs / 60 % 60, pos + 1, if shot.steam { "  ·  Steam" } else { "" });
+        ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), TEXT);
+        let bar = Rect::from_min_size(egui::pos2(rect.right() - 380.0, rect.top() + 14.0), vec2(356.0, 32.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+            if ui.button("Show in folder").clicked() {
+                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", shot.path.display())).spawn();
+            }
+            if ui.button("Open").clicked() {
+                let _ = open::that_detached(&shot.path);
+            }
+        });
+        // Arrows on the sides.
+        for (go, at, label) in [(pos > 0, Align2::LEFT_CENTER, "‹"), (pos + 1 < n, Align2::RIGHT_CENTER, "›")] {
+            if !go {
+                continue;
+            }
+            let r = at.align_size_within_rect(vec2(56.0, 120.0), rect.shrink(8.0));
+            let resp = ui.interact(r, ui.scope_id().with(label), Sense::click());
+            let c = if resp.hovered() { TEXT } else { TEXT_DIM };
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(54.0), c);
+            if resp.clicked() {
+                pos = if label == "‹" { pos - 1 } else { pos + 1 };
+            }
+        }
+        if bg.clicked() && !area.contains(bg.interact_pointer_pos().unwrap_or_default()) {
+            close = true;
+        }
+        // Preload the neighbours.
+        for p in [pos.wrapping_sub(1), pos + 1] {
+            if let Some(&i) = list.get(p) {
+                let path = v.all[i].path.clone();
+                let _ = v.texture(&path, FULL_W);
+            }
+        }
+    });
+    v.viewer = (!close).then_some(Viewer { list, pos });
+}

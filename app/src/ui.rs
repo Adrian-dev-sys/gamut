@@ -246,6 +246,9 @@ pub struct GamutApp {
     /// The Achievements tab, while it's the one shown.
     ach_tab: Option<crate::ach_tab::Overview>,
     stats_tab: Option<crate::stats_tab::Stats>,
+    /// The all-games Screenshots tab is showing.
+    shots_tab: bool,
+    shots: crate::shots_view::ShotsView,
     /// Details page tab: 0 = About, 1 = Achievements (kept while browsing games).
     detail_tab: usize,
     sessions: Option<crate::sessions_view::GameSessions>,
@@ -350,6 +353,8 @@ impl GamutApp {
             ra_pick: None,
             ach_tab: None,
             stats_tab: None,
+            shots_tab: false,
+            shots: crate::shots_view::ShotsView::new(),
             detail_tab: 0,
             sessions: None,
             hltb: None,
@@ -415,7 +420,10 @@ impl GamutApp {
                 st.dirty = true;
             }
             match ev {
+                Event::Shots(v) => self.shots.all = v,
+                Event::ShotTaken => self.workers.index_shots(),
                 Event::LibraryChanged => {
+                    self.workers.index_shots();
                     self.sessions = None; // Steam scans add sessions
                     self.reload_all()
                 }
@@ -632,17 +640,20 @@ impl GamutApp {
         ui.horizontal(|ui| {
             theme::logo(ui);
             ui.add_space(14.0);
-            let library = self.ach_tab.is_none() && self.stats_tab.is_none();
+            let library = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab;
             let now = ui.input(|i| i.time);
             let tab = |ui: &mut Ui, on: bool, label: &str| ui.selectable_label(on, RichText::new(label).size(15.0)).clicked();
             if tab(ui, library, "Library") {
-                (self.ach_tab, self.stats_tab) = (None, None);
+                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
             }
             if tab(ui, self.ach_tab.is_some(), "Achievements") && self.ach_tab.is_none() {
-                (self.ach_tab, self.stats_tab) = (Some(crate::ach_tab::Overview::load(&self.lib, now)), None);
+                (self.ach_tab, self.stats_tab, self.shots_tab) = (Some(crate::ach_tab::Overview::load(&self.lib, now)), None, false);
             }
             if tab(ui, self.stats_tab.is_some(), "Statistics") && self.stats_tab.is_none() {
-                (self.ach_tab, self.stats_tab) = (None, Some(crate::stats_tab::Stats::load(&self.lib, now)));
+                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, Some(crate::stats_tab::Stats::load(&self.lib, now)), false);
+            }
+            if tab(ui, self.shots_tab, "Screenshots") {
+                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, true);
             }
             ui.add_space(14.0);
             if library {
@@ -690,7 +701,7 @@ impl GamutApp {
                 self.big = Some(ctx.zoom_factor());
                 ctx.set_zoom_factor(ctx.zoom_factor() * 1.35);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-                (self.ach_tab, self.stats_tab) = (None, None);
+                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
                 if self.filter == Filter::Hidden {
                     self.filter = Filter::All;
                 }
@@ -751,7 +762,7 @@ impl GamutApp {
             return;
         }
         for p in events {
-            let grid = self.ach_tab.is_none() && self.stats_tab.is_none();
+            let grid = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab;
             match p {
                 Pad::BigScreen => self.toggle_big(ctx),
                 // In dialogs the D-pad/A drive egui focus (raw_input_hook); B cancels simple ones.
@@ -773,7 +784,7 @@ impl GamutApp {
                 Pad::Scroll(_) => {}
                 Pad::Nav(_) => {}
                 Pad::Search if self.selected.is_none() => {
-                    (self.ach_tab, self.stats_tab) = (None, None);
+                    (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
                     if self.big.is_some() {
                         self.search_pop = Some(crate::search_pop::SearchPop::new());
                     } else {
@@ -800,7 +811,7 @@ impl GamutApp {
                     } else if !self.multi.is_empty() {
                         self.multi.clear();
                     } else if !grid {
-                        (self.ach_tab, self.stats_tab) = (None, None);
+                        (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
                     }
                 }
                 Pad::Favorite => {
@@ -817,13 +828,14 @@ impl GamutApp {
                     self.scroll_to = Some(0.0);
                 }
                 Pad::PrevTab | Pad::NextTab if self.selected.is_none() => {
-                    let i = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else { 0 };
-                    let d = if matches!(p, Pad::NextTab) { 1 } else { 2 };
+                    let i = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else if self.shots_tab { 3 } else { 0 };
+                    let d = if matches!(p, Pad::NextTab) { 1 } else { 3 };
                     let now = ctx.input(|i| i.time);
-                    (self.ach_tab, self.stats_tab) = (None, None);
-                    match (i + d) % 3 {
+                    (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
+                    match (i + d) % 4 {
                         1 => self.ach_tab = Some(crate::ach_tab::Overview::load(&self.lib, now)),
                         2 => self.stats_tab = Some(crate::stats_tab::Stats::load(&self.lib, now)),
+                        3 => self.shots_tab = true,
                         _ => {}
                     }
                 }
@@ -1054,7 +1066,7 @@ impl GamutApp {
             i = (i + 1 + r / n % (n - 1)) % n;
         }
         let id = self.games[self.view[i]].id;
-        (self.ach_tab, self.stats_tab) = (None, None);
+        (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
         (self.cursor, self.anchor) = (Some(id), Some(id));
         let cols = self.grid_cols.max(1);
         self.scroll_to = Some((i / cols as usize) as f32 * self.grid_pitch.max(1.0));
@@ -1527,6 +1539,7 @@ impl GamutApp {
             // About / Achievements / Sessions tabs, so they don't sit below a long description.
             let show_ach = ach_src.is_some() && self.detail_tab == 1;
             let show_sessions = self.detail_tab == 2;
+            let show_shots = self.detail_tab == 3;
             if self.sessions.as_ref().is_none_or(|s| s.id != id) {
                 self.sessions = Some(crate::sessions_view::GameSessions::load(&self.lib, id));
             }
@@ -1540,6 +1553,8 @@ impl GamutApp {
                         tabs.push((1, count.map_or("Achievements".into(), |c| format!("Achievements  {c}"))));
                     }
                     tabs.push((2, if n > 0 { format!("Sessions  {n}") } else { "Sessions".into() }));
+                    let shots = self.shots.count(id);
+                    tabs.push((3, if shots > 0 { format!("Screenshots  {shots}") } else { "Screenshots".into() }));
                     for (i, label) in tabs {
                         let on = self.detail_tab == i || (i == 0 && self.detail_tab == 1 && ach_src.is_none());
                         let text = RichText::new(label).size(15.0).color(if on { theme::TEXT } else { TEXT_DIM });
@@ -1641,12 +1656,15 @@ impl GamutApp {
                     if let (true, Some(sv)) = (show_sessions, self.sessions.as_mut()) {
                         crate::sessions_view::section(ui, sv);
                     }
-                    if let (false, false, Some(n)) = (show_ach, show_sessions, g.notes.as_deref()) {
+                    if show_shots {
+                        crate::shots_view::game_tab(ui, &mut self.shots, &g);
+                    }
+                    if let (false, false, false, Some(n)) = (show_ach, show_sessions, show_shots, g.notes.as_deref()) {
                         theme::section(ui, "Notes");
                         ui.add(egui::Label::new(n).wrap());
                         ui.add_space(14.0);
                     }
-                    if !show_ach && !show_sessions {
+                    if !show_ach && !show_sessions && !show_shots {
                         theme::section(ui, "Description");
                         ui.vertical(|ui| {
                             match &g.description {
@@ -1974,6 +1992,10 @@ impl GamutApp {
                         ui.checkbox(&mut tray, "Closing the window keeps Gamut in the tray");
                         s.quit_on_close = !tray;
                         ui.checkbox(&mut s.start_with_windows, "Start with Windows (in the tray)");
+                        let mut key = !s.no_screenshot_key;
+                        if ui.checkbox(&mut key, "F12 takes screenshots of non-Steam games (Steam games use Steam's key)").changed() {
+                            s.no_screenshot_key = !key;
+                        }
                         ui.label(theme::hint("The tray icon opens Gamut, big screen, or one of your recently played games."));
                         ui.add_space(12.0);
                         ui.separator();
@@ -2189,7 +2211,7 @@ impl GamutApp {
             match self.import_scanned(&s, &picked) {
                 Ok(n) => {
                     // Show them: newest first, nothing filtered out.
-                    (self.sort, self.filter, self.ach_tab, self.stats_tab) = (Sort::Added, Filter::All, None, None);
+                    (self.sort, self.filter, self.ach_tab, self.stats_tab, self.shots_tab) = (Sort::Added, Filter::All, None, None, false);
                     (self.platform, self.tag, self.completion) = (String::new(), String::new(), String::new());
                     self.search.clear();
                     self.scroll_to = Some(0.0);
@@ -3062,6 +3084,8 @@ impl eframe::App for GamutApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events();
+        self.shots.begin_frame(&ctx);
+        crate::shots_view::viewer(&ctx, &mut self.shots, &self.games);
         self.update_view();
         if let Some(ov) = self.ach_tab.as_mut().filter(|o| o.dirty) {
             // The sweep sends many updates; reread at most every few seconds.
@@ -3090,7 +3114,7 @@ impl eframe::App for GamutApp {
             }
         });
         let mut actions = Vec::new();
-        let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none();
+        let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab;
         let blocked = self.selected.is_some() || self.any_dialog();
         // Before handle_pad: a B that closes a dialog mustn't also close the details under it.
         let blocked_by_dialog = self.any_dialog();
@@ -3129,7 +3153,7 @@ impl eframe::App for GamutApp {
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
             .show(ui, |ui| {
                 // Switching tabs cross-fades the content in.
-                let tab = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else { 0 };
+                let tab = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else if self.shots_tab { 3 } else { 0 };
                 ui.multiply_opacity(theme::appear(&ctx, egui::Id::unique("tab_fade").with(tab), 0.18));
                 let clicked = match (self.ach_tab.as_mut(), self.stats_tab.as_mut()) {
                     (Some(ov), _) => {
@@ -3137,6 +3161,13 @@ impl eframe::App for GamutApp {
                         crate::ach_tab::show(ui, ov, &self.games, &mut self.small_thumbs, busy)
                     }
                     (_, Some(st)) => crate::stats_tab::show(ui, st, &self.games),
+                    _ if self.shots_tab => match crate::shots_view::overview(ui, &mut self.shots, &self.games) {
+                        Some(crate::shots_view::Ask::OpenGame(id)) => {
+                            self.detail_tab = 3;
+                            Some(id)
+                        }
+                        None => None,
+                    },
                     _ => {
                         self.grid(ui, &mut actions);
                         None

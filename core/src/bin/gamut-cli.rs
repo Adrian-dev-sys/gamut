@@ -206,6 +206,22 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some("shots") => {
+            let games = lib.all()?;
+            let shots = gamut_core::screenshots::index(&games);
+            let mut per: std::collections::BTreeMap<String, (usize, usize, usize)> = Default::default();
+            for s in &shots {
+                let name = games.iter().find(|g| g.id == s.game_id).map_or(String::new(), |g| g.name.clone());
+                let e = per.entry(name).or_default();
+                e.0 += 1;
+                e.1 += s.steam as usize;
+                e.2 += s.thumb.is_some() as usize;
+            }
+            println!("{} screenshots in {} games (root {})", shots.len(), per.len(), gamut_core::screenshots::root().display());
+            for (n, (all, steam, thumbs)) in per {
+                println!("{n:<50} {all:>4} (steam {steam}, thumbs {thumbs})");
+            }
+        }
         Some("local-ach") => {
             use gamut_core::{achievements::Fetched, local_ach};
             let names = local_ach::names(&paths.root.join("local-ach.json"), &local_ach::appids());
