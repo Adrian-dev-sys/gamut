@@ -61,14 +61,15 @@ impl HealthDialog {
             ui.set_max_size(size);
             dialog_header(ui, "Library health", &mut open);
             let issues = self.issues.clone();
-            let (broken, dups): (Vec<&Issue>, Vec<&Issue>) = issues.iter().partition(|i| i.problem != Problem::Duplicate);
+            let (dups, rest): (Vec<&Issue>, Vec<&Issue>) = issues.iter().partition(|i| i.problem == Problem::Duplicate);
+            let (absent, broken): (Vec<&Issue>, Vec<&Issue>) = rest.into_iter().partition(|i| i.problem == Problem::NotInstalled);
             ui.horizontal(|ui| {
                 ui.label(if self.rx.is_some() {
                     "Checking…".to_string()
                 } else if self.issues.is_empty() {
                     "Nothing wrong found.".to_string()
                 } else {
-                    format!("{} can't start · {} possible duplicates", broken.len(), dups.len())
+                    format!("{} can't start · {} possible duplicates · {} not installed", broken.len(), dups.len(), absent.len())
                 });
                 if ui.add_enabled(self.rx.is_none(), egui::Button::new("Check again")).clicked() {
                     self.run(games);
@@ -91,10 +92,8 @@ impl HealthDialog {
             let mut ignore = None;
             egui::ScrollArea::vertical().max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
                 let find = |id: i64| games.iter().find(|g| g.id == id);
-                if !broken.is_empty() {
-                    theme::section(ui, &format!("CAN'T START ({})", broken.len()));
-                    ui.label(theme::hint("Nothing to launch, or the files moved. Edit to point at the new location, or Remove if it's gone for good."));
-                    for issue in &broken {
+                let mut single = |ui: &mut Ui, list: &[&Issue]| {
+                    for issue in list {
                         let Some(g) = issue.ids.first().and_then(|&id| find(id)) else { continue };
                         card(ui, |ui| {
                             ui.horizontal(|ui| {
@@ -117,6 +116,20 @@ impl HealthDialog {
                             ui.label(theme::hint(&issue.problem.describe()));
                         });
                     }
+                };
+                if !broken.is_empty() {
+                    theme::section(ui, &format!("CAN'T START ({})", broken.len()));
+                    ui.label(theme::hint("Nothing to launch, or the files moved. Edit to point at the new location, or Remove if it's gone for good."));
+                    single(ui, &broken);
+                    ui.add_space(8.0);
+                }
+                if !absent.is_empty() {
+                    egui::CollapsingHeader::new(theme::caption(&format!("NOT INSTALLED ({})", absent.len()))).id_salt("health_absent").show(ui, |ui| {
+                        ui.label(theme::hint(
+                            "Imported as not installed, with nothing to start. Edit to add the exe if you have it, Remove it, or Ignore it to keep it as a wishlist/owned entry.",
+                        ));
+                        single(ui, &absent);
+                    });
                     ui.add_space(8.0);
                 }
                 if !dups.is_empty() {

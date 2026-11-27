@@ -3,12 +3,13 @@
 **Health** in the top bar opens a dialog listing games that can't start and likely duplicates (`core/src/health.rs`, UI in `app/src/health_ui.rs`). The check runs on a thread (a sleeping or network drive can stall file checks) and re-runs after an edit or removal.
 
 ## Checks
-- Only installed custom games are checked for files; Steam handles its own, and uninstalled entries (owned console games) are expected to have no exe.
+- Only installed custom games are checked for files; Steam handles its own.
 - **No launcher**: no exe/link set.
 - **Exe / file / folder missing**: the exe, and every double-quoted absolute path in the arguments (emulator ROMs). If the parent folder is gone too, the folder is reported instead.
 - **Drive missing**: the drive root doesn't exist (unplugged disk). Not ignorable, since it fixes itself.
 - URLs (`goggalaxy://`), store names and Playnite `{placeholders}` aren't checked.
-- **Duplicates**: same normalized name on the same platform (Steam counts as PC). The same game on different platforms is never a duplicate. A group where every copy is from a different store (Steam + GOG) is skipped as bought twice.
+- **Not installed** (collapsed section): custom games imported as not installed with no exe and no store (store entries like PlayStation are owned elsewhere).
+- **Duplicates**: same name (letters/digits, accents folded) on the same platform; a name whose subtitle after ": " / " - " (8+ chars) is another game's name joins that group (Steam counts as PC). The same game on different platforms is never a duplicate. A group where every copy is from a different store (Steam + GOG) is skipped as bought twice.
 
 ## Dialog
 - Two sections: **Can't start** (Edit / Remove / Ignore) and **Possible duplicates**.
