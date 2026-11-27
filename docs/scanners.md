@@ -17,6 +17,10 @@ Find games in a folder and add them as custom entries (`core/src/scanner.rs`, UI
 - Collections (`split`): a folder with no matching file at its top and several subfolders with files splits
   into one game per subfolder, recursively ("NEKOPARA Collection\Vol. 1"…). A single subfolder
   (`Game\Binaries\Win64`) stays one game named after the outer folder.
+  Never splits when a subfolder is a part of one game (`PART_DIRS`: bin, build, extracted, lib, game, temp…),
+  so recomp/dev folders stay one game. Hidden folders (`.venv`, `.git`) are skipped.
+- Another scanner's folder inside this one (`nested_dirs`, e.g. `D:\Jocuri\VNs` under `D:\Jocuri`) is skipped,
+  so each game is offered by one scanner only.
 - Skipped: installers, redistributables, crash reporters, anti-cheat, updaters (`JUNK_FILES`) and folders like
   `_CommonRedist`, `Redist`, `DirectX`, `Engine`, `steamapps`, `llvm` (`JUNK_DIRS`).
 - Main file (`rank`): named like the folder (+100, partial +40), shallower (−15 per level, so a root

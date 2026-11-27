@@ -19,6 +19,9 @@ pub struct Scanner {
     pub tags: String,
     /// Folders left unticked when adding (`key` form): not offered again unless asked.
     pub ignored: Vec<String>,
+    /// Other scanners' folders inside this one (`key` form), skipped; filled in before a scan.
+    #[serde(skip)]
+    pub nested: Vec<String>,
 }
 
 /// Safety stop for deep trees (folder junctions, huge mod folders); games sit far shallower.
@@ -34,6 +37,7 @@ impl Default for Scanner {
             platform: String::new(),
             tags: String::new(),
             ignored: Vec::new(),
+            nested: Vec::new(),
         }
     }
 }
@@ -62,7 +66,21 @@ const JUNK_DIRS: &[&str] = &[
     "_commonredist", "commonredist", "redist", "redistributables", "directx", "__installer", "_installer",
     "installers", "prerequisites", "prereqs", "support", "easyanticheat", "battleye", "vcredist", "dotnet",
     "__support", "_redist", "crashreporter", "engine", "steamapps", "llvm", "compiler", "node_modules", "python", "mono", "jre",
+    "venv", "site-packages", "__pycache__", "toolchain", "obj", "test", "tests",
 ];
+
+/// Subfolder names that belong to one game (or a dev build of it), never separate games of a collection.
+const PART_DIRS: &[&str] = &[
+    "bin", "bin32", "bin64", "build", "builds", "extracted", "lib", "libs", "scripts", "tools", "game", "temp", "tmp",
+    "content", "data", "x64", "x86", "win32", "win64", "binaries", "release", "debug", "src", "dist", "out",
+    "plugins", "mods", "system", "runtime", "assets", "resources", "_backup", "backup", "backup-old", "_backup-old",
+];
+
+/// Other scanners' folders strictly inside `dir`, as `key`s.
+pub fn nested_dirs(dir: &str, all: &[Scanner]) -> Vec<String> {
+    let base = format!("{}\\", key(Path::new(dir.trim())).trim_end_matches('\\'));
+    all.iter().map(|o| key(Path::new(o.dir.trim())).trim_end_matches('\\').to_string()).filter(|k| k.starts_with(&base)).collect()
+}
 
 /// Lists candidates under `s.dir`. `known` holds lowercased exe paths already in the library.
 pub fn scan(s: &Scanner, known: &HashSet<String>) -> anyhow::Result<Vec<Candidate>> {
@@ -75,12 +93,12 @@ pub fn scan(s: &Scanner, known: &HashSet<String>) -> anyhow::Result<Vec<Candidat
     entries.sort();
     for path in entries {
         let rel = rel_lower(&root, &path);
-        if excluded(&rel, &exclude) {
+        if excluded(&rel, &exclude) || s.nested.contains(&key(&path)) {
             continue;
         }
         if path.is_dir() {
             let mut files = Vec::new();
-            walk(&root, &path, MAX_DEPTH, &exts, &exclude, &mut files);
+            walk(&root, &path, MAX_DEPTH, &exts, &exclude, &s.nested, &mut files);
             let mut groups = Vec::new();
             split(&path, files, &mut groups);
             groups.sort();
@@ -125,6 +143,12 @@ fn split(dir: &Path, files: Vec<PathBuf>, out: &mut Vec<(PathBuf, Vec<PathBuf>)>
             None => groups.push((sub, vec![f.clone()])),
         }
     }
+    let part = |g: &PathBuf| PART_DIRS.contains(&g.file_name().unwrap_or_default().to_string_lossy().to_lowercase().as_str());
+    if groups.iter().any(|(g, _)| part(g)) {
+        // bin\, build\, extracted\…: parts of one game, not a collection.
+        out.push((dir.to_path_buf(), files));
+        return;
+    }
     match groups.len() {
         0 => {}
         // One subfolder (Game\Binaries\Win64…): still one game, named after the outer folder.
@@ -142,7 +166,7 @@ fn rel_lower(root: &Path, p: &Path) -> String {
     key(p.strip_prefix(root).unwrap_or(p))
 }
 
-fn walk(root: &Path, dir: &Path, depth: u32, exts: &[String], exclude: &[String], out: &mut Vec<PathBuf>) {
+fn walk(root: &Path, dir: &Path, depth: u32, exts: &[String], exclude: &[String], skip: &[String], out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
@@ -152,8 +176,9 @@ fn walk(root: &Path, dir: &Path, depth: u32, exts: &[String], exclude: &[String]
         let Ok(ft) = e.file_type() else { continue };
         if ft.is_dir() {
             let name = e.file_name().to_string_lossy().to_lowercase();
-            if depth > 0 && !JUNK_DIRS.contains(&name.as_str()) {
-                walk(root, &p, depth - 1, exts, exclude, out);
+            // Hidden/dev folders (.venv, .git) and other scanners' folders are skipped.
+            if depth > 0 && !JUNK_DIRS.contains(&name.as_str()) && !name.starts_with('.') && !skip.contains(&key(&p)) {
+                walk(root, &p, depth - 1, exts, exclude, skip, out);
             }
         } else if matches_ext(&p, exts) && !is_junk_file(&p) {
             out.push(p);
@@ -389,14 +414,20 @@ mod tests {
         mk("Unreal Game/UnrealGame/Binaries/Win64/UnrealGame-Win64-Shipping.exe", 10);
         mk("Old Game/start.exe", 10);
         mk("Deep/a/b/c/d/e/f/deep.exe", 10);
+        mk("Recomp-Setup/bin/recomp_xlate.exe", 10);
+        mk("Recomp-Setup/extracted/recomp.exe", 10);
+        mk("Recomp-Setup/.venv/Scripts/pip.exe", 10);
+        mk("VNs/Some VN/vn.exe", 10);
         // Library knows Old Game by an exe this scan doesn't list.
         let known: HashSet<String> = [key(&root.join("Big Game/BigGame.exe")), key(&root.join("Old Game/bin/real.exe"))].into();
         let s = Scanner { dir: root.to_string_lossy().into(), ignored: vec![key(&root.join("Loose Game.exe"))], ..Default::default() };
+        let s = Scanner { nested: nested_dirs(&s.dir, &[s.clone(), Scanner { dir: root.join("VNs").to_string_lossy().into(), ..Default::default() }]), ..s };
         let c = scan(&s, &known).unwrap();
         let names: Vec<&str> = c.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["Big Game", "Deep", "Hollow Knight", "Loose Game", "A", "B", "Other", "Old Game", "Vol. 1", "Vol. 2", "Unreal Game"]);
+        assert_eq!(names, ["Big Game", "Deep", "Hollow Knight", "Loose Game", "A", "B", "Other", "Old Game", "Recomp", "Vol. 1", "Vol. 2", "Unreal Game"]);
+        assert_eq!(c[8].exes.len(), 2);
         assert!(c[7].existing && c[3].ignored && !c[2].ignored);
-        assert_eq!(c[10].exes[0].file_name().unwrap(), "UnrealGame.exe");
+        assert_eq!(c[11].exes[0].file_name().unwrap(), "UnrealGame.exe");
         assert_eq!(c[0].exes[0].file_name().unwrap(), "BigGame.exe");
         assert!(c[0].existing && !c[2].existing);
         assert_eq!(c[2].exes.len(), 1);

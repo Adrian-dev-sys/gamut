@@ -191,6 +191,11 @@ impl ScanDialog {
                     "Each folder inside counts as one game, however deep its files are; its main file is guessed \
                      (installers, redistributables and crash reporters are skipped). You review everything before it's added.",
                 ));
+                let nested = scanner::nested_dirs(&self.scanners[self.sel].dir.clone(), &self.scanners);
+                if !nested.is_empty() {
+                    let names: Vec<&str> = self.scanners.iter().filter(|o| nested.contains(&scanner::key(std::path::Path::new(o.dir.trim())).trim_end_matches('\\').to_string())).map(|o| o.name.as_str()).collect();
+                    ui.label(theme::hint(&format!("Skips folders with their own scanner: {}.", names.join(", "))));
+                }
                 if let Some(e) = &self.error {
                     ui.colored_label(theme::DANGER, e);
                 }
@@ -199,7 +204,8 @@ impl ScanDialog {
         ui.separator();
         ui.horizontal(|ui| {
             let busy = self.busy.is_some();
-            let (sel, s) = (self.sel, self.scanners[self.sel].clone());
+            let (sel, mut s) = (self.sel, self.scanners[self.sel].clone());
+            s.nested = scanner::nested_dirs(&s.dir, &self.scanners);
             let label = if busy { "Scanning…" } else { "Scan" };
             let scan = egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT);
             if ui.add_enabled(!busy && !s.dir.trim().is_empty(), scan).clicked() {
@@ -272,7 +278,7 @@ fn review(ui: &mut Ui, r: &mut Review) -> Option<bool> {
                     continue;
                 }
                 ui.add_enabled(!w.c.existing, egui::Checkbox::without_text(&mut w.on));
-                ui.add_enabled(!w.c.existing, egui::TextEdit::singleline(&mut w.name).desired_width(300.0));
+                ui.add_enabled_ui(!w.c.existing, |ui| ui.add_sized([300.0, 22.0], egui::TextEdit::singleline(&mut w.name)));
                 ui.horizontal(|ui| {
                     if w.c.existing {
                         ui.label(theme::hint("In library"));
