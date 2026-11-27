@@ -1938,14 +1938,16 @@ impl GamutApp {
     fn scan_window(&mut self, ctx: &egui::Context) {
         let Some(d) = self.scans.as_mut() else { return };
         // Exes and install folders already in the library (Steam/GOG games have only the folder).
-        let known: HashSet<String> = self
-            .games
-            .iter()
-            .flat_map(|g| [g.exe.as_deref(), g.install_dir.as_deref()])
-            .flatten()
-            .map(|p| gamut_core::scanner::key(std::path::Path::new(p)))
-            .collect();
-        let out = d.show(ctx, &known);
+        let games = &self.games;
+        let known = || -> HashSet<String> {
+            games
+                .iter()
+                .flat_map(|g| [g.exe.as_deref(), g.install_dir.as_deref()])
+                .flatten()
+                .map(|p| gamut_core::scanner::key(std::path::Path::new(p)))
+                .collect()
+        };
+        let out = d.show(ctx, known);
         if matches!(out, crate::scan_ui::ScanOut::Open) {
             return;
         }
@@ -1967,23 +1969,10 @@ impl GamutApp {
 
     /// Adds scanned games as custom entries (exe, its folder as working dir, the scanner's platform/tags).
     fn import_scanned(&mut self, s: &gamut_core::scanner::Scanner, picked: &[(String, std::path::PathBuf)]) -> anyhow::Result<usize> {
-        let (platform, tags) = (s.platform.trim(), s.tags.trim());
-        for (name, exe) in picked {
-            let mut g = Game::new_custom(name.clone(), Some(exe.display().to_string()));
-            g.work_dir = exe.parent().map(|p| p.display().to_string());
-            let id = self.lib.add_custom(&g)?;
-            if !platform.is_empty() || !tags.is_empty() {
-                if let Some(mut g) = self.lib.get(id)? {
-                    if !platform.is_empty() {
-                        g.platform = Some(platform.to_string());
-                    }
-                    if !tags.is_empty() {
-                        g.tags = Some(tags.to_string());
-                    }
-                    self.lib.update_user_fields(&g)?;
-                }
-            }
-        }
+        let rows: Vec<(String, String, Option<String>)> =
+            picked.iter().map(|(n, e)| (n.clone(), e.display().to_string(), e.parent().map(|p| p.display().to_string()))).collect();
+        // One transaction: quick even for hundreds of games.
+        self.lib.add_scanned(&rows, &s.platform, &s.tags)?;
         log::info!("scanner \"{}\": added {} games from {}", s.name, picked.len(), s.dir);
         self.reload_all();
         (self.platforms, self.tags) = facets(&self.games);

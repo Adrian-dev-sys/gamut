@@ -92,9 +92,14 @@ pub fn scan(s: &Scanner, known: &HashSet<String>) -> anyhow::Result<Vec<Candidat
             out.push(Candidate { name: clean_name(&stem), existing: false, exes: vec![path.clone()], folder: path });
         }
     }
-    // Known: exe paths and install folders of games already in the library.
+    // Known: exe paths and install folders of games already in the library. A known exe anywhere inside
+    // the folder counts too (it may be filtered out here, or deeper than `depth`).
     for c in &mut out {
-        c.existing = known.contains(&key(&c.folder)) || c.exes.iter().any(|e| known.contains(&key(e)));
+        let folder = key(&c.folder);
+        let inside = format!("{folder}\\");
+        c.existing = known.contains(&folder)
+            || c.exes.iter().any(|e| known.contains(&key(e)))
+            || c.folder.is_dir() && known.iter().any(|k| k.starts_with(&inside));
     }
     Ok(out)
 }
@@ -255,12 +260,9 @@ pub fn clean_name(raw: &str) -> String {
     s = Regex::new(r"(\d)_(\d)").unwrap().replace_all(&s, "$1.$2").to_string();
     s = Regex::new(r"(\d)\.([A-Za-z])").unwrap().replace_all(&s, "$1 $2").to_string();
     s = s.replace('_', " ");
-    // One run-together word: hyphens separate too ("Game-1.2-pc"), after dropping glued tags ("Game-CODEX").
-    while let Some((head, _)) = s.trim().rsplit_once('-').filter(|(h, t)| !h.is_empty() && is_tag(t)) {
+    // Tags and versions glued on at the end ("Game-1.2-pc", "Game-CODEX"); "Half-Life" keeps its hyphen.
+    while let Some((head, _)) = s.trim().rsplit_once('-').filter(|(h, t)| !h.is_empty() && (is_tag(t) || is_version(t))) {
         s = head.to_string();
-    }
-    if !s.trim().contains(' ') && s.contains('-') {
-        s = s.replace('-', " ");
     }
     // Dots as separators ("Hollow.Knight"), but not inside numbers ("1.5").
     if !s.trim().contains(' ') || Regex::new(r"[A-Za-z]{2}\.[A-Za-z]").unwrap().is_match(&s) {
@@ -334,6 +336,9 @@ mod tests {
             ("Astral Chain-Setup", "Astral Chain"),
             ("Game-CODEX", "Game"),
             ("Sex Lesson Island-v1.04", "Sex Lesson Island"),
+            ("Half-Life", "Half-Life"),
+            ("Spider-Man", "Spider-Man"),
+            ("Counter-Strike-v1.6", "Counter-Strike"),
             ("PlayCabal", "PlayCabal"),
         ] {
             assert_eq!(clean_name(raw), want, "{raw}");
@@ -376,12 +381,15 @@ mod tests {
         mk("SteamLibrary/steamapps/common/X/x.exe", 10);
         mk("Unreal Game/UnrealGame.exe", 10);
         mk("Unreal Game/UnrealGame/Binaries/Win64/UnrealGame-Win64-Shipping.exe", 10);
-        let known: HashSet<String> = [key(&root.join("Big Game/BigGame.exe"))].into();
+        mk("Old Game/start.exe", 10);
+        // Library knows Old Game by an exe this scan doesn't list.
+        let known: HashSet<String> = [key(&root.join("Big Game/BigGame.exe")), key(&root.join("Old Game/bin/real.exe"))].into();
         let s = Scanner { dir: root.to_string_lossy().into(), ..Default::default() };
         let c = scan(&s, &known).unwrap();
         let names: Vec<&str> = c.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["Big Game", "Hollow Knight", "Loose Game", "A", "B", "Other", "Vol. 1", "Vol. 2", "Unreal Game"]);
-        assert_eq!(c[8].exes[0].file_name().unwrap(), "UnrealGame.exe");
+        assert_eq!(names, ["Big Game", "Hollow Knight", "Loose Game", "A", "B", "Other", "Old Game", "Vol. 1", "Vol. 2", "Unreal Game"]);
+        assert!(c[6].existing);
+        assert_eq!(c[9].exes[0].file_name().unwrap(), "UnrealGame.exe");
         assert_eq!(c[0].exes[0].file_name().unwrap(), "BigGame.exe");
         assert!(c[0].existing && !c[1].existing);
         assert_eq!(c[1].exes.len(), 1);

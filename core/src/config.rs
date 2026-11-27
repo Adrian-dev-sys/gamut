@@ -110,4 +110,20 @@ mod tests {
         assert_eq!(back.window, ui.window);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn scanners_round_trip() {
+        let dir = std::env::temp_dir().join(format!("gamut-cfg-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let mut c = Config::load(&path);
+        c.window = Some(WindowState::default());
+        c.scanners = vec![
+            crate::scanner::Scanner { dir: r"D:\Games".into(), exclude: "*Demo*\nTools\\Mods".into(), ..Default::default() },
+            crate::scanner::Scanner { name: "VNs".into(), tags: "VN, Adult".into(), ..Default::default() },
+        ];
+        c.save(&path).unwrap();
+        assert_eq!(Config::load(&path).scanners, c.scanners);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

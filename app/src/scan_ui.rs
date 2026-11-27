@@ -10,7 +10,8 @@ use std::path::PathBuf;
 pub struct ScanDialog {
     pub scanners: Vec<Scanner>,
     sel: usize,
-    busy: Option<Receiver<anyhow::Result<Vec<Candidate>>>>,
+    /// The scanner being run (bound at click, so changing the selection doesn't matter) and its result.
+    busy: Option<(Scanner, Receiver<anyhow::Result<Vec<Candidate>>>)>,
     review: Option<Review>,
     error: Option<String>,
 }
@@ -44,9 +45,11 @@ impl ScanDialog {
         ScanDialog { scanners, sel: 0, busy: None, review: None, error: None }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, known: &HashSet<String>) -> ScanOut {
-        if let Some(rx) = &self.busy {
+    /// `known`: lowercased exe/install paths already in the library, built only when a scan starts.
+    pub fn show(&mut self, ctx: &egui::Context, known: impl FnOnce() -> HashSet<String>) -> ScanOut {
+        if let Some((scanner, rx)) = &self.busy {
             if let Ok(r) = rx.try_recv() {
+                let scanner = scanner.clone();
                 self.busy = None;
                 match r {
                     Ok(found) => {
@@ -54,7 +57,7 @@ impl ScanDialog {
                             .into_iter()
                             .map(|c| Row { on: !c.existing, name: c.name.clone(), exe: 0, c })
                             .collect();
-                        self.review = Some(Review { scanner: self.scanners[self.sel].clone(), rows, show_existing: false });
+                        self.review = Some(Review { scanner, rows, show_existing: false });
                     }
                     Err(e) => self.error = Some(format!("{e:#}")),
                 }
@@ -96,7 +99,7 @@ impl ScanDialog {
     }
 
     /// Scanner list + the selected one's settings. True = Close.
-    fn editor(&mut self, ui: &mut Ui, known: &HashSet<String>) -> bool {
+    fn editor(&mut self, ui: &mut Ui, known: impl FnOnce() -> HashSet<String>) -> bool {
         let mut close = false;
         let body_h = ui.available_height() - 52.0;
         ui.horizontal_top(|ui| {
@@ -179,12 +182,12 @@ impl ScanDialog {
             if ui.add_enabled(!busy && !s.dir.trim().is_empty(), scan).clicked() {
                 self.error = None;
                 let (tx, rx) = crossbeam_channel::bounded(1);
-                let (known, ctx) = (known.clone(), ui.ctx().clone());
+                let (known, ctx, bound) = (known(), ui.ctx().clone(), s.clone());
                 std::thread::spawn(move || {
                     let _ = tx.send(scanner::scan(&s, &known));
                     ctx.request_repaint();
                 });
-                self.busy = Some(rx);
+                self.busy = Some((bound, rx));
             }
             if busy {
                 ui.spinner();

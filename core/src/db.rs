@@ -406,6 +406,21 @@ impl Library {
         Ok(entries.len())
     }
 
+    /// Adds scanned games (name, exe, working dir) in one transaction, with a platform/tags ("" = none).
+    pub fn add_scanned(&mut self, games: &[(String, String, Option<String>)], platform: &str, tags: &str) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let opt = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
+        for (name, exe, dir) in games {
+            tx.execute(
+                "INSERT INTO games (source, source_id, name, installed, exe, work_dir, added, platform, tags)
+                 VALUES ('custom', '', ?1, 1, ?2, ?3, ?4, ?5, ?6)",
+                params![name, exe, dir, crate::now(), opt(platform), opt(tags)],
+            )?;
+        }
+        tx.commit()?;
+        Ok(games.len())
+    }
+
     pub fn add_custom(&self, g: &Game) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO games (source, source_id, name, installed, exe, args, work_dir, added)
@@ -877,6 +892,26 @@ fn client_hash(id: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adds_scanned_games_with_platform_and_tags() {
+        let dir = std::env::temp_dir().join(format!("gamut-scanadd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let mut lib = Library::open(&path).unwrap();
+        let rows = vec![
+            ("Celeste".to_string(), r"D:\G\Celeste\Celeste.exe".to_string(), Some(r"D:\G\Celeste".to_string())),
+            ("Hades".to_string(), r"D:\G\Hades\Hades.exe".to_string(), None),
+        ];
+        assert_eq!(lib.add_scanned(&rows, "PC (Windows)", " ").unwrap(), 2);
+        let all = lib.all().unwrap();
+        let c = all.iter().find(|g| g.name == "Celeste").unwrap();
+        assert_eq!((c.source, c.exe.as_deref(), c.work_dir.as_deref()), (Source::Custom, Some(r"D:\G\Celeste\Celeste.exe"), Some(r"D:\G\Celeste")));
+        assert_eq!((c.platform.as_deref(), c.tags.as_deref()), (Some("PC (Windows)"), None));
+        drop(lib);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn first_steam_scan_has_no_added_date() {

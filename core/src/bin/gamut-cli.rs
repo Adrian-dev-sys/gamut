@@ -67,12 +67,18 @@ fn main() -> anyhow::Result<()> {
                 println!("\n{:#?}\ncover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
             }
         }
-        // scanfolder DIR: what a folder scanner would find there (read-only).
+        // scanfolder DIR [KNOWN]: what a folder scanner would find there (read-only). KNOWN: a file of library
+        // exe/install paths, one per line, to mark what's already added.
         Some("scanfolder") if args.len() >= 2 => {
             let s = gamut_core::scanner::Scanner { dir: args[1].clone(), ..Default::default() };
-            for c in gamut_core::scanner::scan(&s, &Default::default())? {
+            let known = match args.get(2) {
+                Some(f) => std::fs::read_to_string(f)?.lines().filter(|l| !l.trim().is_empty()).map(|l| gamut_core::scanner::key(l.trim().as_ref())).collect(),
+                None => Default::default(),
+            };
+            for c in gamut_core::scanner::scan(&s, &known)? {
                 let alts = c.exes.len() - 1;
-                println!("{:<40} {}{}", c.name, c.exes[0].display(), if alts > 0 { format!("  (+{alts} more)") } else { String::new() });
+                let mark = if c.existing { "[in library] " } else { "" };
+                println!("{mark}{:<40} {}{}", c.name, c.exes[0].display(), if alts > 0 { format!("  (+{alts} more)") } else { String::new() });
             }
         }
         // vndb NAME: search results, then the first one's details.
