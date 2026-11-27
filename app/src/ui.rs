@@ -1902,17 +1902,10 @@ impl GamutApp {
                 ui.label(format!("Remove \"{name}\" from the library? The game's files aren't touched."));
                 ui.horizontal(|ui| {
                     if ui.button("Remove").clicked() {
-                        match self.lib.delete(id) {
+                        match self.remove_games(&[id]) {
                             Ok(()) => self.toasts.success(format!("Removed {name}.")),
                             Err(e) => self.toasts.error(format!("{e:#}")),
                         }
-                        for p in [self.paths.cover(id), self.paths.thumb(id), self.paths.hero(id)] {
-                            let _ = std::fs::remove_file(p);
-                        }
-                        if self.selected == Some(id) {
-                            self.selected = None;
-                        }
-                        self.reload_all();
                         close = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -1923,6 +1916,22 @@ impl GamutApp {
         if close || !open {
             self.confirm_remove = None;
         }
+    }
+
+    /// Deletes games from the library (not their files) with their cached art.
+    fn remove_games(&mut self, ids: &[i64]) -> anyhow::Result<()> {
+        let r = ids.iter().try_for_each(|&id| {
+            self.lib.delete(id)?;
+            for p in [self.paths.cover(id), self.paths.thumb(id), self.paths.hero(id)] {
+                let _ = std::fs::remove_file(p);
+            }
+            if self.selected == Some(id) {
+                self.selected = None;
+            }
+            anyhow::Ok(())
+        });
+        self.reload_all();
+        r
     }
 
     /// Confirms "Refresh metadata" for the selected games (it replaces their fetched fields).
@@ -1969,6 +1978,21 @@ impl GamutApp {
         match d.show(ctx, &self.games, &self.platforms) {
             Some(HealthOut::Edit(id)) => actions.push(Action::Edit(id)),
             Some(HealthOut::Remove(id)) => actions.push(Action::Remove(id)),
+            Some(HealthOut::KeepOnly { keep, remove, move_playtime }) => {
+                let r = (|| {
+                    if move_playtime {
+                        let all: Vec<&Game> = self.games.iter().filter(|g| g.id == keep || remove.contains(&g.id)).collect();
+                        let mins = all.iter().map(|g| g.playtime_min).sum();
+                        let count = all.iter().map(|g| g.play_count).sum();
+                        self.lib.set_play_stats(keep, mins, count)?;
+                    }
+                    self.remove_games(&remove)
+                })();
+                match r {
+                    Ok(()) => self.toasts.success(format!("Removed {} duplicate copies.", remove.len())),
+                    Err(e) => self.toasts.error(format!("Removing duplicates failed: {e:#}")),
+                }
+            }
             Some(HealthOut::Save) => {
                 let s = d.settings.clone();
                 d.run(&self.games);

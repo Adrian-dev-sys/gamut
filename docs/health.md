@@ -10,6 +10,11 @@
 - URLs (`goggalaxy://`), store names and Playnite `{placeholders}` aren't checked.
 - **Duplicates**: same normalized name on the same platform (Steam counts as PC). The same game on different platforms is never a duplicate. A group where every copy is from a different store (Steam + GOG) is skipped as bought twice.
 
+## Dialog
+- Two sections: **Can't start** (Edit / Remove / Ignore) and **Possible duplicates**.
+- Each duplicate copy shows how it starts (emulator + ROM file, since copies share the emulator exe), where it came from (Playnite import, store, added in Gamut), added date, playtime and cover.
+- ★ marks the suggested copy (`keep_score`: can start, playtime, cover, description, older). **Keep only this** removes the other copies after an inline confirm, optionally adding their playtime to the kept one. **Not a duplicate** ignores the group.
+
 ## Settings (`[health]` in config.toml)
 - `skip_platforms`: platforms not checked at all (games played on the console).
 - `ignored`: dismissed issue keys, `file:<game id>` or `dup:<platform>|<name>`. "Show N ignored again" clears them.
