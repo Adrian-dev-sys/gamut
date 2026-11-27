@@ -10,6 +10,7 @@ mod keycheck;
 mod sessions_view;
 mod logging;
 mod osk;
+mod popup;
 mod scan_ui;
 mod search_pop;
 mod lookup;

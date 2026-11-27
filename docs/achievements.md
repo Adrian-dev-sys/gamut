@@ -25,6 +25,7 @@ Per-game achievements on the details page, cached in the library DB. Steam games
 - Custom games on PC (or no platform) whose unlocks a Steam emulator keeps on disk: `%APPDATA%\GSE Saves` / `Goldberg SteamEmu Saves` (`<appid>\achievements.json`), `%PUBLIC%\Documents\Steam\CODEX|RUNE` and `%APPDATA%\Steam\CODEX` (`achievements.ini`), `%PUBLIC%\Documents\OnlineFix` (`Stats\Achievements.ini`). Files for one appid are merged; ini sections other than `[SteamAchievements]` with `Achieved=1`/`true` count.
 - Appid: the game's Steam id, a `steam_appid.txt` (or `steam_settings\steam_appid.txt`) in its folder, else the store name of an appid folder (`same_game` on the name variants). Store names are cached in `<data>\local-ach.json`. Duplicates all get the list.
 - The list, names, icons and rarity come from `GetSchemaForGame` (Steam key needed, ownership not), the unlocks from the files (keys case-insensitive). Checked before RetroAchievements.
+- Popup (`app/src/popup.rs`): while such a game runs, `watch_unlocks` polls the files' mtime every 2 s and shows each new key in a topmost, click-through, no-focus Win32 window (top right of the foreground window's monitor, 5 s, queued). Not visible over exclusive fullscreen. Off with `no_ach_popup`; Settings has a Preview button.
 - The worker keeps `Workers::local_ach` (game id → appid), rebuilt at start and when the sweep resumes after a scan. `gamut-cli local-ach` prints the matches and counts.
 
 ## When it fetches (`app/src/workers.rs`, one thread)

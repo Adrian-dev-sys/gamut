@@ -31,6 +31,8 @@ pub struct Config {
     pub quit_on_close: bool,
     /// Start with Windows, in the tray (mirrors the HKCU Run entry).
     pub start_with_windows: bool,
+    /// No popup for achievements unlocked in Steam-emulated games while they run.
+    pub no_ach_popup: bool,
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,

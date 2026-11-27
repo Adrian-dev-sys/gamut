@@ -1797,6 +1797,22 @@ impl GamutApp {
                         });
                         ui.hyperlink_to("Get your RetroAchievements key", "https://retroachievements.org/settings");
                         ui.label(theme::hint("Achievements for emulated games, matched by platform and title."));
+                        ui.add_space(8.0);
+                        let mut popup = !s.no_ach_popup;
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut popup, "Pop up new achievements in PC games with emulator achievement files").changed() {
+                                s.no_ach_popup = !popup;
+                            }
+                            if ui.button("Preview").clicked() {
+                                crate::popup::show(crate::popup::Popup {
+                                    caption: "Achievement unlocked · 21 / 56".into(),
+                                    title: "Wise Researcher".into(),
+                                    text: "Complete the game with puzzle difficulty set to \"Hard\".".into(),
+                                    icon: Some((vec![232, 184, 74, 255].repeat(64 * 64), 64, 64)),
+                                });
+                            }
+                        });
+                        ui.label(theme::hint("GSE/Goldberg, CODEX, RUNE or OnlineFix files. Shows over windowed and borderless games."));
                         ui.add_space(12.0);
                         ui.separator();
                         theme::section(ui, "IGDB");

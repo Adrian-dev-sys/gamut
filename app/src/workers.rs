@@ -551,6 +551,9 @@ impl Workers {
         let cache = self.reshade_cache();
         // Counts as running while it starts, so a second click doesn't launch twice.
         t.running.lock().unwrap().insert(g.id);
+        if let Some(app) = self.local_ach.read().unwrap().get(&g.id).copied().filter(|_| !self.cfg.read().unwrap().no_ach_popup) {
+            watch_unlocks(g.id, app, self.running.clone(), self.paths.clone(), self.ach_tx.clone());
+        }
         std::thread::spawn(move || {
             let hdr = if g.auto_hdr && g.installed {
                 gamut_core::hdr::Guard::acquire()
@@ -737,6 +740,43 @@ struct Tracker {
 }
 
 /// Unlocks only, unless names/rarity are a week old or the cached list doesn't match.
+/// Pops up achievements a running game adds to its emulator files; stops when it's no longer running.
+fn watch_unlocks(id: i64, app: u32, running: Arc<Mutex<HashSet<i64>>>, paths: Paths, ach: Sender<i64>) {
+    use gamut_core::local_ach;
+    std::thread::spawn(move || {
+        let keys = || -> HashSet<String> { local_ach::unlocks(app).unwrap_or_default().into_keys().map(|k| k.to_lowercase()).collect() };
+        let (mut seen, mut stamp) = (keys(), local_ach::modified(app));
+        while running.lock().unwrap().contains(&id) {
+            std::thread::sleep(Duration::from_secs(2));
+            let now = local_ach::modified(app);
+            if now == stamp {
+                continue;
+            }
+            stamp = now;
+            let all = keys();
+            let new: Vec<String> = all.difference(&seen).cloned().collect();
+            if new.is_empty() {
+                continue;
+            }
+            let list = Library::open(&paths.db).and_then(|l| l.achievements(id)).unwrap_or_default();
+            for k in new {
+                let a = list.iter().find(|a| a.key.to_lowercase() == k);
+                let icon = a
+                    .filter(|a| !a.icon.is_empty())
+                    .and_then(|a| gamut_core::http::get_bytes(&a.icon).ok())
+                    .and_then(|b| gamut_core::images::decode_bytes(&b, 64).ok())
+                    .map(|i| (i.pixels, i.width, i.height));
+                let caption = if list.is_empty() { "Achievement unlocked".to_string() } else { format!("Achievement unlocked · {} / {}", all.len(), list.len()) };
+                let title = a.map_or(k.clone(), |a| a.name.clone());
+                log::info!("achievement unlocked: {title}");
+                crate::popup::show(crate::popup::Popup { caption, title, text: a.map(|a| a.description.clone()).unwrap_or_default(), icon });
+            }
+            seen = all;
+            let _ = ach.send(id);
+        }
+    });
+}
+
 /// A custom game with local achievements that was never fetched or was played since.
 fn local_due(lib: &Library, local: &HashMap<i64, u32>) -> Option<Option<Game>> {
     local.keys().find_map(|&id| {
