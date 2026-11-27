@@ -208,6 +208,7 @@ pub struct GamutApp {
     confirm_play: Option<(i64, i64)>,
     /// Controller menu (Start) for this game.
     game_menu: Option<i64>,
+    scans: Option<crate::scan_ui::ScanDialog>,
     /// A dialog was open last frame (the first controller frame in a new one focuses its first widget).
     was_dialog: bool,
     /// Controller input held for the next frame (egui moves focus once per frame).
@@ -318,6 +319,7 @@ impl GamutApp {
             confirm_stop: None,
             confirm_play: None,
             game_menu: None,
+            scans: None,
             was_dialog: false,
             pad_later: Vec::new(),
             osk: None,
@@ -606,6 +608,9 @@ impl GamutApp {
                 if ui.add_enabled(!scanning, egui::Button::new("Refresh")).clicked() {
                     self.workers.rescan();
                 }
+                if ui.button("Scan folders").on_hover_text("Find games in a folder and add them").clicked() {
+                    self.scans = Some(crate::scan_ui::ScanDialog::new(self.cfg.read().unwrap().scanners.clone()));
+                }
                 if ui.button("Add game").clicked() {
                     self.editor = Some(Editor::new_custom());
                     self.ed_lists = editor_facets(&self.games);
@@ -812,6 +817,7 @@ impl GamutApp {
             || self.search_pop.is_some()
             || self.confirm_play.is_some()
             || self.game_menu.is_some()
+            || self.scans.is_some()
     }
 
     /// Search, filters, sort and cover size for the library grid.
@@ -1929,6 +1935,62 @@ impl GamutApp {
         }
     }
 
+    fn scan_window(&mut self, ctx: &egui::Context) {
+        let Some(d) = self.scans.as_mut() else { return };
+        // Exes and install folders already in the library (Steam/GOG games have only the folder).
+        let known: HashSet<String> = self
+            .games
+            .iter()
+            .flat_map(|g| [g.exe.as_deref(), g.install_dir.as_deref()])
+            .flatten()
+            .map(|p| gamut_core::scanner::key(std::path::Path::new(p)))
+            .collect();
+        let out = d.show(ctx, &known);
+        if matches!(out, crate::scan_ui::ScanOut::Open) {
+            return;
+        }
+        let scanners = self.scans.take().map(|d| d.scanners).unwrap_or_default();
+        if self.cfg.read().unwrap().scanners != scanners {
+            let mut c = self.cfg.write().unwrap();
+            c.scanners = scanners;
+            if let Err(e) = c.save(&self.paths.config) {
+                self.toasts.error(format!("Saving scanners failed: {e:#}"));
+            }
+        }
+        if let crate::scan_ui::ScanOut::Import(s, picked) = out {
+            match self.import_scanned(&s, &picked) {
+                Ok(n) => self.toasts.success(format!("Added {n} games. Fetching their details and covers…")),
+                Err(e) => self.toasts.error(format!("Adding games failed: {e:#}")),
+            }
+        }
+    }
+
+    /// Adds scanned games as custom entries (exe, its folder as working dir, the scanner's platform/tags).
+    fn import_scanned(&mut self, s: &gamut_core::scanner::Scanner, picked: &[(String, std::path::PathBuf)]) -> anyhow::Result<usize> {
+        let (platform, tags) = (s.platform.trim(), s.tags.trim());
+        for (name, exe) in picked {
+            let mut g = Game::new_custom(name.clone(), Some(exe.display().to_string()));
+            g.work_dir = exe.parent().map(|p| p.display().to_string());
+            let id = self.lib.add_custom(&g)?;
+            if !platform.is_empty() || !tags.is_empty() {
+                if let Some(mut g) = self.lib.get(id)? {
+                    if !platform.is_empty() {
+                        g.platform = Some(platform.to_string());
+                    }
+                    if !tags.is_empty() {
+                        g.tags = Some(tags.to_string());
+                    }
+                    self.lib.update_user_fields(&g)?;
+                }
+            }
+        }
+        log::info!("scanner \"{}\": added {} games from {}", s.name, picked.len(), s.dir);
+        self.reload_all();
+        (self.platforms, self.tags) = facets(&self.games);
+        self.workers.kick();
+        Ok(picked.len())
+    }
+
     /// Controller (Start) version of the right-click menu.
     fn game_menu_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some(id) = self.game_menu else { return };
@@ -2758,7 +2820,8 @@ impl eframe::App for GamutApp {
             || self.confirm_remove.is_some()
             || self.confirm_refresh.is_some()
             || self.confirm_stop.is_some()
-            || self.playnite.is_some();
+            || self.playnite.is_some()
+            || self.scans.is_some();
         if let (Some(id), false) = (self.selected, dialog_open) {
             let screen = ctx.content_rect();
             let size = vec2((screen.width() * 0.86).min(1320.0), (screen.height() * 0.88).min(940.0));
@@ -2835,6 +2898,7 @@ impl eframe::App for GamutApp {
         self.stop_window(&ctx);
         self.playnite_window(&ctx);
         self.game_menu_window(&ctx, &mut actions);
+        self.scan_window(&ctx);
         if let Some(o) = &self.osk {
             o.show(&ctx);
         }

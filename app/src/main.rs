@@ -9,6 +9,7 @@ mod keycheck;
 mod sessions_view;
 mod logging;
 mod osk;
+mod scan_ui;
 mod search_pop;
 mod lookup;
 mod notify;

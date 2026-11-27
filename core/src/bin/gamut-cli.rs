@@ -67,6 +67,14 @@ fn main() -> anyhow::Result<()> {
                 println!("\n{:#?}\ncover: {:?}", g.meta, g.cover.as_deref().map(igdb::cover_url));
             }
         }
+        // scanfolder DIR: what a folder scanner would find there (read-only).
+        Some("scanfolder") if args.len() >= 2 => {
+            let s = gamut_core::scanner::Scanner { dir: args[1].clone(), ..Default::default() };
+            for c in gamut_core::scanner::scan(&s, &Default::default())? {
+                let alts = c.exes.len() - 1;
+                println!("{:<40} {}{}", c.name, c.exes[0].display(), if alts > 0 { format!("  (+{alts} more)") } else { String::new() });
+            }
+        }
         // vndb NAME: search results, then the first one's details.
         Some("vndb") if args.len() >= 2 => {
             use gamut_core::vndb;
@@ -103,7 +111,7 @@ fn main() -> anyhow::Result<()> {
         }
         _ => {}
     }
-    if matches!(args.first().map(String::as_str), Some("status" | "igdb" | "vndb" | "gog" | "steam")) {
+    if matches!(args.first().map(String::as_str), Some("status" | "igdb" | "vndb" | "gog" | "steam" | "scanfolder")) {
         return Ok(());
     }
     // Writing commands must not run alongside the app.

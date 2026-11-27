@@ -5,7 +5,8 @@
 - [ ] **Themes** – load colors, fonts, spacing and corner radius from a `theme.toml`; hot-reload while editing.
 
 ## More sources
-- [ ] **Folder scanners** – point at a folder, find game executables (extension filter, exclusion rules), review candidates with checkboxes, auto-fill metadata, then fill gaps by hand; manual or automatic rescans. Emulators hook in later
+- [x] **Folder scanners** – saved scanners, review with checkboxes, best-guess exe and name, metadata fetched after adding
+- [ ] Scanners step 2: automatic rescans, remember unticked results, report games whose exe disappeared; emulator scanners
 - [ ] GOG (GOG Galaxy / installed games)
 - [ ] Epic Games Store
 - [ ] Xbox / Microsoft Store (PC Game Pass)

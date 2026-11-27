@@ -35,6 +35,8 @@ pub struct Config {
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,
     pub reshade: crate::reshade::Settings,
+    /// Folder scanners (arrays of tables come last in TOML).
+    pub scanners: Vec<crate::scanner::Scanner>,
 }
 
 /// Window placement in logical points; size/position are the un-maximized ones.
