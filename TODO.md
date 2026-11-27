@@ -5,6 +5,7 @@
 - [ ] **Themes** – load colors, fonts, spacing and corner radius from a `theme.toml`; hot-reload while editing.
 
 ## More sources
+- [ ] **Folder scanners** – point at a folder, find game executables (extension filter, exclusion rules), review candidates with checkboxes, auto-fill metadata, then fill gaps by hand; manual or automatic rescans. Emulators hook in later
 - [ ] GOG (GOG Galaxy / installed games)
 - [ ] Epic Games Store
 - [ ] Xbox / Microsoft Store (PC Game Pass)
@@ -20,6 +21,13 @@
 - [x] Choose between several covers/banners per game (SteamGridDB, IGDB, VNDB, Steam alternatives)
 - [x] Remember window size/position and last selected filter/sort
 - [ ] Library briefly flashes behind open popups. Gamut's own frames were verified correct (pixel readback), so likely G-Sync/VRR with uneven frame pacing; try Fixed Refresh for gamut.exe, then steady repaints while a popup is open
+
+## Library health & maintenance
+- [ ] **Library health** – games with no launcher, missing exe/install folder, or likely duplicates; per-platform exclusions (e.g. PS5 games played on the console, unless an emulator is set up)
+- [ ] **Disk usage** – install size per game, Gamut's own data (covers, thumbnails, caches) with clear-cache buttons
+- [ ] **Uninstall from Gamut** – Steam first (`steam://uninstall/<appid>`)
+- [ ] **Backups** – library database, settings and art; scheduled + manual, restore
+- [ ] **Security** – review: API key storage (plain config today), downloads (ReShade/Special K), launching untrusted paths, update checks
 
 ## Metadata
 - [x] IGDB as an additional metadata source (richer data for non-Steam games)
@@ -39,5 +47,6 @@
 
 ## Extras
 - [x] Fullscreen / controller mode (gamepad navigation, big-picture style)
-- [ ] Tray icon (minimize to tray, quick-launch recent games)
-- [ ] App icon and installer/portable zip release (GitHub Actions)
+- [x] Tray icon (minimize to tray, quick-launch recent games), start with Windows
+- [x] App icon
+- [ ] Installer/portable zip release (GitHub Actions)
