@@ -50,8 +50,11 @@ impl HealthDialog {
         }
         let (mut out, mut open) = (None, true);
         let name = |id: i64| games.iter().find(|g| g.id == id);
+        let screen = ctx.content_rect();
+        let size = egui::vec2(820.0_f32.min(screen.width() - 80.0), 700.0_f32.min(screen.height() - 100.0));
         let resp = theme::dialog(ctx, "library_health", false, |ui| {
-            ui.set_width(640.0);
+            ui.set_min_size(size);
+            ui.set_max_size(size);
             dialog_header(ui, "Library health", &mut open);
             ui.horizontal(|ui| {
                 let n = self.issues.len();
@@ -80,7 +83,7 @@ impl HealthDialog {
                 }
             });
             ui.add_space(6.0);
-            egui::ScrollArea::vertical().max_height(480.0).auto_shrink([false, true]).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
                 let mut ignore = None;
                 for (i, issue) in self.issues.iter().enumerate() {
                     let gs: Vec<&Game> = issue.ids.iter().filter_map(|&id| name(id)).collect();
