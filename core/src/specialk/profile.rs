@@ -205,9 +205,58 @@ pub fn steam_appid(g: &Game) -> Result<()> {
     Ok(())
 }
 
+/// SK only hooks non-store games whose path matches a `Global\whitelist.ini` line (a regex);
+/// adds the exe's folder when none matches. Returns the added line.
+pub fn whitelist(sk_dir: &Path, g: &Game) -> Result<Option<String>> {
+    let Some(exe) = (g.source != Source::Steam).then_some(g.exe.as_deref()).flatten().map(Path::new) else { return Ok(None) };
+    if !exe.is_absolute() {
+        return Ok(None);
+    }
+    let file = sk_dir.join("Global").join("whitelist.ini");
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let Some(line) = whitelist_line(&text, exe) else { return Ok(None) };
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let sep = if text.is_empty() || text.ends_with('\n') { "" } else { nl };
+    std::fs::write(&file, format!("{text}{sep}{line}"))?;
+    Ok(Some(line))
+}
+
+/// The line to add for `exe`, or None when an existing line already matches it.
+fn whitelist_line(text: &str, exe: &Path) -> Option<String> {
+    let path = exe.to_string_lossy();
+    let hit = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .any(|l| regex::RegexBuilder::new(l).case_insensitive(true).build().is_ok_and(|re| re.is_match(&path)));
+    if hit {
+        return None;
+    }
+    // ECMAScript-escaped folder: SK reads the lines with std::wregex.
+    let dir = exe.parent()?.to_string_lossy();
+    Some(dir.chars().fold(String::new(), |mut s, c| {
+        if r"\^$.|?*+()[]{}".contains(c) {
+            s.push('\\');
+        }
+        s.push(c);
+        s
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whitelists_unmatched_folders() {
+        let text = "Jocuri\\\\SILENT HILL f\r\nXCX-Setup\\\\extracted\r\n";
+        let xcx = Path::new(r"D:\Jocuri\Recomps\XCX-Setup\extracted\xcx.exe");
+        assert_eq!(whitelist_line(text, xcx), None);
+        let xc2 = Path::new(r"D:\Jocuri\Recomps (PC)\XC2-Setup\extracted\xc2.exe");
+        let line = whitelist_line(text, xc2).unwrap();
+        assert_eq!(line, r"D:\\Jocuri\\Recomps \(PC\)\\XC2-Setup\\extracted");
+        assert_eq!(whitelist_line(&format!("{text}{line}"), xc2), None);
+    }
 
     #[test]
     fn ini_edits_keep_other_lines() {

@@ -37,6 +37,7 @@ These run when SK is injected into a game (`specialk::prepare`). Every file is w
   - `reshade-presets\<id>.ini` is created once per game. `<id>` is the Playnite GUID, so presets made under Playnite are reused, else `gamut-<id>`.
   - The preset's techniques come from `reshade-shaders\Shaders\**\*.fx`; if there are none, the built-in list is used.
   - `ReShade.ini` gets `[GENERAL] PresetPath` and `[APP] Force*=0`.
+- **`Global\whitelist.ini`**: SK only hooks games outside the stores it knows when a line (a case-insensitive regex) matches the exe path. For non-Steam games, if no line matches, Gamut appends the exe's folder, regex-escaped (`D:\\Games\\X \(v2\)`).
 - **`steam_appid.txt`** is written in a non-Steam game's install (or exe) folder, only when it's missing and the game has a matched Steam appid (`source_id`). Gamut doesn't search Steam by name.
 
 ## Big Picture overlay

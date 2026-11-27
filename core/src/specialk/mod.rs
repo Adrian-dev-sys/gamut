@@ -151,6 +151,11 @@ pub fn prepare(sk_dir: &Path, s: &Settings, g: &Game) {
         Ok(false) => {}
         Err(e) => log::warn!("Special K: writing default_SpecialK.ini failed: {e:#}"),
     }
+    match profile::whitelist(sk_dir, g) {
+        Ok(Some(e)) => log::info!("Special K: whitelisted {e}"),
+        Ok(None) => {}
+        Err(e) => log::warn!("Special K: updating whitelist.ini failed: {e:#}"),
+    }
     if s.reshade {
         if let Err(e) = profile::reshade_preset(sk_dir, g) {
             log::warn!("Special K: ReShade preset failed: {e:#}");
