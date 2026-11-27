@@ -552,7 +552,7 @@ impl Workers {
         // Counts as running while it starts, so a second click doesn't launch twice.
         t.running.lock().unwrap().insert(g.id);
         if let Some(app) = self.local_ach.read().unwrap().get(&g.id).copied().filter(|_| !self.cfg.read().unwrap().no_ach_popup) {
-            watch_unlocks(g.id, app, self.running.clone(), self.paths.clone(), self.ach_tx.clone());
+            watch_unlocks(&g, app, self.running.clone(), self.paths.clone(), self.ach_tx.clone());
         }
         std::thread::spawn(move || {
             let hdr = if g.auto_hdr && g.installed {
@@ -741,12 +741,17 @@ struct Tracker {
 
 /// Unlocks only, unless names/rarity are a week old or the cached list doesn't match.
 /// Pops up achievements a running game adds to its emulator files; stops when it's no longer running.
-fn watch_unlocks(id: i64, app: u32, running: Arc<Mutex<HashSet<i64>>>, paths: Paths, ach: Sender<i64>) {
+fn watch_unlocks(g: &Game, app: u32, running: Arc<Mutex<HashSet<i64>>>, paths: Paths, ach: Sender<i64>) {
     use gamut_core::local_ach;
+    let (id, dirs, start) = (g.id, gamut_core::procs::game_dirs(g), Instant::now());
+    // Shortcut/URL launches leave `running` at once; their processes in the game folder count too.
+    let alive = move || {
+        running.lock().unwrap().contains(&id) || start.elapsed() < Duration::from_secs(60) || !gamut_core::procs::under(&dirs).is_empty()
+    };
     std::thread::spawn(move || {
         let keys = || -> HashSet<String> { local_ach::unlocks(app).unwrap_or_default().into_keys().map(|k| k.to_lowercase()).collect() };
         let (mut seen, mut stamp) = (keys(), local_ach::modified(app));
-        while running.lock().unwrap().contains(&id) {
+        while alive() {
             std::thread::sleep(Duration::from_secs(2));
             let now = local_ach::modified(app);
             if now == stamp {
