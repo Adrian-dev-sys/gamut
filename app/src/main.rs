@@ -5,6 +5,7 @@ mod achievements;
 mod avif;
 mod editor;
 mod gamepad;
+mod health_ui;
 mod keycheck;
 mod sessions_view;
 mod logging;

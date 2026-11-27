@@ -25,7 +25,7 @@
 - [ ] Library briefly flashes behind open popups. Gamut's own frames were verified correct (pixel readback), so likely G-Sync/VRR with uneven frame pacing; try Fixed Refresh for gamut.exe, then steady repaints while a popup is open
 
 ## Library health & maintenance
-- [ ] **Library health** – games with no launcher, missing exe/install folder (incl. scanned games whose exe disappeared), or likely duplicates; per-platform exclusions (e.g. PS5 games played on the console, unless an emulator is set up)
+- [x] **Library health** – games with no launcher, missing exe/install folder (incl. scanned games whose exe disappeared), or likely duplicates; per-platform exclusions (e.g. PS5 games played on the console, unless an emulator is set up)
 - [ ] **Disk usage** – install size per game, Gamut's own data (covers, thumbnails, caches) with clear-cache buttons
 - [ ] **Uninstall from Gamut** – Steam first (`steam://uninstall/<appid>`)
 - [ ] **Backups** – library database, settings and art; scheduled + manual, restore

@@ -6,6 +6,7 @@ pub mod scanner;
 pub mod http;
 pub mod igdb;
 pub mod hdr;
+pub mod health;
 pub mod images;
 pub mod launch;
 pub mod litedb;

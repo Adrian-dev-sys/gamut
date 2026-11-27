@@ -28,4 +28,5 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 - `docs/statistics.md` – Statistics tab, play session logging (Gamut-timed + Steam scan deltas), Steam as playtime master.
 - `docs/grid.md` – grid sort order, keyboard cursor, multi-select, bulk actions, controller, big screen.
 - `docs/scanners.md` – folder scanners: finding game folders/collections, main exe guess, name cleanup, review and import.
+- `docs/health.md` – Library health: missing exe/ROM/folder/drive, no launcher, same-platform duplicates, skip/ignore settings.
 - `docs/igdb.md` – IGDB metadata/art for non-Steam games: Twitch credentials, strict matching, pipeline, manual fill (Steam, GOG, IGDB, VNDB).

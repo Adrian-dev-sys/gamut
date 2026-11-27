@@ -35,6 +35,7 @@ pub struct Config {
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,
     pub reshade: crate::reshade::Settings,
+    pub health: crate::health::Settings,
     /// Folder scanners (arrays of tables come last in TOML).
     pub scanners: Vec<crate::scanner::Scanner>,
 }

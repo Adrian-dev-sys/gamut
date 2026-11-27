@@ -1,4 +1,4 @@
-//! Headless tool: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|gog NAME|steam NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
+//! Headless tool: gamut-cli [--data DIR] <scan|list|health|status|igdb NAME [PLATFORM]|vndb NAME|gog NAME|steam NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N|find TEXT|achievements APPID|status|import-playnite [DIR] [--dry-run] [--verbose]>
 use gamut_core::{model::Game, sync, Config, Library, Paths};
 
 fn main() -> anyhow::Result<()> {
@@ -145,6 +145,14 @@ fn main() -> anyhow::Result<()> {
                 println!("{g:#?}");
             }
         }
+        Some("health") => {
+            let games = lib.all()?;
+            let name = |id: i64| games.iter().find(|g| g.id == id).map(|g| g.name.as_str()).unwrap_or("?");
+            for i in gamut_core::health::check(&games, &cfg.health) {
+                let names: Vec<_> = i.ids.iter().map(|&id| format!("{id} {}", name(id))).collect();
+                println!("{} | {}", names.join(", "), i.problem.describe());
+            }
+        }
         Some("list") => {
             let mut games = lib.all()?;
             games.sort_by_key(|g| g.name.to_lowercase());
@@ -225,7 +233,7 @@ fn main() -> anyhow::Result<()> {
             let id = lib.add_custom(&Game::new_custom(args[1].clone(), Some(args[2].clone())))?;
             println!("added #{id}");
         }
-        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|status|igdb NAME [PLATFORM]|vndb NAME|gog NAME|steam NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
+        _ => eprintln!("usage: gamut-cli [--data DIR] <scan|list|health|status|igdb NAME [PLATFORM]|vndb NAME|gog NAME|steam NAME|fetch [N]|add NAME EXE|remove ID|launch ID|seed N>"),
     }
     Ok(())
 }

@@ -204,6 +204,7 @@ pub struct GamutApp {
     settings: Option<Config>,
     confirm_remove: Option<i64>,
     confirm_stop: Option<i64>,
+    health: Option<crate::health_ui::HealthDialog>,
     /// (game to start, Steam game running) when Steam would have to close one for the other.
     confirm_play: Option<(i64, i64)>,
     /// Vulkan game about to get both Special K and ReShade: asks which to use (once per game).
@@ -319,6 +320,7 @@ impl GamutApp {
             settings: None,
             confirm_remove: None,
             confirm_stop: None,
+            health: None,
             confirm_play: None,
             confirm_hooks: None,
             game_menu: None,
@@ -375,6 +377,9 @@ impl GamutApp {
         (self.platforms, self.tags) = facets(&self.games);
         self.completions = completion_facets(&self.games);
         self.view_key = None;
+        if let Some(h) = self.health.as_mut() {
+            h.stale = true;
+        }
     }
 
     fn reload_one(&mut self, id: i64) {
@@ -619,6 +624,9 @@ impl GamutApp {
                 if ui.add_enabled(!scanning, egui::Button::new("Refresh")).clicked() {
                     self.workers.rescan();
                 }
+                if ui.button("Health").on_hover_text("Find games that can't start and likely duplicates").clicked() {
+                    self.health = Some(crate::health_ui::HealthDialog::new(self.cfg.read().unwrap().health.clone(), &self.games));
+                }
                 if ui.button("Scan folders").on_hover_text("Find games in a folder and add them").clicked() {
                     self.scans = Some(crate::scan_ui::ScanDialog::new(self.cfg.read().unwrap().scanners.clone()));
                 }
@@ -830,6 +838,7 @@ impl GamutApp {
             || self.confirm_hooks.is_some()
             || self.game_menu.is_some()
             || self.scans.is_some()
+            || self.health.is_some()
     }
 
     /// Search, filters, sort and cover size for the library grid.
@@ -1573,6 +1582,9 @@ impl GamutApp {
                     self.toasts.error(format!("Saving failed: {e:#}"));
                 }
                 self.editor = None;
+                if let Some(h) = self.health.as_mut() {
+                    h.stale = true;
+                }
             }
             EditorOutcome::PickArt(id, kind) => self.apply(Action::PickArt(id, kind)),
         }
@@ -1944,6 +1956,30 @@ impl GamutApp {
         });
         if close || !open {
             self.confirm_refresh = None;
+        }
+    }
+
+    /// Library health; Edit/Remove open the usual dialogs on top.
+    fn health_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        use crate::health_ui::HealthOut;
+        let Some(d) = self.health.as_mut() else { return };
+        if d.stale && self.editor.is_none() && self.confirm_remove.is_none() {
+            d.run(&self.games);
+        }
+        match d.show(ctx, &self.games, &self.platforms) {
+            Some(HealthOut::Edit(id)) => actions.push(Action::Edit(id)),
+            Some(HealthOut::Remove(id)) => actions.push(Action::Remove(id)),
+            Some(HealthOut::Save) => {
+                let s = d.settings.clone();
+                d.run(&self.games);
+                let mut c = self.cfg.write().unwrap();
+                c.health = s;
+                if let Err(e) = c.save(&self.paths.config) {
+                    self.toasts.error(format!("Saving health settings failed: {e:#}"));
+                }
+            }
+            Some(HealthOut::Close) => self.health = None,
+            None => {}
         }
     }
 
@@ -2993,6 +3029,7 @@ impl eframe::App for GamutApp {
                 self.close_search();
             }
         }
+        self.health_window(&ctx, &mut actions);
         self.editor_window(&ctx);
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
