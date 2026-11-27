@@ -21,3 +21,13 @@
   - It turns HDR back off when the last HDR game exits, and only if Gamut was the one that turned it on.
 - **Second game.** Games may run side by side, except two Steam games: Steam runs one at a time, so
   starting one while another Steam game runs asks first (`play_window`, Cancel focused).
+
+## Tray and autostart
+- `app/src/tray.rs`: tray icon (tray-icon crate, created on the UI thread). Left click opens Gamut; the menu
+  has Open Gamut, Big screen, the 10 most recently played (non-hidden) games, Exit.
+- Closing the window hides it (`App::logic`, which eframe keeps calling while hidden: CancelClose +
+  Visible(false)) unless Settings → General "keeps Gamut in the tray" is off (`quit_on_close`). Exit sets
+  `quitting` and closes for real. While hidden, worker events are still handled and controller input is dropped.
+- A second gamut.exe sets the named event `Local\GamutShowWindow` and exits; the running one shows its window.
+- Start with Windows writes `HKCU\...\Run\Gamut = "<exe>" --tray`; `--tray` starts hidden (`keep_hidden`
+  re-hides for a few frames because eframe shows the window after its first paint).

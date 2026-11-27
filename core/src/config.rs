@@ -27,6 +27,10 @@ pub struct Config {
     pub tag: String,
     /// Completion status filter ("" = any).
     pub completion: String,
+    /// Closing the window exits instead of hiding Gamut in the tray.
+    pub quit_on_close: bool,
+    /// Start with Windows, in the tray (mirrors the HKCU Run entry).
+    pub start_with_windows: bool,
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,

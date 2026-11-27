@@ -135,6 +135,12 @@ pub(crate) enum Nav {
 
 
 pub struct GamutApp {
+    tray: Option<crate::tray::Tray>,
+    /// Exit was chosen (tray menu): closing really closes.
+    quitting: bool,
+    /// Frames left to keep the window hidden after starting in the tray (eframe shows it after the first paint).
+    keep_hidden: u8,
+    tray_refreshed: Option<std::time::Instant>,
     paths: Paths,
     cfg: Arc<RwLock<Config>>,
     lib: Library,
@@ -237,6 +243,7 @@ impl GamutApp {
     pub fn new(cc: &eframe::CreationContext, paths: Paths) -> anyhow::Result<Self> {
         theme::apply(&cc.egui_ctx);
         let loaded = Config::load(&paths.config);
+        let tray = crate::tray::Tray::new(&cc.egui_ctx);
         let (sort, filter) = (from_key(&SORTS, &loaded.sort), from_key(&FILTERS, &loaded.filter));
         let window = loaded.window;
         let (platform, tag, completion) = (loaded.platform.clone(), loaded.tag.clone(), loaded.completion.clone());
@@ -250,6 +257,10 @@ impl GamutApp {
         workers.rescan();
         let (hero_tx, hero_rx) = unbounded();
         Ok(GamutApp {
+            tray,
+            quitting: false,
+            keep_hidden: 0,
+            tray_refreshed: None,
             thumbs: ThumbCache::new(&cc.egui_ctx, paths.clone(), 3),
             small_thumbs: ThumbCache::new(&cc.egui_ctx, paths.clone(), 2),
             paths,
@@ -747,6 +758,19 @@ impl GamutApp {
 
     fn scroll_details(&mut self, d: f32) {
         self.detail_scroll = Some(self.detail_scroll.unwrap_or(0.0) + d);
+    }
+
+    pub fn start_in_tray(&mut self) {
+        if self.tray.is_some() {
+            self.keep_hidden = 3;
+        }
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        self.keep_hidden = 0;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
     fn close_search(&mut self) {
@@ -1749,6 +1773,15 @@ impl GamutApp {
                         });
                         }
                         _ => {
+                        theme::section(ui, "Window");
+                        let mut tray = !s.quit_on_close;
+                        ui.checkbox(&mut tray, "Closing the window keeps Gamut in the tray");
+                        s.quit_on_close = !tray;
+                        ui.checkbox(&mut s.start_with_windows, "Start with Windows (in the tray)");
+                        ui.label(theme::hint("The tray icon opens Gamut, big screen, or one of your recently played games."));
+                        ui.add_space(12.0);
+                        ui.separator();
+                        theme::section(ui, "Files");
                         ui.label(theme::hint(&format!("Data folder: {}", self.paths.root.display())));
                         ui.horizontal(|ui| {
                             if ui.button("Open log").on_hover_text("What Gamut did this run, including errors").clicked() {
@@ -1786,6 +1819,11 @@ impl GamutApp {
             *self.cfg.write().unwrap() = new.clone();
             if let Err(e) = new.save(&self.paths.config) {
                 self.toasts.error(format!("Saving settings failed: {e:#}"));
+            }
+            if new.start_with_windows != old.start_with_windows {
+                if let Err(e) = crate::tray::set_autostart(new.start_with_windows) {
+                    self.toasts.error(format!("Couldn't change Start with Windows: {e:#}"));
+                }
             }
             if new.steamgriddb_key != old.steamgriddb_key {
                 let _ = self.lib.retry_missing_covers();
@@ -2795,6 +2833,62 @@ impl eframe::App for GamutApp {
         if self.saved_view != view {
             self.saved_view = view;
             self.save_prefs();
+        }
+    }
+
+    /// Runs even while the window is hidden in the tray.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        use crate::tray::Cmd;
+        if self.keep_hidden > 0 {
+            self.keep_hidden -= 1;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.request_repaint();
+        }
+        let hidden = !ctx.input(|i| i.viewport().visible().unwrap_or(true));
+        if hidden {
+            self.handle_events();
+            // Controller presses made in a game mustn't replay when the window comes back.
+            self.pad.try_iter().for_each(drop);
+            self.pad_later.clear();
+        }
+        let cmds: Vec<Cmd> = self.tray.as_ref().map(|t| t.rx.try_iter().collect()).unwrap_or_default();
+        for c in cmds {
+            match c {
+                Cmd::Show => self.show_window(ctx),
+                Cmd::BigScreen => {
+                    self.show_window(ctx);
+                    if self.big.is_none() {
+                        self.toggle_big(ctx);
+                    }
+                }
+                Cmd::Play(id) => {
+                    self.apply(Action::Play(id));
+                    // "Another game is running" needs the window.
+                    if self.confirm_play.is_some() {
+                        self.show_window(ctx);
+                    }
+                }
+                Cmd::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        let to_tray = self.tray.is_some() && !self.quitting && !self.cfg.read().unwrap().quit_on_close;
+        if to_tray && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.save_prefs();
+        }
+        // Recently played games for the tray menu, every few seconds.
+        if self.tray_refreshed.is_none_or(|t| t.elapsed().as_secs() >= 3) {
+            self.tray_refreshed = Some(std::time::Instant::now());
+            let mut recent: Vec<&Game> = self.games.iter().filter(|g| g.last_played > 0 && !g.hidden).collect();
+            recent.sort_by_key(|g| std::cmp::Reverse(g.last_played));
+            let recent = recent.iter().take(crate::tray::RECENT).map(|g| (g.id, g.name.clone())).collect();
+            if let Some(t) = self.tray.as_mut() {
+                t.set_recent(recent);
+            }
         }
     }
 

@@ -17,6 +17,7 @@ mod startup;
 mod stats_tab;
 mod theme;
 mod thumbs;
+mod tray;
 mod ui;
 mod util;
 mod video;
@@ -26,6 +27,10 @@ fn main() -> eframe::Result {
     let paths = gamut_core::Paths::resolve().expect("cannot create data folder");
     // One instance at a time: two would fight over the library and settings.
     let Some(_lock) = paths.lock() else {
+        // Running (maybe hidden in the tray): bring it back instead of complaining.
+        if tray::signal_running() {
+            return Ok(());
+        }
         rfd::MessageDialog::new()
             .set_title("Gamut")
             .set_description("Gamut is already running.")
@@ -60,7 +65,11 @@ fn main() -> eframe::Result {
             avif::register();
             std::thread::spawn(video::remove_old_cache);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(ui::GamutApp::new(cc, paths)?))
+            let mut app = ui::GamutApp::new(cc, paths)?;
+            if std::env::args().any(|a| a == "--tray") {
+                app.start_in_tray();
+            }
+            Ok(Box::new(app))
         }),
     )
 }
