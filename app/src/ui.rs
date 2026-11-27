@@ -576,6 +576,9 @@ impl GamutApp {
                 Action::RunAction(id, i) => {
                     let Some(g) = self.game(id).cloned() else { return Ok(()) };
                     let Some(a) = g.actions().get(i).cloned() else { return Ok(()) };
+                    if a.track && self.running().contains(&id) {
+                        anyhow::bail!("{} is already running", g.name);
+                    }
                     if a.track {
                         self.workers.play(g.with_action(&a))?;
                     } else {

@@ -883,12 +883,10 @@ impl Library {
             let mut set = tx.prepare(
                 "UPDATE games SET sort_name = COALESCE(sort_name, ?2), user_score = COALESCE(user_score, ?3),
                  notes = COALESCE(notes, ?4), links = COALESCE(links, ?5), actions = COALESCE(actions, ?6),
-                 script_before = COALESCE(script_before, ?7), script_after = COALESCE(script_after, ?8),
-                 install_size = COALESCE(install_size, ?9)
+                 install_size = COALESCE(install_size, ?7)
                  WHERE id = ?1 AND (sort_name IS NOT COALESCE(sort_name, ?2) OR user_score IS NOT COALESCE(user_score, ?3)
                    OR notes IS NOT COALESCE(notes, ?4) OR links IS NOT COALESCE(links, ?5) OR actions IS NOT COALESCE(actions, ?6)
-                   OR script_before IS NOT COALESCE(script_before, ?7) OR script_after IS NOT COALESCE(script_after, ?8)
-                   OR install_size IS NOT COALESCE(install_size, ?9))",
+                   OR install_size IS NOT COALESCE(install_size, ?7))",
             )?;
             for g in games {
                 let Some(pid) = &g.playnite_id else {
@@ -899,7 +897,7 @@ impl Library {
                 let changed = match id {
                     Some(id) => {
                         set.execute(params![
-                            id, g.sort_name, g.user_score, g.notes, g.links, g.actions, g.script_before, g.script_after, g.install_size
+                            id, g.sort_name, g.user_score, g.notes, g.links, g.actions, g.install_size
                         ])? > 0
                     }
                     None => false,

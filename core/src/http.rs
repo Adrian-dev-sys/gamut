@@ -26,6 +26,8 @@ fn min_gap(host: &str) -> Duration {
         "retroachievements.org" => Duration::from_millis(700),
         // 4 requests per second.
         "api.igdb.com" => Duration::from_millis(300),
+        // Unofficial / community sites: be gentle.
+        "howlongtobeat.com" | "www.pcgamingwiki.com" => Duration::from_millis(1200),
         // CDNs (Steam images, SteamGridDB image hosting).
         _ => Duration::from_millis(100),
     }

@@ -54,6 +54,32 @@ impl After {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runs_before_and_after_scripts() {
+        let dir = std::env::temp_dir().join(format!("gamut script test {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (b, a) = (dir.join("before.txt"), dir.join("after.txt"));
+        let mut g = Game::new_custom("It's \"quoted\"".into(), None);
+        g.script_before = Some(format!("$n = $env:GAMUT_GAME_NAME\nSet-Content -LiteralPath '{}' -Value $n", b.display()));
+        g.script_after = Some(format!("Set-Content -LiteralPath '{}' -Value 'done'", a.display()));
+        before(&g, Duration::from_secs(60)).unwrap();
+        assert_eq!(std::fs::read_to_string(&b).unwrap().trim(), "It's \"quoted\"");
+        drop(After::new(&g));
+        let t0 = Instant::now();
+        while !a.exists() && t0.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(a.exists());
+        g.script_before = Some("exit 3".into());
+        assert!(before(&g, Duration::from_secs(60)).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
 impl Drop for After {
     fn drop(&mut self) {
         if let Some(g) = self.0.take() {

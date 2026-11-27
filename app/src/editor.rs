@@ -958,7 +958,7 @@ impl Editor {
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 if ui.button("Choose file…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp"]).pick_file() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Images", &["png", "ico", "jpg", "jpeg", "webp"]).pick_file() {
                         (self.icon_file, self.icon_tex) = (Some(Some(p)), None);
                     }
                 }

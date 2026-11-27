@@ -207,8 +207,7 @@ impl Tables {
         g.notes = txt("Notes");
         g.user_score = d.get("UserScore").and_then(Value::int);
         g.install_size = d.get("InstallSize").and_then(Value::int).filter(|b| *b > 0);
-        g.script_before = txt("PreScript");
-        g.script_after = txt("PostScript");
+        // PreScript/PostScript aren't imported: they use Playnite's runspace ($Game, $PlayniteApi).
         let links: Vec<Link> = d
             .get("Links")
             .map(Value::array)

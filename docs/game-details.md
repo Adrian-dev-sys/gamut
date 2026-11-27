@@ -9,8 +9,11 @@ Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `
 - **Links & notes**: own links (shown after the automatic ones), notes (shown above the description).
 - **Media**: icon (png/jpg/webp copied in on Save).
 
+## Folders
+- `Game::folder()`: install folder, else the ROM's folder (first quoted absolute path in the arguments), else the exe's. Used by Calculate, Open install folder, `{{p|game}}` save paths and scripts. For ROMs in a shared folder, Calculate measures the whole folder.
+
 ## Launching
-- Extra actions appear in the More / right-click menu. "Counts as playing" goes through `Workers::play` with `Game::with_action` (time tracked, Special K/ReShade/HDR, scripts); otherwise the file is just opened.
+- Extra actions appear in the More / right-click menu. "Counts as playing" goes through `Workers::play` with `Game::with_action` (time tracked, Special K/ReShade/HDR, scripts); otherwise the file is just opened. A tracked action is refused while the game runs.
 - `scripts::before` runs `powershell -NoProfile -ExecutionPolicy Bypass -Command`, hidden, waited for up to 2 minutes; a failure is a toast and the game still starts. `scripts::After` runs on drop, i.e. when tracking sees the game exit. Env: `GAMUT_GAME_NAME`, `GAMUT_GAME_DIR`, `GAMUT_GAME_EXE`.
 
 ## HowLongToBeat (`core/src/hltb.rs`)
@@ -25,4 +28,4 @@ Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `
 - "Open save folder" uses `save_dir` if it exists, else looks it up, stores and opens it. `gamut-cli saves NAME [APPID]` checks it.
 
 ## Playnite
-- Import reads SortingName, Notes, UserScore, InstallSize, PreScript/PostScript, Links, Icon, and every GameAction except the first play action. Settings → Playnite → "Links, notes and more" fills these for already imported games, only where Gamut has none (`Library::import_extras`). Playnite must be closed (its files are locked).
+- Import reads SortingName, Notes, UserScore, InstallSize, Links, Icon (.ico decodes too), and every GameAction except the first play action. Settings → Playnite → "Links, notes and more" fills these for already imported games, only where Gamut has none (`Library::import_extras`). Playnite must be closed (its files are locked). PreScript/PostScript are not imported: they use Playnite's runspace (`$Game`, `$PlayniteApi`) and would fail in plain PowerShell.

@@ -178,12 +178,14 @@ impl Game {
         Game { source: Source::Custom, exe: opt(&a.path), args: opt(&a.args), work_dir: opt(&a.work_dir), installed: true, ..self.clone() }
     }
 
-    /// The game's folder: install folder, else the exe's.
+    /// The game's folder: install folder, else the ROM's (a quoted path in the arguments), else the exe's.
     pub fn folder(&self) -> Option<std::path::PathBuf> {
-        let d = self.install_dir.as_deref().filter(|d| !d.trim().is_empty() && !d.contains('{')).map(std::path::PathBuf::from);
+        let abs = |p: &&str| p.len() > 3 && p.as_bytes()[1] == b':' && !p.contains('{');
+        let d = self.install_dir.as_deref().filter(|d| abs(d)).map(std::path::PathBuf::from);
+        let rom = || self.args.as_deref().unwrap_or("").split('"').skip(1).step_by(2).find(abs);
         d.or_else(|| {
-            let e = self.exe.as_deref().filter(|e| e.len() > 3 && e.as_bytes()[1] == b':')?;
-            std::path::Path::new(e).parent().map(|p| p.to_path_buf())
+            let f = rom().or(self.exe.as_deref().filter(abs))?;
+            std::path::Path::new(f).parent().map(|p| p.to_path_buf())
         })
     }
 }

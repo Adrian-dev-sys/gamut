@@ -7,7 +7,7 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.105"
 directories = "6.0.0"
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "ico"] }
 log = "0.4.35"
 open = "5.4.5"
 regex = "1.13.2"
