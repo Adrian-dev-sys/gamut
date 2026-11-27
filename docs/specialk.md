@@ -7,7 +7,8 @@ Modeled on Playnite's Special K Helper extension. The code is `core/src/specialk
    - the mode (`off` / `global` / `selective`);
    - the per-game `games.specialk` override (NULL = global setting, 1 = always, 0 = never);
    - the game is installed;
-   - the anti-cheat scan: an `EasyAntiCheat*` / `BattlEye*` file or folder within 4 levels of the install dir or exe folder.
+   - the anti-cheat scan: an `EasyAntiCheat*` / `BattlEye*` file or folder within 4 levels of the install dir or exe folder;
+   - the hand-modded check (`own_setup`), skipped when the game is set to "always": the exe folder or install root has a ReShade file (`ReShade.ini`, `reshade-shaders`, …), a ReShade add-on (`*.addon*`, e.g. RenoDX), or a proxy DLL (`dxgi`, `d3d9/11/12`, `opengl32`, `dinput8` for REFramework, `dsound`, `SpecialK64/32`). A folder with Gamut's own `gamut-reshade.txt` doesn't count. Seen: SK on top of REFramework + ReShade + RenoDX crashed MH Wilds at the first frame (DXGI device removed).
 2. **Find SK.** Use `Settings.path` if set (the folder or SKIF.exe). Otherwise read the registry value `HKCU\Software\Kaldaien\Special K` → `Path`. The folder must contain `Servlet\`.
 3. **Create the named event** `Local\SKIF_InjectAckEx` (auto-reset), before the game starts. `SpecialK64.dll` signals it once injected.
 4. **Start the services.** For each of `SKIFsvc32` and `SKIFsvc64` that isn't running, run `Servlet\SKIFsvcNN.exe Start` and poll up to 2 s for the process. Gamut stops only the services it started, and only once no other launch still holds a `Guard`.

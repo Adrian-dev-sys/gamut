@@ -71,7 +71,38 @@ pub fn decide(g: &Game, s: &Settings) -> std::result::Result<(), String> {
             return Err(format!("anti-cheat found ({})", f.display()));
         }
     }
+    // Hand-modded games break when SK hooks on top; "always" for the game still injects.
+    if g.specialk != Some(true) {
+        if let Some(f) = own_setup(g) {
+            return Err(format!("already has its own mods ({f}); turn Special K on for this game to inject anyway"));
+        }
+    }
     Ok(())
+}
+
+/// Files that mean a game was modded by hand: ReShade (and RenoDX add-ons), REFramework, ASI loaders, a local SK.
+const OWN_SETUP: [&str; 14] = [
+    "reshade.ini", "reshadepreset.ini", "reshade-shaders", "reshade.log", "reshade.asi", "dxgi.dll", "d3d9.dll", "d3d11.dll",
+    "d3d12.dll", "opengl32.dll", "dinput8.dll", "specialk64.dll", "specialk32.dll", "dsound.dll",
+];
+
+/// First sign of a hand-made mod setup next to the exe or in the install folder. Gamut's own ReShade doesn't count.
+pub fn own_setup(g: &Game) -> Option<String> {
+    let mut dirs = crate::procs::game_dirs(g);
+    if let Some(d) = crate::procs::game_exe(g).as_deref().and_then(Path::parent) {
+        if !dirs.iter().any(|x| x == d) {
+            dirs.push(d.to_path_buf());
+        }
+    }
+    dirs.iter().find_map(|d| {
+        if d.join(crate::reshade::MARKER).exists() {
+            return None;
+        }
+        std::fs::read_dir(d).ok()?.flatten().find_map(|e| {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            (OWN_SETUP.contains(&n.as_str()) || n.ends_with(".addon64") || n.ends_with(".addon32") || n.ends_with(".addon")).then_some(n)
+        })
+    })
 }
 
 fn game_dirs(g: &Game) -> Vec<PathBuf> {
@@ -389,6 +420,32 @@ mod tests {
         std::fs::create_dir_all(deep.join("EasyAntiCheat")).unwrap();
         assert!(decide(&g, &s).is_err());
         assert!(decide(&g, &Settings { skip_anticheat: false, ..s }).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn skips_hand_modded_games() {
+        let dir = std::env::temp_dir().join(format!("gamut-sk-mods-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("Game.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        let mut g = Game::new_custom("T".into(), Some(exe.to_string_lossy().into()));
+        g.install_dir = Some(dir.to_string_lossy().into());
+        let s = Settings { mode: "global".into(), ..Default::default() };
+        assert!(decide(&g, &s).is_ok());
+        // A RenoDX add-on means someone set this game up by hand.
+        std::fs::write(dir.join("renodx-game.addon64"), b"").unwrap();
+        assert!(decide(&g, &s).unwrap_err().contains("renodx-game.addon64"));
+        g.specialk = Some(true);
+        assert!(decide(&g, &s).is_ok());
+        g.specialk = None;
+        // Gamut's own ReShade (marker present) doesn't block SK.
+        std::fs::remove_file(dir.join("renodx-game.addon64")).unwrap();
+        std::fs::write(dir.join("dxgi.dll"), b"").unwrap();
+        assert!(decide(&g, &s).is_err());
+        std::fs::write(dir.join(crate::reshade::MARKER), "dxgi.dll").unwrap();
+        assert!(decide(&g, &s).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

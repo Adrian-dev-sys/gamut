@@ -27,7 +27,7 @@ const PACKAGES: [&str; 2] = [
     "https://github.com/CeeJayDK/SweetFX/archive/refs/heads/master.zip",
 ];
 /// Lists the files Gamut added to a game folder, so they can be removed again.
-const MARKER: &str = "gamut-reshade.txt";
+pub(crate) const MARKER: &str = "gamut-reshade.txt";
 /// Files that mean the game already has its own ReShade (or another proxy DLL) set up.
 const EXISTING: [&str; 9] =
     ["reshade.ini", "reshadepreset.ini", "reshade-shaders", "reshade.log", "dxgi.dll", "d3d9.dll", "d3d11.dll", "opengl32.dll", "reshade.asi"];
