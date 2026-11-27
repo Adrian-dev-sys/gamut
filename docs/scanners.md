@@ -5,8 +5,9 @@ Find games in a folder and add them as custom entries (`core/src/scanner.rs`, UI
 ## Scanners
 - Saved in config (`scanners`, array of tables at the end of config.toml): name, folder, file types
   (comma separated, default `exe`), exclusions (one per line, `*`/`?`; a bare name matches any folder/file
-  name, a pattern with `\` the path inside the scanned folder), depth (folders below each game folder,
-  default 4), platform and tags given to added games.
+  name, a pattern with `\` the path inside the scanned folder), platform (dropdown of library platforms) and
+  tags (chips with suggestions) given to added games, and `ignored` folders.
+- No depth setting: each game folder is walked fully (safety stop `MAX_DEPTH` = 12, junk folders skipped).
 - Top bar → "Scan folders" opens the list/editor; Scan runs `scanner::scan` on a thread.
 - `gamut-cli scanfolder DIR [KNOWN]` prints what a default scanner finds (read-only, safe while Gamut runs);
   KNOWN is a file of library exe/install paths (one per line) to mark "[in library]".
@@ -36,4 +37,7 @@ Find games in a folder and add them as custom entries (`core/src/scanner.rs`, UI
 ## Adding
 - Ticked rows become custom games: exe, its folder as working dir, the scanner's platform/tags
   (`Library::add_scanned`, one transaction), then the usual pipeline fetches metadata and covers (docs/igdb.md).
-- Not yet: automatic rescans, remembering unticked results, reporting games whose exe disappeared.
+- Unticked new games go to the scanner's `ignored` list (folder keys) and start unticked and hidden next time
+  ("Show N skipped before"); ticking one later removes it from the list.
+- After adding, the grid switches to Recently added with filters/search cleared, so the new games are on top.
+- Not yet: automatic rescans.

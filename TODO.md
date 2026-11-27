@@ -6,7 +6,8 @@
 
 ## More sources
 - [x] **Folder scanners** – saved scanners, review with checkboxes, best-guess exe and name, metadata fetched after adding
-- [ ] Scanners step 2: automatic rescans, remember unticked results, report games whose exe disappeared; emulator scanners
+- [x] Scanner tweaks: no depth limit, platform dropdown, tag suggestions, unticked results remembered, new games shown first
+- [ ] Scanners step 2: automatic rescans; emulator scanners
 - [ ] GOG (GOG Galaxy / installed games)
 - [ ] Epic Games Store
 - [ ] Xbox / Microsoft Store (PC Game Pass)
@@ -24,7 +25,7 @@
 - [ ] Library briefly flashes behind open popups. Gamut's own frames were verified correct (pixel readback), so likely G-Sync/VRR with uneven frame pacing; try Fixed Refresh for gamut.exe, then steady repaints while a popup is open
 
 ## Library health & maintenance
-- [ ] **Library health** – games with no launcher, missing exe/install folder, or likely duplicates; per-platform exclusions (e.g. PS5 games played on the console, unless an emulator is set up)
+- [ ] **Library health** – games with no launcher, missing exe/install folder (incl. scanned games whose exe disappeared), or likely duplicates; per-platform exclusions (e.g. PS5 games played on the console, unless an emulator is set up)
 - [ ] **Disk usage** – install size per game, Gamut's own data (covers, thumbnails, caches) with clear-cache buttons
 - [ ] **Uninstall from Gamut** – Steam first (`steam://uninstall/<appid>`)
 - [ ] **Backups** – library database, settings and art; scheduled + manual, restore

@@ -1947,7 +1947,7 @@ impl GamutApp {
                 .map(|p| gamut_core::scanner::key(std::path::Path::new(p)))
                 .collect()
         };
-        let out = d.show(ctx, known);
+        let out = d.show(ctx, known, &self.platforms, &self.tags);
         if matches!(out, crate::scan_ui::ScanOut::Open) {
             return;
         }
@@ -1961,7 +1961,14 @@ impl GamutApp {
         }
         if let crate::scan_ui::ScanOut::Import(s, picked) = out {
             match self.import_scanned(&s, &picked) {
-                Ok(n) => self.toasts.success(format!("Added {n} games. Fetching their details and covers…")),
+                Ok(n) => {
+                    // Show them: newest first, nothing filtered out.
+                    (self.sort, self.filter, self.ach_tab, self.stats_tab) = (Sort::Added, Filter::All, None, None);
+                    (self.platform, self.tag, self.completion) = (String::new(), String::new(), String::new());
+                    self.search.clear();
+                    self.scroll_to = Some(0.0);
+                    self.toasts.success(format!("Added {n} games, shown first (sorted by recently added). Fetching their details and covers…"));
+                }
                 Err(e) => self.toasts.error(format!("Adding games failed: {e:#}")),
             }
         }

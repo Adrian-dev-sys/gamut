@@ -810,7 +810,7 @@ fn chip(ui: &mut Ui, text: &str, id: egui::Id) -> bool {
 }
 
 /// Removable chips plus an input that adds on Enter/comma, with suggestions from the library.
-fn chips(ui: &mut Ui, id: &str, items: &mut Vec<String>, input: &mut String, known: &[(String, usize)], hint: &str) {
+pub(crate) fn chips(ui: &mut Ui, id: &str, items: &mut Vec<String>, input: &mut String, known: &[(String, usize)], hint: &str) {
     use egui::containers::{Popup, PopupCloseBehavior, SetOpenCommand};
     let mut remove = None;
     let mut add: Option<String> = None;
