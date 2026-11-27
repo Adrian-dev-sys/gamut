@@ -29,5 +29,8 @@
   Visible(false)) unless Settings → General "keeps Gamut in the tray" is off (`quit_on_close`). Exit sets
   `quitting` and closes for real. While hidden, worker events are still handled and controller input is dropped.
 - A second gamut.exe sets the named event `Local\GamutShowWindow` and exits; the running one shows its window.
-- Start with Windows writes `HKCU\...\Run\Gamut = "<exe>" --tray`; `--tray` starts hidden (`keep_hidden`
-  re-hides for a few frames because eframe shows the window after its first paint).
+- Start with Windows writes `HKCU\...\Run\Gamut = "<exe>" --tray`. `--tray` starts hidden: the window is
+  DWM-cloaked, `keep_hidden` re-sends Visible(false) for a few frames (eframe shows the window after its first
+  paint), then uncloaks; a saved maximize waits for the first show.
+- `gamut.exe --quit` sets `Local\GamutQuit` so the running one exits for real (install.ps1 uses it).
+- egui's `viewport().visible()` only tracks minimized/occluded, so `GamutApp::hidden` tracks the tray state.
