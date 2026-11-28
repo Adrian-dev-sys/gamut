@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
+mod backups;
 mod collections;
 mod list;
 
@@ -109,7 +110,7 @@ fn from_key<T: Copy>(table: &[(T, &'static str)], k: &str) -> T {
     table.iter().find(|(_, n)| *n == k).map(|(t, _)| *t).unwrap_or(table[0].0)
 }
 
-const SETTINGS_TABS: [&str; 4] = ["Library", "Special K", "ReShade", "General"];
+const SETTINGS_TABS: [&str; 5] = ["Library", "Special K", "ReShade", "Backups", "General"];
 
 enum Action {
     Play(i64),
@@ -253,6 +254,9 @@ pub struct GamutApp {
     /// Details: a D-pad move from this focused widget; if focus didn't change, the page scrolls instead.
     nav_probe: Option<(egui::Id, f32)>,
     settings_tab: usize,
+    backup_list: backups::BackupList,
+    /// Backup the user asked to restore (confirming).
+    confirm_restore: Option<std::path::PathBuf>,
     picker: Option<Picker>,
     ctx_handle: egui::Context,
     toasts: Toasts,
@@ -388,6 +392,8 @@ impl GamutApp {
             osk: None,
             nav_probe: None,
             settings_tab: 0,
+            backup_list: Default::default(),
+            confirm_restore: None,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice),
@@ -1041,6 +1047,7 @@ impl GamutApp {
     fn any_dialog(&self) -> bool {
         self.editor.is_some()
             || self.settings.is_some()
+            || self.confirm_restore.is_some()
             || self.confirm_remove.is_some()
             || self.confirm_refresh.is_some()
             || self.confirm_stop.is_some()
@@ -1992,6 +1999,7 @@ impl GamutApp {
             .and_then(|p| gamut_core::steam::detect_steam_id(&p))
             .unwrap_or_default();
         let mut tab = self.settings_tab;
+        let mut restore = None;
         self.key_checks.update(s, ctx);
         let checks = &self.key_checks;
         let screen = ctx.content_rect();
@@ -2205,6 +2213,7 @@ impl GamutApp {
                             }
                         });
                         }
+                        3 => backups::tab(ui, &mut s.backup, &self.paths, &self.workers, &mut self.backup_list, &mut restore),
                         _ => {
                         theme::section(ui, "Window");
                         let mut tray = !s.quit_on_close;
@@ -2242,6 +2251,9 @@ impl GamutApp {
                 }
             });
         self.settings_tab = tab;
+        if restore.is_some() {
+            self.confirm_restore = restore;
+        }
         if let Some(dir) = preview {
             self.workers.playnite_preview(dir);
         }
@@ -3322,6 +3334,11 @@ impl eframe::App for GamutApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events();
+        match crate::RESTORED.lock().unwrap().take() {
+            Some(Ok(m)) => self.toasts.success(m),
+            Some(Err(e)) => self.toasts.error(format!("Restoring the backup failed: {e}")),
+            None => {}
+        }
         self.shots.begin_frame(&ctx);
         crate::shots_view::viewer(&ctx, &mut self.shots, &self.games);
         self.update_view();
@@ -3547,6 +3564,7 @@ impl eframe::App for GamutApp {
         self.scan_window(&ctx);
         self.coll_window(&ctx);
         self.coll_delete_window(&ctx);
+        self.restore_window(&ctx);
         if let Some(o) = &self.osk {
             o.show(&ctx);
         }

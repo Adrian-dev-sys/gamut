@@ -28,7 +28,7 @@
 - [x] **Library health** – games with no launcher, missing exe/install folder (incl. scanned games whose exe disappeared), or likely duplicates; per-platform exclusions (e.g. PS5 games played on the console, unless an emulator is set up)
 - [ ] **Disk usage** – install size per game (done: per game, Steam + Calculate), Gamut's own data (covers, thumbnails, caches) with clear-cache buttons
 - [ ] **Uninstall from Gamut** – Steam first (`steam://uninstall/<appid>`)
-- [ ] **Backups** – library database, settings and art; scheduled + manual, restore
+- [x] **Backups** – library database, settings and art; scheduled + manual, restore
 - [ ] **Security** – review: API key storage (plain config today), downloads (ReShade/Special K), launching untrusted paths, update checks
 
 ## Metadata

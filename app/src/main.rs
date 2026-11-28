@@ -29,6 +29,9 @@ mod util;
 mod video;
 mod workers;
 
+/// A backup restored at startup (or why it failed), shown as a toast.
+pub static RESTORED: std::sync::Mutex<Option<Result<String, String>>> = std::sync::Mutex::new(None);
+
 fn main() -> eframe::Result {
     if std::env::args().any(|a| a == "--quit") {
         tray::signal_quit();
@@ -36,7 +39,16 @@ fn main() -> eframe::Result {
     }
     let paths = gamut_core::Paths::resolve().expect("cannot create data folder");
     // One instance at a time: two would fight over the library and settings.
-    let Some(_lock) = paths.lock() else {
+    let mut lock = paths.lock();
+    // Restarting (to restore a backup): the old instance is still exiting.
+    if std::env::args().any(|a| a == "--restarting") {
+        let t = std::time::Instant::now();
+        while lock.is_none() && t.elapsed() < std::time::Duration::from_secs(30) {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            lock = paths.lock();
+        }
+    }
+    let Some(_lock) = lock else {
         // Running (maybe hidden in the tray): bring it back instead of complaining.
         if tray::signal_running() {
             return Ok(());
@@ -49,6 +61,14 @@ fn main() -> eframe::Result {
     };
     // After the lock, so a second instance doesn't rotate the running one's log.
     logging::init(&paths.root);
+    // Before anything opens the database.
+    if let Some(r) = gamut_core::backup::apply_pending(&paths) {
+        match &r {
+            Ok(m) => log::info!("{m}"),
+            Err(e) => log::error!("restore failed: {e:#}"),
+        }
+        *RESTORED.lock().unwrap() = Some(r.map_err(|e| format!("{e:#}")));
+    }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Gamut")
         .with_inner_size([1440.0, 880.0])

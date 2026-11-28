@@ -32,6 +32,7 @@ pub struct Workers {
     pub pending_cover: Arc<AtomicUsize>,
     pub pending_meta: Arc<AtomicUsize>,
     pub scanning: Arc<AtomicBool>,
+    pub backing_up: Arc<AtomicBool>,
     /// Playnite import progress: (images done, images total); total 0 while idle.
     pub importing: Arc<(AtomicUsize, AtomicUsize)>,
     /// Games Gamut started itself and whose process is still alive.
@@ -70,6 +71,7 @@ impl Workers {
             pending_cover: Default::default(),
             pending_meta: Default::default(),
             scanning: Default::default(),
+            backing_up: Default::default(),
             importing: Default::default(),
             running: Default::default(),
             steam_running: Default::default(),
@@ -90,6 +92,7 @@ impl Workers {
         w.spawn_scraper(km_rx, w.pending_meta.clone(), true);
         w.spawn_sk_update_check();
         w.spawn_achievements(ach_rx);
+        w.spawn_backup_schedule();
         {
             let (cfg, tx, ctx) = (w.cfg.clone(), w.tx.clone(), w.ctx.clone());
             crate::shots::start(w.paths.clone(), w.running.clone(), move || {
@@ -327,6 +330,30 @@ impl Workers {
                 }
             }
             ctx.request_repaint();
+        });
+    }
+
+    /// Backs up now on a worker thread, with these settings or the saved ones.
+    pub fn backup(&self, s: Option<gamut_core::backup::Settings>) {
+        if self.backing_up.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let s = s.unwrap_or_else(|| self.cfg.read().unwrap().backup.clone());
+        let (paths, tx, ctx, busy) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.backing_up.clone());
+        std::thread::spawn(move || run_backup(&paths, &s, &tx, &ctx, &busy, "Backup saved"));
+    }
+
+    /// Automatic backups: checked a minute after start, then hourly (Gamut may live in the tray for days).
+    fn spawn_backup_schedule(&self) {
+        let (paths, cfg, tx, ctx, busy) = (self.paths.clone(), self.cfg.clone(), self.tx.clone(), self.ctx.clone(), self.backing_up.clone());
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            let s = cfg.read().unwrap().backup.clone();
+            let due = s.auto && !gamut_core::backup::pending(&paths) && gamut_core::backup::due(&gamut_core::backup::dir(&paths, &s), s.days);
+            if due && !busy.swap(true, Ordering::SeqCst) {
+                run_backup(&paths, &s, &tx, &ctx, &busy, "Automatic backup saved");
+            }
+            std::thread::sleep(Duration::from_secs(3600 - 60));
         });
     }
 
@@ -1079,4 +1106,19 @@ fn prune_orphan_art(paths: &Paths) {
             }
         }
     }
+}
+
+/// Makes a backup and reports it; clears `busy` when done.
+fn run_backup(paths: &Paths, s: &gamut_core::backup::Settings, tx: &Sender<Event>, ctx: &Context, busy: &AtomicBool, done: &str) {
+    let r = gamut_core::backup::create(paths, s);
+    busy.store(false, Ordering::SeqCst);
+    let _ = tx.send(match r {
+        Ok(c) => {
+            let name = c.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let art = if c.art_copied > 0 { format!(" ({} art files copied)", c.art_copied) } else { String::new() };
+            Event::Info(format!("{done}: {name}{art}."))
+        }
+        Err(e) => Event::Error(format!("Backup failed: {e:#}")),
+    });
+    ctx.request_repaint();
 }
