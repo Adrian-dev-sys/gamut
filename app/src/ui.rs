@@ -217,6 +217,8 @@ pub struct GamutApp {
     /// Details page scroll: pending change, and the offset last frame.
     detail_scroll: Option<f32>,
     detail_off: f32,
+    /// Game and pass the details were last drawn: a gap means it was just opened.
+    detail_seen: (i64, u64),
     search_pop: Option<crate::search_pop::SearchPop>,
     /// Big screen mode: the zoom factor to restore when leaving it.
     big: Option<f32>,
@@ -360,6 +362,7 @@ impl GamutApp {
             focus_play: false,
             detail_scroll: None,
             detail_off: 0.0,
+            detail_seen: (0, 0),
             search_pop: None,
             big: None,
             workers,
@@ -1562,7 +1565,12 @@ impl GamutApp {
             w.active.weak_bg_fill = ACCENT.gamma_multiply(0.45);
         }
         let mut area = ScrollArea::vertical().id_salt(("details", id)).auto_shrink([false, false]);
-        if let Some(d) = self.detail_scroll.take() {
+        let pass = ui.ctx().cumulative_pass_nr();
+        // Freshly opened: start at the top, not where it was last closed.
+        if std::mem::replace(&mut self.detail_seen, (id, pass)) != (id, pass.wrapping_sub(1)) {
+            (self.detail_scroll, self.detail_off) = (None, 0.0);
+            area = area.vertical_scroll_offset(0.0);
+        } else if let Some(d) = self.detail_scroll.take() {
             area = area.vertical_scroll_offset((self.detail_off + d).max(0.0));
         }
         let focus_play = std::mem::take(&mut self.focus_play);
