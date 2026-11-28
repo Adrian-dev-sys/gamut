@@ -29,7 +29,7 @@
 - [x] **Disk usage** – install size per game (done: per game, Steam + Calculate), Gamut's own data (covers, thumbnails, caches) with clear-cache buttons
 - [x] **Uninstall from Gamut** – Steam first (`steam://uninstall/<appid>`)
 - [x] **Backups** – library database, settings and art; scheduled + manual, restore
-- [ ] **Security** – review: API key storage (plain config today), downloads (ReShade/Special K), launching untrusted paths, update checks
+- [x] **Security** – review: API key storage (plain config today), downloads (ReShade/Special K), launching untrusted paths, update checks
 
 ## Metadata
 - [x] IGDB as an additional metadata source (richer data for non-Steam games)

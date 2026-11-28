@@ -37,7 +37,8 @@ pub(super) fn tab(ui: &mut Ui, s: &mut Settings, paths: &gamut_core::Paths, work
         }
     });
     ui.label(theme::hint(
-        "The library, settings (including your API keys) and local achievements go into a dated zip. \
+        "The library, settings and local achievements go into a dated zip. API keys stay encrypted for your Windows \
+         account: after restoring on another PC or account, enter them again. \
          A folder on another drive also survives a failing disk. Screenshots (Pictures\\Gamut) aren't included.",
     ));
     ui.add_space(8.0);

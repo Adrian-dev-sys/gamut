@@ -5,16 +5,20 @@ use std::path::Path;
 #[serde(default)]
 pub struct Config {
     /// Steam Web API key (steamcommunity.com/dev/apikey); enables the full owned library.
+    #[serde(with = "crate::secret")]
     pub steam_api_key: String,
     /// SteamID64; auto-detected from loginusers.vdf when empty.
     pub steam_id: String,
     /// SteamGridDB API key; enables covers for any game.
+    #[serde(with = "crate::secret")]
     pub steamgriddb_key: String,
     /// RetroAchievements username + web API key (retroachievements.org/controlpanel.php).
     pub ra_user: String,
+    #[serde(with = "crate::secret")]
     pub ra_api_key: String,
     /// IGDB through a Twitch developer app (dev.twitch.tv/console/apps): metadata and art for non-Steam games.
     pub igdb_client_id: String,
+    #[serde(with = "crate::secret")]
     pub igdb_client_secret: String,
     /// Grid card width in logical pixels.
     pub card_width: f32,

@@ -29,6 +29,7 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 - `docs/grid.md` – grid sort order, list mode, keyboard cursor, multi-select, bulk actions, controller, big screen.
 - `docs/backups.md` – backups: DB snapshot zip + settings, art mirror, rotation, schedule, staged restore on restart; data folder storage and clearing.
 - `docs/themes.md` – theme.toml: palette, corner radius, spacing, text size, fonts, hot reload.
+- `docs/security.md` – API key encryption (DPAPI), download checks, link/launch trust.
 - `docs/collections.md` – Collections tab: hand-filled and dynamic (filter) collections, storage, tiles.
 - `docs/scanners.md` – folder scanners: finding game folders/collections, main exe guess, name cleanup, review and import.
 - `docs/game-details.md` – sorting name, user score, notes, links, extra actions, before/after scripts, install size, icon, save folder (PCGamingWiki), HowLongToBeat, Playnite extras, uninstall.

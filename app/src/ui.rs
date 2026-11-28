@@ -1747,7 +1747,9 @@ impl GamutApp {
                             _ => (n, u),
                         }).chain(own) {
                             let b = egui::Button::new(RichText::new(label).size(12.5)).corner_radius(CornerRadius::same(12));
-                            if ui.add(b).on_hover_text(&url).clicked() {
+                            // Imported links could be any path or protocol: only web pages open.
+                            let web = ["https://", "http://"].iter().any(|p| url.get(..p.len()).is_some_and(|u| u.eq_ignore_ascii_case(p)));
+                            if ui.add_enabled(web, b).on_hover_text(&url).on_disabled_hover_text(format!("Not a web link: {url}")).clicked() {
                                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                             }
                         }
