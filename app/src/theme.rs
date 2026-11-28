@@ -235,3 +235,23 @@ pub fn paint_backdrop(ctx: &Context) {
     let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::unique("gamut_backdrop"));
     ctx.layer_painter(layer).rect_filled(ctx.content_rect(), 0.0, BACKDROP);
 }
+
+/// Round "back to top" button in a scroll area's corner once it's scrolled past ~1.5 screens; true when clicked.
+pub fn to_top_button(ui: &mut egui::Ui, view: egui::Rect, offset: f32) -> bool {
+    if offset < view.height() * 1.5 {
+        return false;
+    }
+    let c = egui::pos2(view.right() - 42.0, view.bottom() - 38.0);
+    let b = egui::Rect::from_center_size(c, egui::vec2(46.0, 46.0));
+    let r = ui.interact(b, ui.scope_id().with("to_top"), egui::Sense::click()).on_hover_text("Back to top");
+    let p = ui.painter();
+    p.circle_filled(c + egui::vec2(0.0, 3.0), 23.0, Color32::from_black_alpha(90));
+    p.circle(c, 22.0, if r.hovered() { ACCENT } else { CARD_HI }, Stroke::new(1.0, BORDER));
+    let s = Stroke::new(2.5, TEXT);
+    p.line_segment([c + egui::vec2(-8.0, 3.0), c + egui::vec2(0.0, -5.0)], s);
+    p.line_segment([c + egui::vec2(8.0, 3.0), c + egui::vec2(0.0, -5.0)], s);
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    r.clicked()
+}

@@ -1,7 +1,7 @@
 //! List mode: one row per game with sortable columns. Shares the grid's cursor, selection, menus and keys
 //! (it's a one-column grid to `nav`).
 use super::*;
-use crate::theme::TEXT;
+use crate::theme::{self, TEXT};
 use egui::Align2;
 
 const ROW_H: f32 = 44.0;
@@ -222,6 +222,9 @@ impl GamutApp {
             }
         });
         self.grid_scroll = (out.state.clamped_offset().y, out.inner_rect.height());
+        if theme::to_top_button(ui, out.inner_rect, out.state.clamped_offset().y) {
+            self.scroll_to = Some(0.0);
+        }
         self.apply_clicks(ui, clicks);
     }
 }

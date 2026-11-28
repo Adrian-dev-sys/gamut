@@ -217,8 +217,9 @@ pub struct GamutApp {
     /// Details page scroll: pending change, and the offset last frame.
     detail_scroll: Option<f32>,
     detail_off: f32,
-    /// Game and pass the details were last drawn: a gap means it was just opened.
-    detail_seen: (i64, u64),
+    /// Selection last seen, and whether the details were opened since last drawn.
+    detail_seen: Option<i64>,
+    detail_fresh: bool,
     search_pop: Option<crate::search_pop::SearchPop>,
     /// Big screen mode: the zoom factor to restore when leaving it.
     big: Option<f32>,
@@ -294,6 +295,8 @@ pub struct GamutApp {
     confirm_coll_delete: Option<i64>,
     /// Details page tab: 0 = About, 1 = Achievements (kept while browsing games).
     detail_tab: usize,
+    /// Tab for the next details opened (About otherwise).
+    detail_tab_next: Option<usize>,
     sessions: Option<crate::sessions_view::GameSessions>,
     /// HowLongToBeat times of the selected game, from the cache.
     hltb: Option<(i64, Option<gamut_core::hltb::Times>)>,
@@ -362,7 +365,8 @@ impl GamutApp {
             focus_play: false,
             detail_scroll: None,
             detail_off: 0.0,
-            detail_seen: (0, 0),
+            detail_seen: None,
+            detail_fresh: false,
             search_pop: None,
             big: None,
             workers,
@@ -401,6 +405,7 @@ impl GamutApp {
             shots_tab: false,
             shots: crate::shots_view::ShotsView::new(),
             detail_tab: 0,
+            detail_tab_next: None,
             sessions: None,
             hltb: None,
             key_checks: Default::default(),
@@ -1484,6 +1489,9 @@ impl GamutApp {
             }
         });
         self.grid_scroll = (out.state.clamped_offset().y, out.inner_rect.height());
+        if theme::to_top_button(ui, out.inner_rect, out.state.clamped_offset().y) {
+            self.scroll_to = Some(0.0);
+        }
         self.apply_clicks(ui, clicks);
     }
 
@@ -1565,10 +1573,10 @@ impl GamutApp {
             w.active.weak_bg_fill = ACCENT.gamma_multiply(0.45);
         }
         let mut area = ScrollArea::vertical().id_salt(("details", id)).auto_shrink([false, false]);
-        let pass = ui.ctx().cumulative_pass_nr();
         // Freshly opened: start at the top, not where it was last closed.
-        if std::mem::replace(&mut self.detail_seen, (id, pass)) != (id, pass.wrapping_sub(1)) {
+        if std::mem::take(&mut self.detail_fresh) {
             (self.detail_scroll, self.detail_off) = (None, 0.0);
+            self.detail_tab = self.detail_tab_next.take().unwrap_or(0);
             area = area.vertical_scroll_offset(0.0);
         } else if let Some(d) = self.detail_scroll.take() {
             area = area.vertical_scroll_offset((self.detail_off + d).max(0.0));
@@ -1886,6 +1894,9 @@ impl GamutApp {
             ui.add_space(28.0);
         });
         self.detail_off = out.state.clamped_offset().y;
+        if theme::to_top_button(ui, out.inner_rect, self.detail_off) {
+            self.detail_scroll = Some(-self.detail_off);
+        }
         if let Some(t) = pick_tag {
             self.tag = t;
             self.selected = None;
@@ -3314,6 +3325,11 @@ impl eframe::App for GamutApp {
         self.shots.begin_frame(&ctx);
         crate::shots_view::viewer(&ctx, &mut self.shots, &self.games);
         self.update_view();
+        // A dialog over the details (editor, settings) doesn't count as reopening it.
+        if self.detail_seen != self.selected {
+            self.detail_seen = self.selected;
+            self.detail_fresh = self.selected.is_some();
+        }
         if let Some(ov) = self.ach_tab.as_mut().filter(|o| o.dirty) {
             // The sweep sends many updates; reread at most every few seconds.
             let now = ctx.input(|i| i.time);
@@ -3407,7 +3423,7 @@ impl eframe::App for GamutApp {
                     }
                     _ if self.shots_tab => match crate::shots_view::overview(ui, &mut self.shots, &self.games) {
                         Some(crate::shots_view::Ask::OpenGame(id)) => {
-                            self.detail_tab = 3;
+                            self.detail_tab_next = Some(3);
                             Some(id)
                         }
                         None => None,
