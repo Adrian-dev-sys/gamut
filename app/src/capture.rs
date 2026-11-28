@@ -46,7 +46,8 @@ fn luma(c: [f32; 3]) -> f32 {
 }
 
 /// HDR → SDR. The brightest channel goes through BT.2390's roll-off in the PQ domain, from the frame's peak
-/// down to Windows' SDR white (255); all channels scale alike, so hue and saturation stay (no pastel skies).
+/// down to Windows' SDR white (255), averaged with each channel rolled off on its own: the first keeps hue and
+/// saturation (no pastel skies), the second lets bright colors lighten like they do on the HDR screen (no red skin).
 pub struct Tonemap {
     white: f32,
     src: f32,
@@ -86,7 +87,7 @@ impl Tonemap {
         }
         let hi = n[0].max(n[1]).max(n[2]);
         let k = self.eetf(hi) / hi;
-        n.map(|v| srgb(v * k / self.white))
+        n.map(|v| srgb((v * k + self.eetf(v.max(0.0))) * 0.5 / self.white))
     }
 }
 
@@ -291,7 +292,7 @@ mod tests {
         assert!(tm.map([n(260.0); 3])[0] < tm.map([n(500.0); 3])[0]);
         assert_eq!(tm.map([n(52.0); 3]), [124; 3]);
         let sky = tm.map([n(150.0), n(400.0), n(900.0)]);
-        assert!(sky[2] >= 250 && sky[0] < 130, "{sky:?}");
+        assert!(sky[2] >= 250 && sky[0] < 180 && sky[0] < sky[1], "{sky:?}");
         let g = tm.map([n(-20.0), n(100.0), n(20.0)]);
         assert!(g[1] > 150 && g[2] > 0, "{g:?}");
         assert_eq!(tm.map([-1.0, 0.0, 0.0]), [0, 0, 0]);
