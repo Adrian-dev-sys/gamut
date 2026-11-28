@@ -45,9 +45,8 @@ fn luma(c: [f32; 3]) -> f32 {
     0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 }
 
-/// HDR → SDR. Luminance goes through BT.2390's roll-off in the PQ domain, from the frame's peak down to
-/// Windows' SDR white (which becomes 255); colors keep their hue, and ones past the sRGB gamut or past white
-/// are desaturated toward their own brightness instead of clipped, so nothing turns neon or flat.
+/// HDR → SDR. The brightest channel goes through BT.2390's roll-off in the PQ domain, from the frame's peak
+/// down to Windows' SDR white (255); all channels scale alike, so hue and saturation stay (no pastel skies).
 pub struct Tonemap {
     white: f32,
     src: f32,
@@ -85,18 +84,13 @@ impl Tonemap {
         if lo < 0.0 {
             n = n.map(|v| y + (v - y) * y / (y - lo));
         }
-        let y2 = self.eetf(y);
-        n = n.map(|v| v * y2 / y);
         let hi = n[0].max(n[1]).max(n[2]);
-        if hi > self.white {
-            let s = ((self.white - y2) / (hi - y2)).clamp(0.0, 1.0);
-            n = n.map(|v| y2 + (v - y2) * s);
-        }
-        n.map(|v| srgb(v / self.white))
+        let k = self.eetf(hi) / hi;
+        n.map(|v| srgb(v * k / self.white))
     }
 }
 
-/// The frame's highlight level: 99.9th percentile of luminance (nits), from a log histogram.
+/// The frame's highlight level: 99.9th percentile of the brightest channel (nits), from a log histogram.
 pub fn frame_peak(lum: impl Iterator<Item = f32>) -> f32 {
     let mut hist = [0u32; 256];
     let mut n = 0u32;
@@ -201,7 +195,7 @@ mod dxgi {
             };
             let (white, peak) = if hdr {
                 let white = sdr_white(&desc.DeviceName) * 80.0;
-                let frame = frame_peak((0..h).step_by(2).flat_map(|y| (0..w).step_by(2).map(move |x| (x, y))).map(|(x, y)| luma(pixel(x, y)) * 80.0));
+                let frame = frame_peak((0..h).step_by(2).flat_map(|y| (0..w).step_by(2).map(move |x| (x, y))).map(|(x, y)| pixel(x, y).into_iter().fold(0f32, f32::max) * 80.0));
                 // Games master to the display's peak; never beyond it.
                 (white, if display_peak > white { frame.min(display_peak) } else { frame })
             } else {
@@ -297,7 +291,7 @@ mod tests {
         assert!(tm.map([n(260.0); 3])[0] < tm.map([n(500.0); 3])[0]);
         assert_eq!(tm.map([n(52.0); 3]), [124; 3]);
         let sky = tm.map([n(150.0), n(400.0), n(900.0)]);
-        assert!(sky[2] == 255 && sky[0] > 100, "{sky:?}");
+        assert!(sky[2] >= 250 && sky[0] < 130, "{sky:?}");
         let g = tm.map([n(-20.0), n(100.0), n(20.0)]);
         assert!(g[1] > 150 && g[2] > 0, "{g:?}");
         assert_eq!(tm.map([-1.0, 0.0, 0.0]), [0, 0, 0]);

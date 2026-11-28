@@ -420,7 +420,7 @@ impl GamutApp {
                 st.dirty = true;
             }
             match ev {
-                Event::Shots(v) => self.shots.all = v,
+                Event::Shots(v) => self.shots.set_all(v),
                 Event::ShotTaken => self.workers.index_shots(),
                 Event::LibraryChanged => {
                     self.workers.index_shots();

@@ -73,6 +73,18 @@ impl ShotsView {
         ShotsView { all: Arc::new(Vec::new()), tex: HashMap::new(), req, done, frame: 0, viewer: None, full_screen: false, filter: Filter::default() }
     }
 
+    /// New index; an open viewer keeps its shots (found by path).
+    pub fn set_all(&mut self, all: Arc<Vec<Shot>>) {
+        if let Some(vw) = self.viewer.take() {
+            let at: HashMap<&PathBuf, usize> = all.iter().enumerate().map(|(i, s)| (&s.path, i)).collect();
+            let cur = &self.all[vw.list[vw.pos]].path;
+            let list: Vec<usize> = vw.list.iter().filter_map(|&i| at.get(&self.all[i].path).copied()).collect();
+            let pos = at.get(cur).and_then(|c| list.iter().position(|i| i == c)).unwrap_or(vw.pos.min(list.len().saturating_sub(1)));
+            self.viewer = (!list.is_empty()).then_some(Viewer { list, pos });
+        }
+        self.all = all;
+    }
+
     pub fn count(&self, game: i64) -> usize {
         self.all.iter().filter(|s| s.game_id == game).count()
     }
@@ -311,11 +323,12 @@ pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
 pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
     let Some(vw) = v.viewer.as_ref() else { return };
     let (n, mut pos) = (vw.list.len(), vw.pos);
-    let (mut close, left, right) = ctx.input_mut(|i| {
+    let (mut close, left, right, mut del) = ctx.input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::NONE, Key::Escape),
             i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft),
             i.consume_key(egui::Modifiers::NONE, Key::ArrowRight),
+            i.consume_key(egui::Modifiers::NONE, Key::Delete),
         )
     });
     if left && pos > 0 {
@@ -326,7 +339,7 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
     }
     let shot = v.all[vw.list[pos]].clone();
     let mut fs_toggle = None;
-    let list = vw.list.clone();
+    let mut list = vw.list.clone();
     let screen = ctx.content_rect();
     egui::Area::new(egui::Id::unique("shot_viewer")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let (rect, bg) = ui.allocate_exact_size(screen.size(), Sense::click());
@@ -364,6 +377,10 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
             if ui.button("Open").clicked() {
                 let _ = open::that_detached(&shot.path);
             }
+            // Steam's shots stay Steam's: it re-syncs them from the cloud.
+            let b = ui.add_enabled(!shot.steam, egui::Button::new("Delete"));
+            let b = if shot.steam { b.on_disabled_hover_text("Delete Steam screenshots in Steam") } else { b.on_hover_text("Moves it to the Recycle Bin (Del)") };
+            del |= b.clicked();
         });
         // Arrows on the sides.
         for (go, at, label) in [(pos > 0, Align2::LEFT_CENTER, "‹"), (pos + 1 < n, Align2::RIGHT_CENTER, "›")] {
@@ -389,6 +406,20 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
             }
         }
     });
+    if del && !shot.steam {
+        match recycle(&shot) {
+            Ok(()) => {
+                let gone = list.remove(pos);
+                let mut all = (*v.all).clone();
+                all.remove(gone);
+                v.all = Arc::new(all);
+                list.iter_mut().filter(|i| **i > gone).for_each(|i| *i -= 1);
+                close |= list.is_empty();
+                pos = pos.min(list.len().saturating_sub(1));
+            }
+            Err(e) => log::warn!("deleting {}: {e:#}", shot.path.display()),
+        }
+    }
     if let Some(on) = fs_toggle {
         v.full_screen = on;
     }
@@ -397,6 +428,34 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
         v.full_screen = false;
     }
     v.viewer = (!close).then_some(Viewer { list, pos });
+}
+
+/// Sends a Gamut shot and its preview to the Recycle Bin.
+fn recycle(shot: &Shot) -> anyhow::Result<()> {
+    let mut files = vec![shot.path.clone()];
+    files.extend(shot.thumb.clone());
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::UI::Shell::*;
+        // Double-null-terminated list of paths.
+        let mut from: Vec<u16> = files.iter().flat_map(|f| f.as_os_str().encode_wide().chain([0])).collect();
+        from.push(0);
+        let mut op = SHFILEOPSTRUCTW {
+            wFunc: FO_DELETE,
+            pFrom: windows::core::PCWSTR(from.as_ptr()),
+            fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI).0 as u16,
+            ..Default::default()
+        };
+        // SAFETY: `from` outlives the call.
+        let r = unsafe { SHFileOperationW(&mut op) };
+        anyhow::ensure!(r == 0 && !op.fAnyOperationsAborted.as_bool(), "Recycle Bin refused (code {r})");
+    }
+    #[cfg(not(windows))]
+    for f in files {
+        std::fs::remove_file(f)?;
+    }
+    Ok(())
 }
 
 /// Explorer with the file selected (`/select,"path"` must reach it unquoted as a whole).
