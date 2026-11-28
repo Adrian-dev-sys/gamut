@@ -46,7 +46,7 @@ fn luma(c: [f32; 3]) -> f32 {
 }
 
 /// HDR → SDR. The brightest channel goes through BT.2390's roll-off in the PQ domain, from the frame's peak
-/// down to Windows' SDR white (255), averaged with each channel rolled off on its own: the first keeps hue and
+/// down to a white between Windows' SDR white and the peak (255), averaged with each channel rolled off on its own: the first keeps hue and
 /// saturation (no pastel skies), the second lets bright colors lighten like they do on the HDR screen (no red skin).
 pub struct Tonemap {
     white: f32,
@@ -58,6 +58,8 @@ pub struct Tonemap {
 impl Tonemap {
     /// `white` and `peak` in nits.
     pub fn new(white: f32, peak: f32) -> Tonemap {
+        // 255 = geometric mean of SDR white and the peak: HDR-retrofit scenes sit far above SDR white (tuned on XC2 + Special K).
+        let white = (white * peak.max(white)).sqrt();
         let src = pq(peak.max(white));
         let target = pq(white) / src;
         Tonemap { white, src, target, knee: (1.5 * target - 0.5).max(0.0) }
@@ -290,11 +292,12 @@ mod tests {
         assert_eq!(tm.map([n(1000.0); 3]), [255; 3]);
         assert!(tm.map([n(500.0); 3])[0] < 255);
         assert!(tm.map([n(260.0); 3])[0] < tm.map([n(500.0); 3])[0]);
-        assert_eq!(tm.map([n(52.0); 3]), [124; 3]);
+        let mid = tm.map([n(52.0); 3])[0];
+        assert!((80..100).contains(&mid), "{mid}");
         let sky = tm.map([n(150.0), n(400.0), n(900.0)]);
         assert!(sky[2] >= 250 && sky[0] < 180 && sky[0] < sky[1], "{sky:?}");
         let g = tm.map([n(-20.0), n(100.0), n(20.0)]);
-        assert!(g[1] > 150 && g[2] > 0, "{g:?}");
+        assert!(g[1] > 100 && g[2] > 0, "{g:?}");
         assert_eq!(tm.map([-1.0, 0.0, 0.0]), [0, 0, 0]);
         assert!((frame_peak((0..1000).map(|i| if i == 999 { 5000.0 } else { 100.0 })) - 100.0).abs() < 10.0);
     }

@@ -35,6 +35,8 @@ pub struct Config {
     pub no_ach_popup: bool,
     /// F12 doesn't take screenshots of non-Steam games.
     pub no_screenshot_key: bool,
+    /// No shutter sound when a screenshot is taken.
+    pub no_screenshot_sound: bool,
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,

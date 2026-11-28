@@ -92,7 +92,10 @@ impl Workers {
         w.spawn_achievements(ach_rx);
         {
             let (cfg, tx, ctx) = (w.cfg.clone(), w.tx.clone(), w.ctx.clone());
-            crate::shots::start(w.paths.clone(), w.running.clone(), move || !cfg.read().unwrap().no_screenshot_key, move |_| {
+            crate::shots::start(w.paths.clone(), w.running.clone(), move || {
+                let c = cfg.read().unwrap();
+                (!c.no_screenshot_key, !c.no_screenshot_sound)
+            }, move |_| {
                 let _ = tx.send(Event::ShotTaken);
                 ctx.request_repaint();
             });

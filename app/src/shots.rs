@@ -15,16 +15,17 @@ pub fn trigger() {
     }
 }
 
-/// Starts the hook; `on_saved` runs after each saved shot. `enabled` is read at each press.
-pub fn start(paths: Paths, running: Arc<Mutex<HashSet<i64>>>, enabled: impl Fn() -> bool + Send + 'static, on_saved: impl Fn(i64) + Send + 'static) {
+/// Starts the hook; `on_saved` runs after each saved shot. `settings` (enabled, sound) is read at each press.
+pub fn start(paths: Paths, running: Arc<Mutex<HashSet<i64>>>, settings: impl Fn() -> (bool, bool) + Send + 'static, on_saved: impl Fn(i64) + Send + 'static) {
     let (tx, rx) = channel::<()>();
     if KEY.set(tx).is_err() {
         return;
     }
     std::thread::spawn(move || {
         for () in rx {
-            if enabled() {
-                if let Some(id) = take(&paths, &running) {
+            let (on, sound) = settings();
+            if on {
+                if let Some(id) = take(&paths, &running, sound) {
                     on_saved(id);
                 }
             }
@@ -49,7 +50,7 @@ fn game_for(exe: &Path, games: &[Game], running: &HashSet<i64>) -> Option<Game> 
 }
 
 /// Takes and saves one screenshot; Some(game id) when saved.
-fn take(paths: &Paths, running: &Arc<Mutex<HashSet<i64>>>) -> Option<i64> {
+fn take(paths: &Paths, running: &Arc<Mutex<HashSet<i64>>>, sound: bool) -> Option<i64> {
     let (hwnd, exe) = sys::foreground()?;
     let name = exe.file_name()?.to_string_lossy().to_lowercase();
     if name == "gamut.exe" || exe.to_string_lossy().to_lowercase().contains(r"\steamapps\common\") {
@@ -65,6 +66,9 @@ fn take(paths: &Paths, running: &Arc<Mutex<HashSet<i64>>>) -> Option<i64> {
         return None;
     }
     let shot = crate::capture::grab(hwnd).and_then(|img| {
+        if sound {
+            sys::shutter();
+        }
         let path = screenshots::save(&img, &screenshots::root().join(screenshots::folder_name(&g, &games)))?;
         Ok((img, path))
     });
@@ -94,6 +98,7 @@ fn take(paths: &Paths, running: &Arc<Mutex<HashSet<i64>>>) -> Option<i64> {
 #[cfg(not(windows))]
 mod sys {
     pub fn hook() {}
+    pub fn shutter() {}
     pub fn foreground() -> Option<(isize, std::path::PathBuf)> {
         None
     }
@@ -109,6 +114,47 @@ mod sys {
     pub use gamut_core::screenshots::foreground;
 
     static DOWN: AtomicBool = AtomicBool::new(false);
+
+    /// A short synthesized shutter click (two decaying noise bursts), played without waiting.
+    pub fn shutter() {
+        use windows_sys::Win32::Media::Audio::*;
+        static WAV: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        let wav = WAV.get_or_init(|| {
+            const RATE: u32 = 44_100;
+            let (mut seed, mut prev) = (0x1234_5678u32, 0f32);
+            let pcm: Vec<i16> = (0..RATE * 14 / 100)
+                .map(|i| {
+                    let t = i as f32 / RATE as f32;
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let noise = (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+                    let env = |at: f32, len: f32| if t >= at { (-(t - at) / len).exp() } else { 0.0 };
+                    // High-passed noise sounds like a click, not a hiss.
+                    let v = noise * (env(0.0, 0.008) + 0.7 * env(0.06, 0.012));
+                    let out = v - prev * 0.6;
+                    prev = v;
+                    (out * 0.3 * i16::MAX as f32) as i16
+                })
+                .collect();
+            let data = (pcm.len() * 2) as u32;
+            let mut w = Vec::with_capacity(44 + data as usize);
+            w.extend(b"RIFF");
+            w.extend((36 + data).to_le_bytes());
+            w.extend(b"WAVEfmt ");
+            w.extend(16u32.to_le_bytes());
+            w.extend(1u16.to_le_bytes());
+            w.extend(1u16.to_le_bytes());
+            w.extend(RATE.to_le_bytes());
+            w.extend((RATE * 2).to_le_bytes());
+            w.extend(2u16.to_le_bytes());
+            w.extend(16u16.to_le_bytes());
+            w.extend(b"data");
+            w.extend(data.to_le_bytes());
+            pcm.iter().for_each(|s| w.extend(s.to_le_bytes()));
+            w
+        });
+        // SAFETY: the WAV lives for the whole program, as SND_ASYNC needs.
+        unsafe { PlaySoundW(wav.as_ptr().cast(), std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
+    }
 
     /// Only compares the key and hands off: a slow hook lags all typing and Windows drops it.
     unsafe extern "system" fn proc_(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {

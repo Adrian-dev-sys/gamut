@@ -1998,6 +1998,10 @@ impl GamutApp {
                         if ui.checkbox(&mut key, "F12 takes screenshots of non-Steam games (Steam games use Steam's key)").changed() {
                             s.no_screenshot_key = !key;
                         }
+                        let mut sound = !s.no_screenshot_sound;
+                        if ui.add_enabled(key, egui::Checkbox::new(&mut sound, "Play a shutter sound when a screenshot is taken")).changed() {
+                            s.no_screenshot_sound = !sound;
+                        }
                         ui.label(theme::hint("The tray icon opens Gamut, big screen, or one of your recently played games."));
                         ui.add_space(12.0);
                         ui.separator();
