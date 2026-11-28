@@ -2083,6 +2083,17 @@ impl GamutApp {
                         ui.label(theme::hint("Steam's Favorites (as \"To play\") and your own Steam collections, updated on every scan. Steam decides which Steam games are in them; games from elsewhere you add in Gamut stay."));
                         ui.add_space(12.0);
                         ui.separator();
+                        theme::section(ui, "Folder scanners");
+                        let mut auto = !s.no_auto_scan;
+                        if ui.checkbox(&mut auto, "Scan folders when Gamut starts").changed() {
+                            s.no_auto_scan = !auto;
+                        }
+                        ui.label(theme::hint(
+                            "After the Steam and store sync, each scanner (top bar → Scan folders) adds new games on its own. \
+                             Turn it off per scanner there; games you left unticked stay out.",
+                        ));
+                        ui.add_space(12.0);
+                        ui.separator();
                         theme::section(ui, "SteamGridDB");
                         egui::Grid::new("sg").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                             ui.label("API key");

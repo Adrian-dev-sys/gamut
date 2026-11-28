@@ -21,6 +21,9 @@ pub struct Scanner {
     pub ignored: Vec<String>,
     /// Extra tags by folder name, one rule per line: `recomp = Recompilation` (`*`/`?` allowed, else "contains").
     pub tag_rules: String,
+    /// Only scanned from the dialog, not when Gamut starts.
+    #[serde(default)]
+    pub manual: bool,
     /// Other scanners' folders inside this one (`key` form), skipped; filled in before a scan.
     #[serde(skip)]
     pub nested: Vec<String>,
@@ -40,6 +43,7 @@ impl Default for Scanner {
             tags: String::new(),
             ignored: Vec::new(),
             tag_rules: String::new(),
+            manual: false,
             nested: Vec::new(),
         }
     }
@@ -106,6 +110,36 @@ const PART_DIRS: &[&str] = &[
 pub fn nested_dirs(dir: &str, all: &[Scanner]) -> Vec<String> {
     let base = format!("{}\\", key(Path::new(dir.trim())).trim_end_matches('\\'));
     all.iter().map(|o| key(Path::new(o.dir.trim())).trim_end_matches('\\').to_string()).filter(|k| k.starts_with(&base)).collect()
+}
+
+/// Runs every automatic scanner and returns what to add per scanner: new, not skipped before, with a file.
+/// `known` is extended as it goes, so overlapping scanners don't add a game twice.
+pub fn auto_scan(all: &[Scanner], known: &mut HashSet<String>) -> Vec<(Scanner, Vec<(String, String, Option<String>, String)>)> {
+    let mut out = Vec::new();
+    for s in all.iter().filter(|s| !s.manual && !s.dir.trim().is_empty() && Path::new(s.dir.trim()).is_dir()) {
+        let s = Scanner { nested: nested_dirs(&s.dir, all), ..s.clone() };
+        let found = match scan(&s, known) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("scanner \"{}\": {e:#}", s.name);
+                continue;
+            }
+        };
+        let rows: Vec<_> = found
+            .into_iter()
+            .filter(|c| !c.existing && !c.ignored)
+            .filter_map(|c| {
+                let exe = c.exes.first()?;
+                known.insert(key(exe));
+                known.insert(key(&c.folder));
+                Some((c.name, exe.display().to_string(), exe.parent().map(|p| p.display().to_string()), c.tags))
+            })
+            .collect();
+        if !rows.is_empty() {
+            out.push((s, rows));
+        }
+    }
+    out
 }
 
 /// Lists candidates under `s.dir`. `known` holds lowercased exe paths already in the library.
@@ -469,5 +503,30 @@ mod tests {
         assert!(c[0].existing && !c[2].existing);
         assert_eq!(c[2].exes.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod local {
+    /// What a startup scan would add: `GAMUT_TEST_DB=<copy> GAMUT_TEST_CFG=<config.toml> cargo test -p gamut-core -- --ignored auto_scan_dry_run --nocapture`
+    #[test]
+    #[ignore]
+    fn auto_scan_dry_run() {
+        let cfg = crate::Config::load(std::path::Path::new(&std::env::var("GAMUT_TEST_CFG").unwrap()));
+        let lib = crate::Library::open(std::path::Path::new(&std::env::var("GAMUT_TEST_DB").unwrap())).unwrap();
+        let mut known = lib
+            .all()
+            .unwrap()
+            .iter()
+            .flat_map(|g| [g.exe.clone(), g.install_dir.clone()])
+            .flatten()
+            .map(|p| super::key(std::path::Path::new(&p)))
+            .collect();
+        for (s, rows) in super::auto_scan(&cfg.scanners, &mut known) {
+            println!("{} ({}): {}", s.name, s.dir, rows.len());
+            for r in rows {
+                println!("  {} | {}", r.0, r.1);
+            }
+        }
     }
 }

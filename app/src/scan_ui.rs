@@ -210,6 +210,16 @@ impl ScanDialog {
                             .desired_width(w),
                     );
                     ui.end_row();
+                    ui.label("");
+                    let mut auto = !s.manual;
+                    if ui
+                        .checkbox(&mut auto, "Scan when Gamut starts")
+                        .on_hover_text("New games are added on their own, with the main file Gamut guesses. Games you left unticked here stay out.")
+                        .changed()
+                    {
+                        s.manual = !auto;
+                    }
+                    ui.end_row();
                 });
                 ui.label(theme::hint(
                     "Each folder inside counts as one game, however deep its files are; its main file is guessed \

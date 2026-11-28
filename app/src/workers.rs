@@ -497,6 +497,11 @@ impl Scanner {
             for s in c.stores.iter().filter_map(|k| Store::from_key(k)) {
                 sync_store(&paths, s, &tx, quiet);
             }
+            // Once per run, after Steam and the stores, so games they know aren't added again.
+            static FOLDERS_DONE: AtomicBool = AtomicBool::new(false);
+            if !c.no_auto_scan && !FOLDERS_DONE.swap(true, Ordering::SeqCst) {
+                scan_folders(&paths, &c, &tx);
+            }
             scanning.store(false, Ordering::SeqCst);
             sizes(&paths, &tx, &ctx);
             let _ = kc.send(());
@@ -1192,5 +1197,35 @@ fn sync_store(paths: &Paths, store: Store, tx: &Sender<Event>, quiet: bool) {
         Err(e) => {
             let _ = tx.send(Event::Error(format!("{} sync failed: {e:#}", store.name())));
         }
+    }
+}
+
+/// Startup folder scan: adds new games from the automatic scanners and says which.
+fn scan_folders(paths: &Paths, c: &Config, tx: &Sender<Event>) {
+    let r = Library::open(&paths.db).and_then(|mut lib| {
+        let mut known: HashSet<String> = lib
+            .all()?
+            .iter()
+            .flat_map(|g| [g.exe.as_deref(), g.install_dir.as_deref()])
+            .flatten()
+            .map(|p| gamut_core::scanner::key(std::path::Path::new(p)))
+            .collect();
+        let mut names = Vec::new();
+        for (s, rows) in gamut_core::scanner::auto_scan(&c.scanners, &mut known) {
+            lib.add_scanned(&rows, &s.platform)?;
+            log::info!("scanner \"{}\" (startup): added {} games from {}", s.name, rows.len(), s.dir);
+            names.extend(rows.into_iter().map(|r| r.0));
+        }
+        anyhow::Ok(names)
+    });
+    match r {
+        Ok(names) if !names.is_empty() => {
+            let _ = tx.send(Event::LibraryChanged);
+            let shown = names.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+            let more = if names.len() > 5 { format!(" and {} more", names.len() - 5) } else { String::new() };
+            let _ = tx.send(Event::Info(format!("Folder scan added {} games: {shown}{more}.", names.len())));
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("startup folder scan failed: {e:#}"),
     }
 }

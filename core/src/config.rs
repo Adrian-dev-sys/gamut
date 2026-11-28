@@ -57,6 +57,8 @@ pub struct Config {
     pub backup: crate::backup::Settings,
     /// Stores kept in sync (`Store::key`), turned on by their first review.
     pub stores: Vec<String>,
+    /// Folder scanners don't run when Gamut starts.
+    pub no_auto_scan: bool,
     /// Folder scanners (arrays of tables come last in TOML).
     pub scanners: Vec<crate::scanner::Scanner>,
 }

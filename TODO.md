@@ -7,7 +7,8 @@
 ## More sources
 - [x] **Folder scanners** – saved scanners, review with checkboxes, best-guess exe and name, metadata fetched after adding
 - [x] Scanner tweaks: no depth limit, platform dropdown, tag suggestions, unticked results remembered, new games shown first
-- [ ] Scanners step 2: automatic rescans; emulator scanners
+- [x] Scanners step 2: automatic rescans (on startup)
+- [ ] Emulator scanners
 - [x] GOG (GOG Galaxy / installed games)
 - [ ] Epic Games Store
 - [ ] Xbox / Microsoft Store (PC Game Pass)

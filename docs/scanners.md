@@ -49,4 +49,10 @@ Find games in a folder and add them as custom entries (`core/src/scanner.rs`, UI
 - Unticked new games go to the scanner's `ignored` list (folder keys) and start unticked and hidden next time
   ("Show N skipped before"); ticking one later removes it from the list.
 - After adding, the grid switches to Recently added with filters/search cleared, so the new games are on top.
-- Not yet: automatic rescans.
+
+## Startup scan
+- Once per run, after the startup Steam scan and store syncs (`workers::scan_folders`, `scanner::auto_scan`), so Steam/GOG folders are already known.
+- Every scanner without `manual` (dialog: "Scan when Gamut starts") adds what its review would show ticked: new, not in `ignored`, with a file; main file = the guess. `known` grows as it goes, so overlapping scanners don't add twice.
+- Toast names the added games; they then get metadata and covers like any added game.
+- Settings → Library → "Scan folders when Gamut starts" (`no_auto_scan`) turns it off for all.
+- Dry run: `GAMUT_TEST_DB=<copy> GAMUT_TEST_CFG=<config.toml> cargo test -p gamut-core -- --ignored auto_scan_dry_run --nocapture`.
