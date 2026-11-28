@@ -29,19 +29,90 @@ fn srgb(v: f32) -> u8 {
     (e * 255.0 + 0.5) as u8
 }
 
-/// scRGB (linear, 1.0 = 80 nits) → sRGB 8-bit. `white` is SDR white in scRGB units. The brightest channel
-/// rolls off smoothly above a knee instead of clipping; scaling all three keeps hue and saturation.
-pub fn tonemap(rgb: [f32; 3], white: f32) -> [u8; 3] {
-    const KNEE: f32 = 0.75;
-    let c = rgb.map(|v| (v / white).max(0.0));
-    let m = c[0].max(c[1]).max(c[2]);
-    let c = if m > KNEE {
-        let mm = KNEE + (1.0 - KNEE) * (1.0 - (-(m - KNEE) / (1.0 - KNEE)).exp());
-        c.map(|v| v * mm / m)
-    } else {
-        c
-    };
-    c.map(srgb)
+fn pq(nits: f32) -> f32 {
+    const M1: f32 = 0.159_301_76;
+    const M2: f32 = 78.843_75;
+    let y = (nits / 10_000.0).clamp(0.0, 1.0).powf(M1);
+    ((0.835_937_5 + 18.851_563 * y) / (1.0 + 18.6875 * y)).powf(M2)
+}
+
+fn pq_nits(e: f32) -> f32 {
+    let p = e.clamp(0.0, 1.0).powf(1.0 / 78.843_75);
+    ((p - 0.835_937_5).max(0.0) / (18.851_563 - 18.6875 * p)).powf(1.0 / 0.159_301_76) * 10_000.0
+}
+
+fn luma(c: [f32; 3]) -> f32 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/// HDR → SDR. Luminance goes through BT.2390's roll-off in the PQ domain, from the frame's peak down to
+/// Windows' SDR white (which becomes 255); colors keep their hue, and ones past the sRGB gamut or past white
+/// are desaturated toward their own brightness instead of clipped, so nothing turns neon or flat.
+pub struct Tonemap {
+    white: f32,
+    src: f32,
+    target: f32,
+    knee: f32,
+}
+
+impl Tonemap {
+    /// `white` and `peak` in nits.
+    pub fn new(white: f32, peak: f32) -> Tonemap {
+        let src = pq(peak.max(white));
+        let target = pq(white) / src;
+        Tonemap { white, src, target, knee: (1.5 * target - 0.5).max(0.0) }
+    }
+
+    fn eetf(&self, nits: f32) -> f32 {
+        let e = (pq(nits) / self.src).min(1.0);
+        if e <= self.knee || self.target >= 1.0 {
+            return nits.min(pq_nits(self.src));
+        }
+        let (ks, t) = (self.knee, (e - self.knee) / (1.0 - self.knee));
+        let (t2, t3) = (t * t, t * t * t);
+        let e2 = (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * self.target;
+        pq_nits(e2 * self.src)
+    }
+
+    /// One scRGB pixel (linear, 1.0 = 80 nits).
+    pub fn map(&self, c: [f32; 3]) -> [u8; 3] {
+        let mut n = c.map(|v| v * 80.0);
+        let y = luma(n);
+        if y <= 0.0 {
+            return [0; 3];
+        }
+        let lo = n[0].min(n[1]).min(n[2]);
+        if lo < 0.0 {
+            n = n.map(|v| y + (v - y) * y / (y - lo));
+        }
+        let y2 = self.eetf(y);
+        n = n.map(|v| v * y2 / y);
+        let hi = n[0].max(n[1]).max(n[2]);
+        if hi > self.white {
+            let s = ((self.white - y2) / (hi - y2)).clamp(0.0, 1.0);
+            n = n.map(|v| y2 + (v - y2) * s);
+        }
+        n.map(|v| srgb(v / self.white))
+    }
+}
+
+/// The frame's highlight level: 99.9th percentile of luminance (nits), from a log histogram.
+pub fn frame_peak(lum: impl Iterator<Item = f32>) -> f32 {
+    let mut hist = [0u32; 256];
+    let mut n = 0u32;
+    for l in lum {
+        let b = ((l.max(0.01).log2() + 7.0) * 12.0).clamp(0.0, 255.0) as usize;
+        hist[b] += 1;
+        n += 1;
+    }
+    let mut left = (n as f32 * 0.001) as u32;
+    for b in (0..256).rev() {
+        if hist[b] > left {
+            return 2f32.powf((b + 1) as f32 / 12.0 - 7.0);
+        }
+        left -= hist[b];
+    }
+    0.0
 }
 
 mod dxgi {
@@ -84,7 +155,9 @@ mod dxgi {
             D3D11CreateDevice(&adapter, D3D_DRIVER_TYPE_UNKNOWN, Default::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut ctx))?;
             let (device, ctx) = (device.context("no device")?, ctx.context("no context")?);
             // HDR (PQ / BT.2020) output: ask for the FP16 desktop and tone-map; SDR: plain 8-bit, untouched.
-            let hdr_on = output.cast::<IDXGIOutput6>().ok().and_then(|o| o.GetDesc1().ok()).is_some_and(|d| d.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+            let desc1 = output.cast::<IDXGIOutput6>().ok().and_then(|o| o.GetDesc1().ok());
+            let hdr_on = desc1.is_some_and(|d| d.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+            let display_peak = desc1.map_or(0.0, |d| d.MaxLuminance);
             let formats: &[DXGI_FORMAT] = if hdr_on { &[DXGI_FORMAT_R16G16B16A16_FLOAT] } else { &[DXGI_FORMAT_B8G8R8A8_UNORM] };
             let out5: IDXGIOutput5 = output.cast()?;
             let dup = out5.DuplicateOutput1(&device, 0, formats)?;
@@ -121,16 +194,27 @@ mod dxgi {
                 ctx.Unmap(&staging, 0);
                 bail!("unexpected desktop format {:?}", td.Format);
             }
-            let white = if hdr { sdr_white(&desc.DeviceName) } else { 1.0 };
-            let mut px = vec![0u8; w * h * 4];
             let base = map.pData as *const u8;
+            let pixel = |x: usize, y: usize| -> [f32; 3] {
+                let p = base.add((y0 + y) * map.RowPitch as usize + (x0 + x) * 8) as *const u16;
+                [f16(*p), f16(*p.add(1)), f16(*p.add(2))]
+            };
+            let (white, peak) = if hdr {
+                let white = sdr_white(&desc.DeviceName) * 80.0;
+                let frame = frame_peak((0..h).step_by(2).flat_map(|y| (0..w).step_by(2).map(move |x| (x, y))).map(|(x, y)| luma(pixel(x, y)) * 80.0));
+                // Games master to the display's peak; never beyond it.
+                (white, if display_peak > white { frame.min(display_peak) } else { frame })
+            } else {
+                (80.0, 80.0)
+            };
+            let tm = Tonemap::new(white, peak);
+            let mut px = vec![0u8; w * h * 4];
             for y in 0..h {
                 let row = base.add((y0 + y) * map.RowPitch as usize);
                 for x in 0..w {
                     let o = (y * w + x) * 4;
                     let rgb = if hdr {
-                        let p = row.add((x0 + x) * 8) as *const u16;
-                        tonemap([f16(*p), f16(*p.add(1)), f16(*p.add(2))], white)
+                        tm.map(pixel(x, y))
                     } else {
                         let p = row.add((x0 + x) * 4);
                         [*p.add(2), *p.add(1), *p]
@@ -142,7 +226,7 @@ mod dxgi {
             if w < 16 || h < 16 {
                 bail!("the window is off this monitor");
             }
-            log::info!("screenshot: {w}x{h}{}", if hdr { format!(", HDR tone-mapped at SDR white {:.0} nits", white * 80.0) } else { String::new() });
+            log::info!("screenshot: {w}x{h}{}", if hdr { format!(", HDR tone-mapped: SDR white {white:.0} nits, frame peak {peak:.0} nits (display {display_peak:.0})") } else { String::new() });
             image::RgbaImage::from_raw(w as u32, h as u32, px).context("bad size")
         }
     }
@@ -200,13 +284,23 @@ mod tests {
     fn tonemaps_hdr_to_sdr() {
         assert_eq!(f16(0x3c00), 1.0);
         assert_eq!(f16(0xc000), -2.0);
-        // SDR white maps near white, mid grey stays, highlights roll off below clipping.
-        assert!(tonemap([2.5, 2.5, 2.5], 2.5)[0] >= 240);
-        assert_eq!(tonemap([0.5, 0.5, 0.5], 2.5), [124, 124, 124]);
-        let hi = tonemap([25.0, 25.0, 25.0], 2.5);
-        assert!(hi[0] >= 254);
-        let bright_red = tonemap([10.0, 0.0, 0.0], 2.5);
-        assert_eq!(bright_red, [255, 0, 0]);
-        assert_eq!(tonemap([-1.0, 0.0, 0.0], 1.0), [0, 0, 0]);
+        assert!((pq_nits(pq(203.0)) - 203.0).abs() < 0.5);
+        let n = |nits: f32| nits / 80.0;
+        // No highlights above SDR white: SDR white is 255, darker values are untouched.
+        let flat = Tonemap::new(260.0, 260.0);
+        assert_eq!(flat.map([n(260.0); 3]), [255; 3]);
+        assert_eq!(flat.map([n(52.0); 3]), [124; 3]);
+        // 1000-nit highlights roll into white; shadows and midtones stay; out-of-gamut doesn't go black.
+        let tm = Tonemap::new(260.0, 1000.0);
+        assert_eq!(tm.map([n(1000.0); 3]), [255; 3]);
+        assert!(tm.map([n(500.0); 3])[0] < 255);
+        assert!(tm.map([n(260.0); 3])[0] < tm.map([n(500.0); 3])[0]);
+        assert_eq!(tm.map([n(52.0); 3]), [124; 3]);
+        let sky = tm.map([n(150.0), n(400.0), n(900.0)]);
+        assert!(sky[2] == 255 && sky[0] > 100, "{sky:?}");
+        let g = tm.map([n(-20.0), n(100.0), n(20.0)]);
+        assert!(g[1] > 150 && g[2] > 0, "{g:?}");
+        assert_eq!(tm.map([-1.0, 0.0, 0.0]), [0, 0, 0]);
+        assert!((frame_peak((0..1000).map(|i| if i == 999 { 5000.0 } else { 100.0 })) - 100.0).abs() < 10.0);
     }
 }

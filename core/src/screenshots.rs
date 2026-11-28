@@ -101,8 +101,8 @@ pub fn index(games: &[Game]) -> Vec<Shot> {
     out
 }
 
-/// Saves `img` as JPEG (quality 92: ~10x smaller than PNG, no visible loss) in `dir`, named by local date and
-/// time, with a 640 px preview in `.thumbs`.
+/// Saves `img` as lossy WebP (quality 88, sharp YUV: about half a good JPEG, no visible loss) in `dir`, named by
+/// local date and time, with a 640 px JPEG preview in `.thumbs`.
 pub fn save(img: &image::RgbaImage, dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(dir.join(".thumbs")).with_context(|| format!("creating {}", dir.display()))?;
     let t = crate::now() + crate::utc_offset();
@@ -110,18 +110,23 @@ pub fn save(img: &image::RgbaImage, dir: &Path) -> Result<PathBuf> {
     let (y, m, d) = civil(days);
     let mut stem = format!("{y:04}-{m:02}-{d:02} {:02}-{:02}-{:02}", secs / 3600, secs / 60 % 60, secs % 60);
     let mut n = 2;
-    while dir.join(format!("{stem}.jpg")).exists() {
+    while dir.join(format!("{stem}.webp")).exists() {
         stem = format!("{} ({n})", stem.split(" (").next().unwrap_or(&stem));
         n += 1;
     }
-    let path = dir.join(format!("{stem}.jpg"));
+    let path = dir.join(format!("{stem}.webp"));
     let rgb = image::DynamicImage::ImageRgba8(img.clone()).to_rgb8();
     let jpeg = |p: &Path, im: &image::RgbImage, q: u8| -> Result<()> {
         let f = std::io::BufWriter::new(std::fs::File::create(p)?);
         image::codecs::jpeg::JpegEncoder::new_with_quality(f, q).encode_image(im)?;
         Ok(())
     };
-    jpeg(&path, &rgb, 92).context("saving the screenshot")?;
+    let mut cfg = webp::WebPConfig::new().map_err(|_| anyhow::anyhow!("WebP setup failed"))?;
+    (cfg.quality, cfg.method, cfg.use_sharp_yuv) = (88.0, 4, 1);
+    let data = webp::Encoder::from_rgb(rgb.as_raw(), rgb.width(), rgb.height())
+        .encode_advanced(&cfg)
+        .map_err(|e| anyhow::anyhow!("WebP encoding failed: {e:?}"))?;
+    std::fs::write(&path, &*data).context("saving the screenshot")?;
     let w = rgb.width().min(640);
     let thumb = image::imageops::resize(&rgb, w, (rgb.height() as u64 * w as u64 / rgb.width() as u64).max(1) as u32, image::imageops::FilterType::Triangle);
     jpeg(&dir.join(".thumbs").join(format!("{stem}.jpg")), &thumb, 85)?;
@@ -221,6 +226,17 @@ pub fn capture(hwnd: isize) -> Result<image::RgbaImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saves_webp_with_preview() {
+        let dir = std::env::temp_dir().join(format!("gamut-shot-{}", std::process::id()));
+        let img = image::RgbaImage::from_fn(800, 450, |x, y| image::Rgba([(x % 256) as u8, (y % 256) as u8, 128, 255]));
+        let p = save(&img, &dir).unwrap();
+        assert_eq!(p.extension().unwrap(), "webp");
+        assert_eq!(image::image_dimensions(&p).unwrap(), (800, 450));
+        assert_eq!(image::image_dimensions(dir.join(".thumbs").join(format!("{}.jpg", p.file_stem().unwrap().to_string_lossy()))).unwrap(), (640, 360));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn folder_names_keep_duplicates_apart() {

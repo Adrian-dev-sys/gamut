@@ -25,6 +25,21 @@ pub struct ShotsView {
     pub viewer: Option<Viewer>,
     /// The viewer put the window in full screen (undone when it closes).
     full_screen: bool,
+    pub filter: Filter,
+}
+
+/// The all-games tab's filters.
+#[derive(Default, Clone, PartialEq)]
+pub struct Filter {
+    pub search: String,
+    /// 0 all, 1 Gamut (F12), 2 Steam.
+    pub source: u8,
+    /// "" = any.
+    pub platform: String,
+    /// 0 all time, else the last N days.
+    pub days: i64,
+    /// 0 latest shot, 1 name, 2 most shots.
+    pub sort: u8,
 }
 
 pub struct Viewer {
@@ -55,7 +70,7 @@ impl ShotsView {
                 }
             });
         }
-        ShotsView { all: Arc::new(Vec::new()), tex: HashMap::new(), req, done, frame: 0, viewer: None, full_screen: false }
+        ShotsView { all: Arc::new(Vec::new()), tex: HashMap::new(), req, done, frame: 0, viewer: None, full_screen: false, filter: Filter::default() }
     }
 
     pub fn count(&self, game: i64) -> usize {
@@ -173,23 +188,77 @@ pub fn game_tab(ui: &mut Ui, v: &mut ShotsView, game: &Game) {
 
 /// Every game with screenshots, the most recent first; one row of the newest per game.
 pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
+    let f = &mut v.filter;
+    let mut platforms: Vec<&str> = games.iter().filter_map(|g| g.platform.as_deref()).collect();
+    platforms.sort_unstable();
+    platforms.dedup();
+    ui.horizontal(|ui| {
+        theme::section(ui, "Screenshots");
+        ui.add_space(8.0);
+        ui.add(egui::TextEdit::singleline(&mut f.search).hint_text("Search games").desired_width(220.0));
+        let pick = |ui: &mut Ui, id: &str, cur: &mut u8, opts: &[&str]| {
+            egui::ComboBox::from_id_salt(id).selected_text(opts[*cur as usize]).show_ui(ui, |ui| {
+                for (i, o) in opts.iter().enumerate() {
+                    ui.selectable_value(cur, i as u8, *o);
+                }
+            });
+        };
+        pick(ui, "shot_src", &mut f.source, &["All sources", "Gamut (F12)", "Steam"]);
+        let plat = if f.platform.is_empty() { "All platforms" } else { f.platform.as_str() };
+        egui::ComboBox::from_id_salt("shot_plat").selected_text(plat).width(170.0).show_ui(ui, |ui| {
+            ui.selectable_value(&mut f.platform, String::new(), "All platforms");
+            for p in &platforms {
+                ui.selectable_value(&mut f.platform, p.to_string(), *p);
+            }
+        });
+        let periods = [(0, "All time"), (7, "Last 7 days"), (30, "Last 30 days"), (365, "Last year")];
+        let label = periods.iter().find(|p| p.0 == f.days).map_or("All time", |p| p.1);
+        egui::ComboBox::from_id_salt("shot_days").selected_text(label).show_ui(ui, |ui| {
+            for (d, l) in periods {
+                ui.selectable_value(&mut f.days, d, l);
+            }
+        });
+        pick(ui, "shot_sort", &mut f.sort, &["Latest first", "By name", "Most screenshots"]);
+        if *f != Filter::default() && ui.button("Clear").clicked() {
+            *f = Filter::default();
+        }
+    });
+    let f = v.filter.clone();
+    let since = if f.days > 0 { gamut_core::now() - f.days * 86_400 } else { i64::MIN };
+    let words: Vec<String> = f.search.to_lowercase().split_whitespace().map(String::from).collect();
+    let shown: HashMap<i64, &Game> = games
+        .iter()
+        .filter(|g| !g.hidden)
+        .filter(|g| f.platform.is_empty() || g.platform.as_deref() == Some(f.platform.as_str()))
+        .filter(|g| {
+            let n = g.name.to_lowercase();
+            words.iter().all(|w| n.contains(w.as_str()))
+        })
+        .map(|g| (g.id, g))
+        .collect();
     let mut order: Vec<i64> = Vec::new();
     let mut by_game: HashMap<i64, Vec<usize>> = HashMap::new();
     for (i, s) in v.all.iter().enumerate() {
+        if !shown.contains_key(&s.game_id) || s.taken < since || (f.source == 1 && s.steam) || (f.source == 2 && !s.steam) {
+            continue;
+        }
         by_game.entry(s.game_id).or_insert_with(|| {
             order.push(s.game_id);
             Vec::new()
         });
         by_game.get_mut(&s.game_id).unwrap().push(i);
     }
-    let names: HashMap<i64, &str> = games.iter().filter(|g| !g.hidden).map(|g| (g.id, g.name.as_str())).collect();
-    order.retain(|id| names.contains_key(id));
-    ui.horizontal(|ui| {
-        theme::section(ui, "Screenshots");
-        ui.label(RichText::new(format!("{} in {} games · F12 in non-Steam games, Steam's key in Steam games", v.all.len(), order.len())).color(TEXT_DIM));
-    });
+    match f.sort {
+        1 => order.sort_by_cached_key(|id| shown[id].name.to_lowercase()),
+        2 => order.sort_by_key(|id| std::cmp::Reverse(by_game[id].len())),
+        _ => {}
+    }
+    let names: HashMap<i64, &str> = shown.iter().map(|(id, g)| (*id, g.name.as_str())).collect();
+    let n: usize = by_game.values().map(Vec::len).sum();
+    ui.label(RichText::new(format!("{n} screenshots in {} games · F12 or PS/Guide + R1 in non-Steam games, Steam's key in Steam games", order.len())).color(TEXT_DIM));
+    ui.add_space(6.0);
     if order.is_empty() {
-        ui.label(RichText::new("No screenshots yet.").color(TEXT_DIM));
+        ui.label(RichText::new(if v.all.is_empty() { "No screenshots yet." } else { "No screenshots match." }).color(TEXT_DIM));
         return None;
     }
     let width = ui.available_width() - 16.0;
