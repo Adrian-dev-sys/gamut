@@ -385,7 +385,7 @@ impl Scanner {
                 // Steam is the master list for its games' collections.
                 let mut colls = None;
                 if let Some(root) = steam::steam_path().filter(|_| !c.no_steam_collections) {
-                    match gamut_core::steam_collections::sync(&mut lib, &root, &steam::steam_id(&c)) {
+                    match gamut_core::steam_collections::sync(&mut lib, &root, &steam::steam_id(&c), &c.steam_collections_ignored) {
                         Ok(s) => colls = Some(s),
                         Err(e) => log::warn!("Steam collections: {e:#}"),
                     }
@@ -395,7 +395,7 @@ impl Scanner {
             match r {
                 Ok((warn, total, new, colls)) => {
                     let _ = tx.send(Event::LibraryChanged);
-                    let changed = colls.as_ref().map_or(0, |s| s.changed);
+                    let changed = colls.as_ref().map_or(0, |s| s.changed + s.beaten);
                     // Automatic scans only speak up when something changed.
                     if !quiet || new > 0 || changed > 0 {
                         let mut m = format!("Steam scan done: {total} games");
@@ -406,6 +406,9 @@ impl Scanner {
                             m += &format!(". {} collections synced from Steam", s.synced);
                             if s.changed > 0 {
                                 m += &format!(" ({} updated)", s.changed);
+                            }
+                            if s.beaten > 0 {
+                                m += &format!(". {} games from Steam's Finished marked Beaten", s.beaten);
                             }
                         }
                         let _ = tx.send(Event::Info(format!("{m}.")));

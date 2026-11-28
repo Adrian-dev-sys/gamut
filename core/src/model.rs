@@ -264,4 +264,6 @@ pub struct Collection {
     pub games: std::collections::HashSet<i64>,
     /// Steam collection id when it's synced from Steam (Steam games in it follow Steam).
     pub steam: Option<String>,
+    /// Sort used while it's open (the app's sort keys); None = the library's.
+    pub sort: Option<String>,
 }

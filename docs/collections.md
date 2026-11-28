@@ -37,3 +37,12 @@ Steam-style groups of games, shown as tiles on the **Collections** tab (between 
   The name is set once, so renaming in Gamut sticks. Deleted in Steam → deleted here (or unlinked if it holds non-Steam games).
 - Toggle: Settings → Library → "Sync collections from Steam" (`no_steam_collections`).
 - Scans end with a toast (games, new ones, collections synced/updated); automatic hourly scans only when something changed.
+- Steam collections named Finished/Beaten/Completed/Done set the **Beaten** status on their games, once per game (`steam_beaten`),
+  replacing only empty, Not Played, Plan to Play, Playing, Played or On Hold. A later status set in Gamut sticks.
+- Deleting a synced collection in Gamut stops syncing it (`steam_collections_ignored`); Settings → Library → "Sync them again" undoes that.
+  Beaten marking still follows Steam's Finished even when that collection is deleted here.
+
+## Sort per collection
+- The create/edit dialog has "Sort by" (`collections.sort`, the app's sort keys; empty = library default).
+- Opening such a collection switches the sort (`apply_coll_sort`, run from `update_view`); leaving restores the library's,
+  and config keeps the library's sort meanwhile (`sort_before`). Favorites (built in) has no own sort.

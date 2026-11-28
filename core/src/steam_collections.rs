@@ -178,12 +178,20 @@ impl Kv<'_> {
 pub struct Synced {
     pub synced: usize,
     pub changed: usize,
+    /// Games given the Beaten status from Steam's Finished collection.
+    pub beaten: usize,
+}
+
+/// Steam collections that mean "beaten" (the user's own naming).
+fn is_finished(name: &str) -> bool {
+    matches!(name.trim().to_lowercase().as_str(), "finished" | "beaten" | "completed" | "done")
 }
 
 /// Mirrors Steam's collections into Gamut.
-pub fn sync(lib: &mut Library, steam: &Path, steam_id64: &str) -> Result<Synced> {
+/// `ignored`: Steam collection ids deleted in Gamut (not recreated).
+pub fn sync(lib: &mut Library, steam: &Path, steam_id64: &str, ignored: &[String]) -> Result<Synced> {
     let colls = read(steam, steam_id64)?;
-    apply(lib, &colls, |apps| {
+    apply(lib, &colls, ignored, |apps| {
         vr_apps(steam, apps).unwrap_or_else(|e| {
             log::warn!("Steam app info (VR flags): {e:#}");
             HashSet::new()
@@ -192,7 +200,7 @@ pub fn sync(lib: &mut Library, steam: &Path, steam_id64: &str) -> Result<Synced>
 }
 
 /// `sync` with the Steam side given: the collections and a VR lookup for owned apps.
-fn apply(lib: &mut Library, colls: &[SteamCollection], vr_of: impl FnOnce(&HashSet<u32>) -> HashSet<u32>) -> Result<Synced> {
+fn apply(lib: &mut Library, colls: &[SteamCollection], ignored: &[String], vr_of: impl FnOnce(&HashSet<u32>) -> HashSet<u32>) -> Result<Synced> {
     let games = lib.steam_games()?;
     let by_app: HashMap<u32, (i64, bool)> = games.iter().map(|&(id, app, inst)| (app, (id, inst))).collect();
     let vr = if colls.iter().any(|c| c.vr) { vr_of(&by_app.keys().copied().collect()) } else { HashSet::new() };
@@ -205,6 +213,12 @@ fn apply(lib: &mut Library, colls: &[SteamCollection], vr_of: impl FnOnce(&HashS
             members.extend(by_app.iter().filter(|(app, (_, inst))| (!c.installed || *inst) && (!c.vr || vr.contains(app))).map(|(app, _)| *app));
         }
         let ids: Vec<i64> = members.iter().filter(|a| !removed.contains(a)).filter_map(|a| by_app.get(a).map(|g| g.0)).collect();
+        if is_finished(&c.name) {
+            out.beaten += lib.mark_beaten(&ids)?;
+        }
+        if ignored.contains(&c.key) {
+            continue;
+        }
         if c.unsupported {
             log::info!("Steam collection {:?} uses filters Gamut can't follow; only its hand-added games are synced", c.name);
         }
@@ -278,8 +292,8 @@ mod tests {
         let vr = SteamCollection { key: "uc-v".into(), name: "VR".into(), vr: true, ..Default::default() };
         let empty = SteamCollection { key: "uc-e".into(), name: "Empty".into(), ..Default::default() };
         let all = vec![fav.clone(), inst, vr, empty];
-        assert_eq!(apply(&mut lib, &all, |_| [2].into()).unwrap(), Synced { synced: 3, changed: 3 });
-        assert_eq!(apply(&mut lib, &all, |_| [2].into()).unwrap(), Synced { synced: 3, changed: 0 });
+        assert_eq!(apply(&mut lib, &all, &[], |_| [2].into()).unwrap(), Synced { synced: 3, changed: 3, beaten: 0 });
+        assert_eq!(apply(&mut lib, &all, &[], |_| [2].into()).unwrap(), Synced { synced: 3, changed: 0, beaten: 0 });
         let colls = lib.collections().unwrap();
         let by = |n: &str| colls.iter().find(|c| c.name == n).unwrap().clone();
         assert_eq!(by("To play").games, [g1, g2].into());
@@ -290,11 +304,27 @@ mod tests {
         let tp = by("To play").id;
         lib.set_in_collection(tp, &[cu, g3], true).unwrap();
         let fav2 = SteamCollection { added: vec![2], ..fav };
-        apply(&mut lib, &[fav2], |_| HashSet::new()).unwrap();
+        apply(&mut lib, &[fav2.clone()], &[], |_| HashSet::new()).unwrap();
         let colls = lib.collections().unwrap();
         assert_eq!(colls.len(), 1);
         assert_eq!(colls[0].games, [g2, cu].into());
         assert_eq!(colls[0].steam.as_deref(), Some("favorite"));
+
+        // Finished → Beaten once, never over a further status or a later change; ignored ones aren't made.
+        let mut g = lib.get(g2).unwrap().unwrap();
+        g.completion = Some("Completed".into());
+        lib.update_user_fields(&g).unwrap();
+        let fin = SteamCollection { key: "uc-f".into(), name: "finished".into(), added: vec![1, 2], ..Default::default() };
+        let r = apply(&mut lib, &[fav2.clone(), fin.clone()], &["uc-f".to_string()], |_| HashSet::new()).unwrap();
+        assert_eq!(r.beaten, 1);
+        let status = |lib: &Library, id| lib.get(id).unwrap().unwrap().completion;
+        assert_eq!((status(&lib, g1).as_deref(), status(&lib, g2).as_deref()), (Some("Beaten"), Some("Completed")));
+        assert!(lib.collections().unwrap().iter().all(|c| c.name != "finished"));
+        let mut g = lib.get(g1).unwrap().unwrap();
+        g.completion = Some("Playing".into());
+        lib.update_user_fields(&g).unwrap();
+        assert_eq!(apply(&mut lib, &[fav2, fin], &[], |_| HashSet::new()).unwrap().beaten, 0);
+        assert_eq!(status(&lib, g1).as_deref(), Some("Playing"));
     }
 
     #[test]
@@ -321,7 +351,7 @@ mod local {
         let mut lib = Library::open(Path::new(&std::env::var("GAMUT_TEST_DB").unwrap())).unwrap();
         let steam = crate::steam::steam_path().unwrap();
         let id = crate::steam::detect_steam_id(&steam).unwrap_or_default();
-        println!("{:?}", sync(&mut lib, &steam, &id).unwrap());
+        println!("{:?}", sync(&mut lib, &steam, &id, &[]).unwrap());
         for c in lib.collections().unwrap() {
             println!("{} ({}) steam={:?}", c.name, c.games.len(), c.steam);
         }

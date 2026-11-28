@@ -43,6 +43,8 @@ pub struct Config {
     pub no_screenshot_sound: bool,
     /// Don't mirror Steam's library collections (Favorites as "To play", the user's own).
     pub no_steam_collections: bool,
+    /// Steam collections deleted in Gamut: no longer synced.
+    pub steam_collections_ignored: Vec<String>,
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,

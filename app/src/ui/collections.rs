@@ -21,6 +21,8 @@ pub(super) struct CollDialog {
     rule: Rule,
     add: Vec<i64>,
     queries: [String; 3],
+    /// Sort while it's open; None = the library's.
+    sort: Option<Sort>,
 }
 
 impl CollDialog {
@@ -29,7 +31,7 @@ impl CollDialog {
         // The old single tag joins the list.
         rule.tags = rule.tag_list().into_iter().map(String::from).collect();
         rule.tag.clear();
-        CollDialog { id: None, name: String::new(), dynamic: add.is_empty() && rule != Rule::default(), rule, add, queries: Default::default() }
+        CollDialog { id: None, name: String::new(), dynamic: add.is_empty() && rule != Rule::default(), rule, add, queries: Default::default(), sort: None }
     }
 }
 
@@ -118,7 +120,7 @@ impl GamutApp {
     /// Rereads collections (Favorites first, then by name) and drops cached tile numbers.
     pub(super) fn load_collections(&mut self) {
         let fav = Rule { filter: "favorites".into(), ..Default::default() };
-        let mut v = vec![Collection { id: FAVORITES, name: "Favorites".into(), rule: Some(fav), games: Default::default(), steam: None }];
+        let mut v = vec![Collection { id: FAVORITES, name: "Favorites".into(), rule: Some(fav), games: Default::default(), steam: None, sort: None }];
         match self.lib.collections() {
             Ok(mut c) => {
                 c.sort_by_cached_key(|c| util::nat_key(&c.name.to_lowercase()));
@@ -185,6 +187,22 @@ impl GamutApp {
             d.name = [&self.tag, &self.platform, &self.completion].into_iter().find(|s| !s.is_empty()).cloned().unwrap_or_default();
             self.coll_dialog = Some(d);
         }
+    }
+
+    /// A collection with its own sort switches to it while open; leaving restores the library's.
+    pub(super) fn apply_coll_sort(&mut self) {
+        if self.coll_seen == self.collection {
+            return;
+        }
+        if let Some(s) = self.sort_before.take() {
+            self.sort = s;
+        }
+        let own = self.collection.and_then(|id| self.collections.iter().find(|c| c.id == id)).and_then(|c| c.sort.clone());
+        if let Some(k) = own {
+            self.sort_before = Some(self.sort);
+            self.sort = from_key(&SORTS, &k);
+        }
+        self.coll_seen = self.collection;
     }
 
     /// Shows a collection's games in the library, with nothing else filtered out.
@@ -331,6 +349,7 @@ impl GamutApp {
         if let Some(c) = edit.and_then(|id| self.collections.iter().find(|c| c.id == id)) {
             let mut d = CollDialog::new(Vec::new(), c.rule.clone());
             (d.id, d.name, d.dynamic) = (Some(c.id), c.name.clone(), c.rule.is_some());
+            d.sort = c.sort.as_deref().map(|k| from_key(&SORTS, k));
             self.coll_dialog = Some(d);
         }
     }
@@ -340,7 +359,7 @@ impl GamutApp {
         let Some(mut d) = self.coll_dialog.take() else { return };
         let (mut close, mut open) = (false, true);
         let title = if d.id.is_some() { "Edit collection" } else { "New collection" };
-        let probe = Collection { id: 0, name: String::new(), rule: Some(d.rule.clone()), games: Default::default(), steam: None };
+        let probe = Collection { id: 0, name: String::new(), rule: Some(d.rule.clone()), games: Default::default(), steam: None, sort: None };
         let matching = self.games.iter().filter(|g| !g.hidden && contains(&probe, g)).count();
         theme::dialog(ctx, "collection", false, |ui| {
             ui.set_width(600.0);
@@ -349,6 +368,17 @@ impl GamutApp {
             if ui.memory(|m| m.focused().is_none()) && d.name.is_empty() {
                 name.request_focus();
             }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Sort by").color(TEXT_DIM));
+                let label = |s: Option<Sort>| s.and_then(|s| SORT_LABELS.iter().find(|(x, _)| *x == s)).map_or("Library default", |(_, l)| *l);
+                egui::ComboBox::from_id_salt("coll_sort").width(180.0).height(400.0).selected_text(label(d.sort)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut d.sort, None, "Library default");
+                    for (s, l) in SORT_LABELS {
+                        ui.selectable_value(&mut d.sort, Some(s), l);
+                    }
+                });
+            });
             ui.add_space(8.0);
             if d.id.is_none() || d.dynamic {
                 ui.radio_value(&mut d.dynamic, false, "Games I add (right-click a game → Add to collection)");
@@ -429,15 +459,21 @@ impl GamutApp {
                 let enter = ok && name.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if ui.add_enabled(ok, egui::Button::new(if d.id.is_some() { "Save" } else { "Create" })).clicked() || enter {
                     let rule = d.dynamic.then_some(&d.rule);
+                    let sort = d.sort.map(|s| key_of(&SORTS, s));
                     let r = match d.id {
-                        Some(id) => self.lib.update_collection(id, d.name.trim(), rule),
+                        Some(id) => self.lib.update_collection(id, d.name.trim(), rule).and_then(|_| self.lib.set_collection_sort(id, sort)),
                         None => self.lib.create_collection(d.name.trim(), rule).and_then(|id| {
+                            self.lib.set_collection_sort(id, sort)?;
                             if !d.dynamic && !d.add.is_empty() {
                                 self.lib.set_in_collection(id, &d.add, true)?;
                             }
                             Ok(())
                         }),
                     };
+                    // The open collection picks up a new sort right away.
+                    if d.id.is_some() && d.id == self.collection {
+                        self.coll_seen = None;
+                    }
                     if let Err(e) = r {
                         self.toasts.error(format!("{e:#}"));
                     }
@@ -469,12 +505,20 @@ impl GamutApp {
             dialog_header(ui, "Delete collection", &mut open);
             ui.label(format!("Delete \"{name}\"? Its games stay in the library."));
             if synced {
-                ui.label(theme::hint("It's synced from Steam and comes back on the next scan; delete it in Steam, or turn off Steam sync in Settings."));
+                ui.label(theme::hint("It's synced from Steam; it won't be synced again (Settings → Library can bring it back)."));
             }
             ui.horizontal(|ui| {
                 if ui.button("Delete").clicked() {
                     if let Err(e) = self.lib.delete_collection(id) {
                         self.toasts.error(format!("{e:#}"));
+                    }
+                    // A synced one stays deleted: stop syncing it.
+                    if let Some(key) = self.collections.iter().find(|c| c.id == id).and_then(|c| c.steam.clone()) {
+                        let mut cfg = self.cfg.write().unwrap();
+                        cfg.steam_collections_ignored.push(key);
+                        if let Err(e) = cfg.save(&self.paths.config) {
+                            self.toasts.error(format!("Saving settings failed: {e:#}"));
+                        }
                     }
                     self.load_collections();
                     close = true;
@@ -586,6 +630,7 @@ mod tests {
             rule: Some(Rule { tags: tags.iter().map(|t| t.to_string()).collect(), all_tags: all, ..Default::default() }),
             games: Default::default(),
             steam: None,
+            sort: None,
         };
         assert!(contains(&rule(false, &["3D", "2D"]), &g));
         assert!(!contains(&rule(true, &["3D", "2D"]), &g));

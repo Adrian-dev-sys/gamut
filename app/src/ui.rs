@@ -283,6 +283,9 @@ pub struct GamutApp {
     coll_cols: usize,
     coll_scroll_until: f64,
     coll_stats: Option<collections::Stats>,
+    /// The collection whose sort was last applied, and the library sort it replaced.
+    coll_seen: Option<i64>,
+    sort_before: Option<Sort>,
     coll_dialog: Option<collections::CollDialog>,
     confirm_coll_delete: Option<i64>,
     /// Details page tab: 0 = About, 1 = Achievements (kept while browsing games).
@@ -403,6 +406,8 @@ impl GamutApp {
             coll_cols: 1,
             coll_scroll_until: 0.0,
             coll_stats: None,
+            coll_seen: None,
+            sort_before: None,
             coll_dialog: None,
             confirm_coll_delete: None,
         };
@@ -533,6 +538,7 @@ impl GamutApp {
 
     /// Rebuilds the filtered + sorted index list when inputs change.
     fn update_view(&mut self) {
+        self.apply_coll_sort();
         let key = (
             self.search.clone(),
             self.filter,
@@ -1959,6 +1965,14 @@ impl GamutApp {
                         if ui.checkbox(&mut sync, "Sync collections from Steam").changed() {
                             s.no_steam_collections = !sync;
                         }
+                        if !s.steam_collections_ignored.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.label(theme::hint(&format!("{} deleted in Gamut, not synced.", s.steam_collections_ignored.len())));
+                                if ui.button("Sync them again").clicked() {
+                                    s.steam_collections_ignored.clear();
+                                }
+                            });
+                        }
                         ui.label(theme::hint("Steam's Favorites (as \"To play\") and your own Steam collections, updated on every scan. Steam decides which Steam games are in them; games from elsewhere you add in Gamut stay."));
                         ui.add_space(12.0);
                         ui.separator();
@@ -2703,7 +2717,8 @@ impl GamutApp {
 
     fn save_prefs(&self) {
         let mut c = self.cfg.write().unwrap();
-        c.sort = key_of(&SORTS, self.sort).into();
+        // A collection's own sort isn't the library's.
+        c.sort = key_of(&SORTS, self.sort_before.unwrap_or(self.sort)).into();
         c.filter = key_of(&FILTERS, self.filter).into();
         c.platform = self.platform.clone();
         c.tag = self.tag.clone();

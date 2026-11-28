@@ -115,14 +115,18 @@ impl Library {
              );
              -- rule: JSON filters for a dynamic collection, NULL for one filled by hand.
              CREATE TABLE IF NOT EXISTS collections (id INTEGER PRIMARY KEY, name TEXT NOT NULL, rule TEXT);
+             -- Games once marked Beaten for being in Steam's Finished collection (never again).
+             CREATE TABLE IF NOT EXISTS steam_beaten (game_id INTEGER PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS collection_games (
                 collection_id INTEGER NOT NULL, game_id INTEGER NOT NULL, PRIMARY KEY (collection_id, game_id)
              );",
         )?;
-        let has_steam = conn.query_row("SELECT count(*) FROM pragma_table_info('collections') WHERE name = 'steam'", [], |r| r.get::<_, i64>(0))?;
-        if has_steam == 0 {
-            // Another handle may have added it meanwhile.
-            let _ = conn.execute("ALTER TABLE collections ADD COLUMN steam TEXT", []);
+        for col in ["steam", "sort"] {
+            let has = conn.query_row("SELECT count(*) FROM pragma_table_info('collections') WHERE name = ?1", [col], |r| r.get::<_, i64>(0))?;
+            if has == 0 {
+                // Another handle may have added it meanwhile.
+                let _ = conn.execute(&format!("ALTER TABLE collections ADD COLUMN {col} TEXT"), []);
+            }
         }
         let mut lib = Library { conn };
         lib.migrate()?;
@@ -249,7 +253,10 @@ impl Library {
                  INSERT OR IGNORE INTO collection_games SELECT collection_id, game_id FROM old.collection_games;",
                 path.display().to_string().replace('\'', "''")
             ));
-            let _ = new.conn.execute_batch("UPDATE collections SET steam = (SELECT o.steam FROM old.collections o WHERE o.id = collections.id)");
+            for col in ["steam", "sort"] {
+                let _ = new.conn.execute_batch(&format!("UPDATE collections SET {col} = (SELECT o.{col} FROM old.collections o WHERE o.id = collections.id)"));
+            }
+            let _ = new.conn.execute_batch("INSERT OR IGNORE INTO steam_beaten SELECT game_id FROM old.steam_beaten");
             let _ = new.conn.execute_batch("DETACH DATABASE old");
         }
         let backup = format!(".damaged-{}", crate::now());
@@ -542,17 +549,18 @@ impl Library {
         self.conn.execute("DELETE FROM igdb_match WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM hltb WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM collection_games WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM steam_beaten WHERE game_id = ?1", [id])?;
         Ok(())
     }
 
     /// Every collection with its hand-added games.
     pub fn collections(&self) -> Result<Vec<Collection>> {
-        let mut st = self.conn.prepare("SELECT id, name, rule, steam FROM collections")?;
+        let mut st = self.conn.prepare("SELECT id, name, rule, steam, sort FROM collections")?;
         let mut out: Vec<Collection> = st
             .query_map([], |r| {
                 let rule: Option<String> = r.get(2)?;
                 let rule = rule.map(|j| serde_json::from_str(&j).unwrap_or_default());
-                Ok(Collection { id: r.get(0)?, name: r.get(1)?, rule, games: Default::default(), steam: r.get(3)? })
+                Ok(Collection { id: r.get(0)?, name: r.get(1)?, rule, games: Default::default(), steam: r.get(3)?, sort: r.get(4)? })
             })?
             .collect::<rusqlite::Result<_>>()?;
         let mut st = self.conn.prepare("SELECT collection_id, game_id FROM collection_games")?;
@@ -583,6 +591,30 @@ impl Library {
         tx.execute("DELETE FROM collections WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn set_collection_sort(&self, id: i64, sort: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE collections SET sort = ?2 WHERE id = ?1", params![id, sort])?;
+        Ok(())
+    }
+
+    /// Sets Beaten on games newly in Steam's Finished list, unless they have a further-along status.
+    /// Each game only once, so a later status set in Gamut sticks. Returns how many changed.
+    pub fn mark_beaten(&mut self, games: &[i64]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut n = 0;
+        for g in games {
+            if tx.execute("INSERT OR IGNORE INTO steam_beaten (game_id) VALUES (?1)", [g])? == 0 {
+                continue;
+            }
+            n += tx.execute(
+                "UPDATE games SET completion = 'Beaten' WHERE id = ?1
+                 AND (completion IS NULL OR completion IN ('', 'Not Played', 'Plan to Play', 'Playing', 'Played', 'On Hold'))",
+                [g],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n)
     }
 
     pub fn set_collection_steam(&self, id: i64, steam: Option<&str>) -> Result<()> {
