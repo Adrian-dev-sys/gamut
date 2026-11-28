@@ -365,6 +365,16 @@ impl GamutApp {
     }
 
     /// Ids of games running now: ones Gamut launched and is tracking, plus whatever Steam reports.
+    /// List mode shows the open game in a side panel instead of the popup.
+    fn side(&self) -> bool {
+        self.cfg.read().unwrap().list_view && self.big.is_none() && self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab
+    }
+
+    /// The details popup is up (not the list's side panel).
+    fn popup(&self) -> bool {
+        self.selected.is_some() && !self.side()
+    }
+
     fn running(&self) -> HashSet<i64> {
         let mut set = self.workers.running.lock().unwrap().clone();
         let steam = self.workers.steam_running.load(Ordering::Relaxed);
@@ -779,14 +789,14 @@ impl GamutApp {
                         self.game_menu = Some(id);
                     }
                 }
-                Pad::Nav(n) if self.selected.is_none() && grid => self.nav(n, false),
-                // Details: L2/R2 page through the description.
-                Pad::Nav(Nav::PageUp) if self.selected.is_some() => self.scroll_details(-420.0),
-                Pad::Nav(Nav::PageDown) if self.selected.is_some() => self.scroll_details(420.0),
+                Pad::Nav(n) if !self.popup() && grid => self.nav(n, false),
+                // Details: L2/R2 page through the description (the right stick in the side panel too).
+                Pad::Nav(Nav::PageUp) if self.popup() => self.scroll_details(-420.0),
+                Pad::Nav(Nav::PageDown) if self.popup() => self.scroll_details(420.0),
                 Pad::Scroll(d) if self.selected.is_some() => self.scroll_details(d as f32 * 60.0),
                 Pad::Scroll(_) | Pad::Screenshot => {}
                 Pad::Nav(_) => {}
-                Pad::Search if self.selected.is_none() => {
+                Pad::Search if !self.popup() => {
                     (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
                     if self.big.is_some() {
                         self.search_pop = Some(crate::search_pop::SearchPop::new());
@@ -796,6 +806,10 @@ impl GamutApp {
                     }
                 }
                 Pad::Search => {}
+                Pad::Confirm if self.side() => match self.cursor.filter(|_| self.kb_focus).or(self.selected) {
+                    Some(id) => actions.push(Action::Play(id)),
+                    None => self.nav(Nav::Home, false),
+                },
                 Pad::Confirm => match self.selected {
                     Some(id) => actions.push(Action::Play(id)),
                     None if grid => match self.cursor.filter(|_| self.kb_focus) {
@@ -823,14 +837,14 @@ impl GamutApp {
                     }
                 }
                 // Big screen: filter tabs. Otherwise the top tabs (Library, Achievements, Statistics).
-                Pad::PrevTab | Pad::NextTab if self.selected.is_none() && self.big.is_some() => {
+                Pad::PrevTab | Pad::NextTab if !self.popup() && self.big.is_some() => {
                     let i = BIG_TABS.iter().position(|(f, _)| *f == self.filter).unwrap_or(0) as isize;
                     let d = if matches!(p, Pad::NextTab) { 1 } else { -1 };
                     self.filter = BIG_TABS[(i + d).rem_euclid(BIG_TABS.len() as isize) as usize].0;
                     self.cursor = None;
                     self.scroll_to = Some(0.0);
                 }
-                Pad::PrevTab | Pad::NextTab if self.selected.is_none() => {
+                Pad::PrevTab | Pad::NextTab if !self.popup() => {
                     let i = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else if self.shots_tab { 3 } else { 0 };
                     let d = if matches!(p, Pad::NextTab) { 1 } else { 3 };
                     let now = ctx.input(|i| i.time);
@@ -1114,6 +1128,10 @@ impl GamutApp {
         let id = self.games[self.view[new]].id;
         self.cursor = Some(id);
         self.kb_focus = true;
+        // The list's side panel follows the cursor.
+        if self.side() {
+            self.selected = Some(id);
+        }
         if shift {
             self.select_range(id);
         } else {
@@ -1130,7 +1148,7 @@ impl GamutApp {
     }
 
     /// Grid keys: arrows/Home/End/PageUp/PageDown move, Enter opens, Space toggles, Ctrl+A all, Esc clears.
-    fn grid_keys(&mut self, ctx: &egui::Context) {
+    fn grid_keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let (moves, shift, enter, space, all, esc) = ctx.input(|i| {
             let keys = [
                 (Key::ArrowLeft, Nav::Left),
@@ -1159,13 +1177,18 @@ impl GamutApp {
             self.select_all();
         }
         if esc {
+            if self.multi.is_empty() && self.side() {
+                self.selected = None;
+            }
             self.multi.clear();
         }
         if let Some(id) = self.cursor.filter(|_| self.kb_focus) {
             if space && !self.multi.remove(&id) {
                 self.multi.insert(id);
             }
-            if enter {
+            if enter && self.side() {
+                actions.push(Action::Play(id));
+            } else if enter {
                 self.selected = Some(id);
                 self.opened_at = ctx.input(|i| i.time);
                 self.focus_play = true;
@@ -1407,8 +1430,10 @@ impl GamutApp {
         }
         let focus_play = std::mem::take(&mut self.focus_play);
         let out = area.show(ui, |ui| {
-            let pad = 28.0;
             let w = ui.available_width();
+            // The list's side panel is narrow: smaller cover and margins.
+            let narrow = w < 760.0;
+            let pad = if narrow { 18.0 } else { 28.0 };
             let banner_h = (w * 0.30).clamp(200.0, 380.0);
             let banner = Rect::from_min_size(ui.cursor().min, vec2(w, banner_h));
             ui.allocate_rect(banner, Sense::hover());
@@ -1431,7 +1456,7 @@ impl GamutApp {
             close_button(ui, banner.right_top() + vec2(-24.0, 24.0), &mut self.selected);
 
             // Cover overlaps the banner's bottom edge.
-            let cover_w = 190.0;
+            let cover_w = if narrow { 120.0 } else { 190.0 };
             let cover = Rect::from_min_size(
                 pos2(banner.left() + pad, banner.bottom() - cover_w * 1.5 * 0.55),
                 vec2(cover_w, cover_w * 1.5),
@@ -2979,7 +3004,7 @@ impl eframe::App for GamutApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         use crate::gamepad::Pad;
         let dialog = self.any_dialog() && self.search_pop.is_none();
-        let details = self.selected.is_some() && !self.any_dialog();
+        let details = self.popup() && !self.any_dialog();
         let focused = ctx.memory(|m| m.focused());
         let mut has_focus = focused.is_some();
         let text_field = focused.filter(|id| egui::text_edit::TextEditState::load(ctx, *id).is_some());
@@ -3136,7 +3161,7 @@ impl eframe::App for GamutApp {
         });
         let mut actions = Vec::new();
         let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab;
-        let blocked = self.selected.is_some() || self.any_dialog();
+        let blocked = self.popup() || self.any_dialog();
         // Before handle_pad: a B that closes a dialog mustn't also close the details under it.
         let blocked_by_dialog = self.any_dialog();
         if ctx.input(|i| i.key_pressed(Key::F11)) {
@@ -3150,7 +3175,7 @@ impl eframe::App for GamutApp {
             self.nav(Nav::Home, false);
         }
         if !typing && grid_shown && !blocked {
-            self.grid_keys(&ctx);
+            self.grid_keys(&ctx, &mut actions);
         } else if !typing && !blocked_by_dialog {
             if let Some(id) = self.selected {
                 if ctx.input(|i| i.key_pressed(Key::Enter)) {
@@ -3170,6 +3195,14 @@ impl eframe::App for GamutApp {
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 5)))
             .show(ui, |ui| if self.big.is_some() { big_hints(ui) } else { self.status_bar(ui) });
+        if let (Some(id), true) = (self.selected, self.side()) {
+            egui::Panel::right("details_side")
+                .resizable(true)
+                .default_size(560.0)
+                .size_range(420.0..=1000.0)
+                .frame(egui::Frame::new().fill(theme::PANEL))
+                .show(ui, |ui| self.details(ui, id, &mut actions));
+        }
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
             .show(ui, |ui| {
@@ -3209,7 +3242,7 @@ impl eframe::App for GamutApp {
                 self.startup = None;
             }
         }
-        let any_popup = self.selected.is_some() || self.any_dialog();
+        let any_popup = self.popup() || self.any_dialog();
         if any_popup {
             theme::paint_backdrop(&ctx);
         }
@@ -3222,7 +3255,7 @@ impl eframe::App for GamutApp {
             || self.confirm_stop.is_some()
             || self.playnite.is_some()
             || self.scans.is_some();
-        if let (Some(id), false) = (self.selected, dialog_open) {
+        if let (Some(id), false, false) = (self.selected, dialog_open, self.side()) {
             let screen = ctx.content_rect();
             let size = vec2((screen.width() * 0.86).min(1320.0), (screen.height() * 0.88).min(940.0));
             let frame = egui::Frame::new()
