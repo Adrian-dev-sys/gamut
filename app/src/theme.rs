@@ -146,31 +146,38 @@ fn load_fonts(ctx: &Context, st: &Style) {
 }
 
 /// Watches `theme.toml` and re-applies it when it changes.
+/// A thread checks the file once a second and wakes the UI, so edits show while Gamut sits idle.
 pub struct Watcher {
     path: std::path::PathBuf,
-    stamp: Option<std::time::SystemTime>,
-    next: f64,
+    changed: std::sync::Arc<AtomicBool>,
 }
 
 impl Watcher {
-    pub fn new(root: &std::path::Path) -> Self {
+    pub fn new(root: &std::path::Path, ctx: &Context) -> Self {
         let path = file(root);
-        let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        Watcher { path, stamp, next: 0.0 }
+        let changed = std::sync::Arc::new(AtomicBool::new(false));
+        let (p, flag, ctx) = (path.clone(), changed.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let stamp = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+            let mut last = stamp(&p);
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let now = stamp(&p);
+                if now != last {
+                    last = now;
+                    flag.store(true, Ordering::SeqCst);
+                    ctx.request_repaint();
+                }
+            }
+        });
+        Watcher { path, changed }
     }
 
-    /// Checks about once a second; Some after a reload (Err keeps the previous theme).
+    /// Some after a reload (Err keeps the previous theme).
     pub fn poll(&mut self, ctx: &Context) -> Option<Result<(), String>> {
-        let now = ctx.input(|i| i.time);
-        if now < self.next {
+        if !self.changed.swap(false, Ordering::SeqCst) {
             return None;
         }
-        self.next = now + 1.0;
-        let stamp = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
-        if stamp == self.stamp {
-            return None;
-        }
-        self.stamp = stamp;
         let r = load(&self.path);
         if r.is_ok() {
             apply(ctx);

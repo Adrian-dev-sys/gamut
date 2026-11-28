@@ -82,7 +82,17 @@ fn files_of(paths: &Paths, backups: &Path, kind: Kind) -> Vec<PathBuf> {
             .map(|e| e.path())
             .filter(|p| p.is_file() && is_old_copy(&p.file_name().unwrap_or_default().to_string_lossy()))
             .collect(),
-        Kind::Backups => vec![backups.to_path_buf()],
+        // Only Gamut's own files: the folder may be shared (even a drive root).
+        Kind::Backups => fs::read_dir(backups)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let n = p.file_name().unwrap_or_default().to_string_lossy();
+                n == "art" || (n.starts_with("gamut-backup-") && n.ends_with(".zip"))
+            })
+            .collect(),
         Kind::Caches => vec![root.join("reshade"), root.join("ra")],
         Kind::Logs => vec![root.join("gamut.log"), root.join("gamut.old.log")],
     }

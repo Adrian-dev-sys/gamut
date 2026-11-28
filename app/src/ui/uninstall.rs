@@ -13,6 +13,11 @@ pub(super) fn offered(g: &Game) -> bool {
 impl GamutApp {
     pub(super) fn uninstall(&mut self, id: i64) -> anyhow::Result<()> {
         let Some(g) = self.game(id).cloned() else { return Ok(()) };
+        // An exe several games start is an emulator or launcher: its uninstaller isn't this game's.
+        let shared = |e: &str| self.games.iter().filter(|o| o.exe.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(e))).count() > 1;
+        if g.source != Source::Steam && g.install_dir.is_none() && g.exe.as_deref().is_some_and(shared) {
+            anyhow::bail!("{} starts through a program other games use too, so Gamut won't uninstall it; set its install folder in Edit first.", g.name);
+        }
         match uninstall::find(&g) {
             Some(u @ Uninstaller::Steam(_)) => {
                 uninstall::run(&u)?;

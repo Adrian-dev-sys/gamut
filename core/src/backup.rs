@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Small files next to the database that can't be fetched again.
-const EXTRA: [&str; 2] = ["config.toml", "local-ach.json"];
+const EXTRA: [&str; 3] = ["config.toml", "local-ach.json", "theme.toml"];
 const PREFIX: &str = "gamut-backup-";
 const PENDING: &str = "restore.pending";
 

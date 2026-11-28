@@ -2,7 +2,7 @@
 
 Code: `core/src/backup.rs` (create, list, rotate, stage/apply restore), `app/src/ui/backups.rs` (Settings → Backups, restore dialog), `workers.rs` (`backup`, `spawn_backup_schedule`), `main.rs` (applies a staged restore).
 
-- **Zip** `gamut-backup-YYYY-MM-DD_HHMMSS.zip` (local time): `library.db`, `config.toml` (API keys DPAPI-encrypted: another PC/user must enter them again), `local-ach.json`. Thumbs, logs, `ra`, `reshade`, `art-quarantine` and old `library.db.*` copies are left out. Screenshots live in `Pictures\Gamut` and aren't backed up.
+- **Zip** `gamut-backup-YYYY-MM-DD_HHMMSS.zip` (local time): `library.db`, `config.toml` (API keys DPAPI-encrypted: another PC/user must enter them again), `local-ach.json`, `theme.toml`. Thumbs, logs, `ra`, `reshade`, `art-quarantine` and old `library.db.*` copies are left out. Screenshots live in `Pictures\Gamut` and aren't backed up.
 - **Database snapshot**: `VACUUM INTO` through a read-only handle of its own (never a file copy of the live DB), then `PRAGMA integrity_check` + a `games` query on the snapshot. A failing check aborts before rotation, so good older backups stay.
 - **Art**: `<backup dir>\art\{covers,heroes,icons}` is an incremental mirror (copied when missing or size/mtime differ; nothing deleted), shared by all zips.
 - **Rotation**: newest `keep` zips stay (default 10). Names sort by time.
@@ -15,4 +15,4 @@ Code: `core/src/backup.rs` (create, list, rotate, stage/apply restore), `app/src
   - The result shows as a toast (`main::RESTORED`).
 
 ## Storage (Settings → General)
-`core/src/storage.rs`, `app/src/ui/storage.rs`: sizes measured on a thread each time Settings opens. Clearable: thumbnails (regenerated; loaded textures dropped), `art-quarantine`, old copies (`library.db.*` except `.restoring`, and `*.pre-restore-*`; asks twice).
+`core/src/storage.rs`, `app/src/ui/storage.rs`: sizes measured on a thread each time Settings opens. Backups counts only `gamut-backup-*.zip` and `art` in the backup folder (it may be shared). Clearable: thumbnails (regenerated; loaded textures dropped), `art-quarantine`, old copies (`library.db.*` except `.restoring`, and `*.pre-restore-*`; asks twice).

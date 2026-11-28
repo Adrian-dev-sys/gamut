@@ -317,7 +317,7 @@ pub struct GamutApp {
 impl GamutApp {
     pub fn new(cc: &eframe::CreationContext, paths: Paths) -> anyhow::Result<Self> {
         let theme_err = theme::load(&theme::file(&paths.root)).err();
-        let theme_watch = theme::Watcher::new(&paths.root);
+        let theme_watch = theme::Watcher::new(&paths.root, &cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
         let loaded = Config::load(&paths.config);
         let tray = crate::tray::Tray::new(&cc.egui_ctx);
@@ -2260,8 +2260,8 @@ impl GamutApp {
                                     log::warn!("theme file: {e}");
                                 }
                             }
-                            if tf.exists() && ui.button("Built-in theme").on_hover_text("Deletes theme.toml").clicked() {
-                                let _ = std::fs::remove_file(&tf);
+                            if tf.exists() && ui.button("Built-in theme").on_hover_text("Renames theme.toml to theme.toml.bak").clicked() {
+                                let _ = std::fs::rename(&tf, tf.with_extension("toml.bak"));
                             }
                         });
                         ui.label(theme::hint("Edit theme.toml in any text editor; saved changes show right away."));
