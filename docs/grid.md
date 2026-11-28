@@ -59,3 +59,7 @@ Kept cheap: they only repaint while running.
 - `app/src/ui/list.rs`: one 44 px row per game (small cover crop, favorite star, RUNNING badge) with columns Name, Platform, Status, Time played, Last played, Added, Score. Clicking a header picks that sort (same `Sort` as the dropdown); Platform isn't sortable. Narrow windows drop Added, Score, Status, Last played, Platform in that order.
 - With a game open, the list moves to a resizable left panel (`list_side`, 240–900 px, like Playnite) and the details fill the rest instead of the popup (`side()`; `popup()` is "the popup is up" for keys and controller). When only Name fits, rows get a second line (last played · time). Details wider than 1400 px grow the banner (28% of the width, up to half the height) and cover (up to 320 px). The open game follows the cursor (`nav`) and is scrolled into view when the list moves; Enter / A play; Esc / B close it.
 - It's a one-column grid to `nav`: cursor, keys, controller, multi-select, context/bulk menus and clicks (`apply_clicks`) are shared with the grid.
+
+## Top bar on small windows
+- Widths are measured each frame (`bar_w`: tabs, library controls, app buttons). The library controls share the tab row only when all fits;
+  otherwise they get a second row that wraps. When the tabs and buttons don't fit, the buttons fold into a "Menu" button.

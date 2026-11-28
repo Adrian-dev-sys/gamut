@@ -283,6 +283,8 @@ pub struct GamutApp {
     coll_cols: usize,
     coll_scroll_until: f64,
     coll_stats: Option<collections::Stats>,
+    /// Top bar widths last frame: logo + tabs, library controls, app buttons.
+    bar_w: (f32, f32, f32),
     /// The collection whose sort was last applied, and the library sort it replaced.
     coll_seen: Option<i64>,
     sort_before: Option<Sort>,
@@ -406,6 +408,7 @@ impl GamutApp {
             coll_cols: 1,
             coll_scroll_until: 0.0,
             coll_stats: None,
+            bar_w: (620.0, 9999.0, 660.0),
             coll_seen: None,
             sort_before: None,
             coll_dialog: None,
@@ -707,11 +710,18 @@ impl GamutApp {
 
     // ---------- panels ----------
 
+    /// Logo, tabs and app buttons; the library controls share the row only when everything fits.
     fn top_bar(&mut self, ui: &mut Ui) {
+        let library = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab && !self.coll_tab;
+        let full = ui.available_width();
+        let (tabs_w, controls_w, buttons_w) = self.bar_w;
+        // Narrow: the buttons fold into a menu. Not very wide: the controls get a row of their own.
+        let menu = full < tabs_w + buttons_w + 16.0;
+        let one_row = library && !menu && tabs_w + controls_w + buttons_w + 24.0 < full;
         ui.horizontal(|ui| {
+            let left = ui.cursor().left();
             theme::logo(ui);
             ui.add_space(14.0);
-            let library = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab && !self.coll_tab;
             let now = ui.input(|i| i.time);
             let tab = |ui: &mut Ui, on: bool, label: &str| ui.selectable_label(on, RichText::new(label).size(15.0)).clicked();
             if tab(ui, library && self.collection.is_none(), "Library") {
@@ -732,38 +742,71 @@ impl GamutApp {
                 (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, true, false);
             }
             ui.add_space(14.0);
-            if library {
-                self.grid_controls(ui);
+            self.bar_w.0 = ui.cursor().left() - left;
+            if one_row {
+                self.bar_w.1 = ui.scope(|ui| self.grid_controls(ui)).response.rect.width();
             }
-
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Big screen").on_hover_text("Full screen, controller-friendly (F11, or View on a controller)").clicked() {
-                    let ctx = ui.ctx().clone();
-                    self.toggle_big(&ctx);
-                }
-                if ui.button("Settings").clicked() {
-                    self.settings = Some(self.cfg.read().unwrap().clone());
-                }
-                if ui.add_enabled(!self.view.is_empty(), egui::Button::new("Random game")).on_hover_text("Open a random game from the ones shown (Ctrl+R)").clicked() {
-                    let ctx = ui.ctx().clone();
-                    self.random_game(&ctx);
-                }
-                let scanning = self.workers.scanning.load(Ordering::Relaxed);
-                if ui.add_enabled(!scanning, egui::Button::new("Refresh")).clicked() {
-                    self.workers.rescan();
-                }
-                if ui.button("Health").on_hover_text("Find games that can't start and likely duplicates").clicked() {
-                    self.health = Some(crate::health_ui::HealthDialog::new(self.cfg.read().unwrap().health.clone(), &self.games));
-                }
-                if ui.button("Scan folders").on_hover_text("Find games in a folder and add them").clicked() {
-                    self.scans = Some(crate::scan_ui::ScanDialog::new(self.cfg.read().unwrap().scanners.clone()));
-                }
-                if ui.button("Add game").clicked() {
-                    self.editor = Some(Editor::new_custom());
-                    self.ed_lists = editor_facets(&self.games);
+                if menu {
+                    ui.menu_button("Menu", |ui| {
+                        ui.set_min_width(180.0);
+                        self.app_buttons(ui, true);
+                    });
+                } else {
+                    self.app_buttons(ui, false);
+                    self.bar_w.2 = ui.min_rect().width();
                 }
             });
         });
+        if library && !one_row {
+            ui.add_space(6.0);
+            let r = ui.horizontal_wrapped(|ui| self.grid_controls(ui)).response.rect;
+            // Only an unwrapped row tells the controls' real width.
+            if r.height() < 40.0 {
+                self.bar_w.1 = r.width();
+            }
+        }
+    }
+
+    /// Add game … Big screen, in reading order (`in_menu`) or right to left for the top bar.
+    fn app_buttons(&mut self, ui: &mut Ui, in_menu: bool) {
+        let scanning = self.workers.scanning.load(Ordering::Relaxed);
+        let items: [(&str, bool, &str); 7] = [
+            ("Add game", true, ""),
+            ("Scan folders", true, "Find games in a folder and add them"),
+            ("Health", true, "Find games that can't start and likely duplicates"),
+            ("Refresh", !scanning, "Rescan Steam and sync its collections"),
+            ("Random game", !self.view.is_empty(), "Open a random game from the ones shown (Ctrl+R)"),
+            ("Settings", true, ""),
+            ("Big screen", true, "Full screen, controller-friendly (F11, or View on a controller)"),
+        ];
+        let order: Vec<usize> = if in_menu { (0..items.len()).collect() } else { (0..items.len()).rev().collect() };
+        for i in order {
+            let (label, enabled, tip) = items[i];
+            let mut r = ui.add_enabled(enabled, egui::Button::new(label));
+            if !tip.is_empty() {
+                r = r.on_hover_text(tip);
+            }
+            if !r.clicked() {
+                continue;
+            }
+            if in_menu {
+                ui.close();
+            }
+            let ctx = ui.ctx().clone();
+            match i {
+                0 => {
+                    self.editor = Some(Editor::new_custom());
+                    self.ed_lists = editor_facets(&self.games);
+                }
+                1 => self.scans = Some(crate::scan_ui::ScanDialog::new(self.cfg.read().unwrap().scanners.clone())),
+                2 => self.health = Some(crate::health_ui::HealthDialog::new(self.cfg.read().unwrap().health.clone(), &self.games)),
+                3 => self.workers.rescan(),
+                4 => self.random_game(&ctx),
+                5 => self.settings = Some(self.cfg.read().unwrap().clone()),
+                _ => self.toggle_big(&ctx),
+            }
+        }
     }
 
     /// Enters or leaves big screen: full screen, larger UI, the library with a visible cursor.
