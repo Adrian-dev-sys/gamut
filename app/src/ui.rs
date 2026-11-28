@@ -3263,7 +3263,7 @@ impl eframe::App for GamutApp {
             || self.scans.is_some();
         if let (Some(id), false, false) = (self.selected, dialog_open, self.side()) {
             let screen = ctx.content_rect();
-            let size = vec2((screen.width() * 0.86).min(1320.0), (screen.height() * 0.88).min(940.0));
+            let size = vec2((screen.width() * 0.9).min(1800.0), (screen.height() * 0.92).min(1200.0));
             let frame = egui::Frame::new()
                 .fill(theme::PANEL)
                 .corner_radius(CornerRadius::same(10))
