@@ -18,7 +18,34 @@ pub const BACKDROP: Color32 = Color32::from_black_alpha(160);
 /// Extra dim for a popup stacked on another (art picker over details).
 pub const STACKED: Color32 = Color32::from_black_alpha(110);
 
+/// Bold font from Windows (Segoe UI Bold), when it's there.
+static BOLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Bold text, or the regular font where Segoe UI Bold is missing.
+pub fn bold(size: f32) -> FontId {
+    match BOLD.get() {
+        Some(true) => FontId::new(size, egui::FontFamily::Name("bold".into())),
+        _ => FontId::proportional(size),
+    }
+}
+
+fn load_bold(ctx: &Context) {
+    let Ok(data) = std::fs::read(r"C:\Windows\Fonts\segoeuib.ttf") else {
+        let _ = BOLD.set(false);
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("bold".into(), std::sync::Arc::new(egui::FontData::from_owned(data)));
+    // Glyphs Segoe lacks fall back to the regular fonts.
+    let mut fam = vec!["bold".to_string()];
+    fam.extend(fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default());
+    fonts.families.insert(egui::FontFamily::Name("bold".into()), fam);
+    ctx.set_fonts(fonts);
+    let _ = BOLD.set(true);
+}
+
 pub fn apply(ctx: &Context) {
+    load_bold(ctx);
     let mut v = egui::Visuals::dark();
     v.panel_fill = PANEL;
     v.window_fill = PANEL;

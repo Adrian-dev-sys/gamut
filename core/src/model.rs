@@ -236,8 +236,23 @@ pub struct Metadata {
 pub struct Rule {
     pub filter: String,
     pub platform: String,
+    /// Single tag from the first version; read as one more entry of `tags`.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub tag: String,
+    pub tags: Vec<String>,
+    /// A game needs every tag (AND) instead of any one of them (OR).
+    pub all_tags: bool,
     pub completion: String,
+}
+
+impl Rule {
+    pub fn tag_list(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self.tags.iter().map(String::as_str).collect();
+        if !self.tag.is_empty() && !v.contains(&self.tag.as_str()) {
+            v.push(&self.tag);
+        }
+        v
+    }
 }
 
 /// A user collection: games added by hand, or (with a rule) every game matching it.

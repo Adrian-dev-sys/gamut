@@ -29,6 +29,8 @@ pub struct Config {
     pub tag: String,
     /// Completion status filter ("" = any).
     pub completion: String,
+    /// The collection the library was showing (None = all games).
+    pub collection: Option<i64>,
     /// Closing the window exits instead of hiding Gamut in the tray.
     pub quit_on_close: bool,
     /// Start with Windows, in the tray (mirrors the HKCU Run entry).
@@ -88,6 +90,7 @@ impl Config {
         on_disk.platform = self.platform.clone();
         on_disk.tag = self.tag.clone();
         on_disk.completion = self.completion.clone();
+        on_disk.collection = self.collection;
         on_disk.window = self.window;
         on_disk.save(path)
     }

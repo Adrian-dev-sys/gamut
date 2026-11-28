@@ -264,7 +264,7 @@ pub struct GamutApp {
     /// Latest un-maximized placement + maximized flag, saved on exit.
     window: Option<gamut_core::config::WindowState>,
     /// Sort/filter as last written to config.
-    saved_view: (Sort, Filter, String, String, String),
+    saved_view: (Sort, Filter, String, String, String, Option<i64>),
     /// Achievements of the game on the details page.
     ach: Option<crate::achievements::GameAch>,
     ra_pick: Option<crate::achievements::RetroPick>,
@@ -278,6 +278,10 @@ pub struct GamutApp {
     collections: Vec<Collection>,
     collection: Option<i64>,
     coll_tab: bool,
+    /// Keyboard/controller cursor on the Collections tab (tile index), columns last frame, scroll-to deadline.
+    coll_cursor: Option<usize>,
+    coll_cols: usize,
+    coll_scroll_until: f64,
     coll_stats: Option<collections::Stats>,
     coll_dialog: Option<collections::CollDialog>,
     confirm_coll_delete: Option<i64>,
@@ -297,6 +301,7 @@ impl GamutApp {
         let (sort, filter) = (from_key(&SORTS, &loaded.sort), from_key(&FILTERS, &loaded.filter));
         let window = loaded.window;
         let (platform, tag, completion) = (loaded.platform.clone(), loaded.tag.clone(), loaded.completion.clone());
+        let saved_coll = loaded.collection;
         let cfg = Arc::new(RwLock::new(loaded));
         let (lib, repair_notice) = Library::open_checked(&paths.db)?;
         let games = lib.all()?;
@@ -380,7 +385,7 @@ impl GamutApp {
             opened_at: 0.0,
             startup: window.as_ref().filter(|w| w.maximized).and_then(|_| crate::startup::Startup::maximize_hidden(cc)),
             window,
-            saved_view: (sort, filter, platform, tag, completion),
+            saved_view: (sort, filter, platform, tag, completion, saved_coll),
             ach: None,
             ra_pick: None,
             ach_tab: None,
@@ -392,8 +397,11 @@ impl GamutApp {
             hltb: None,
             key_checks: Default::default(),
             collections: Vec::new(),
-            collection: None,
+            collection: saved_coll,
             coll_tab: false,
+            coll_cursor: None,
+            coll_cols: 1,
+            coll_scroll_until: 0.0,
             coll_stats: None,
             coll_dialog: None,
             confirm_coll_delete: None,
@@ -764,8 +772,7 @@ impl GamutApp {
                 self.big = Some(ctx.zoom_factor());
                 ctx.set_zoom_factor(ctx.zoom_factor() * 1.35);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-                self.collection = None;
-                (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
+                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
                 if self.filter == Filter::Hidden {
                     self.filter = Filter::All;
                 }
@@ -779,11 +786,19 @@ impl GamutApp {
         ui.horizontal(|ui| {
             theme::logo(ui);
             ui.add_space(24.0);
+            let in_coll = self.coll_tab || self.collection.is_some();
             for (f, label) in BIG_TABS {
-                if ui.selectable_label(self.filter == f, RichText::new(label).size(17.0)).clicked() {
+                if ui.selectable_label(self.filter == f && !in_coll, RichText::new(label).size(17.0)).clicked() {
                     self.filter = f;
+                    (self.coll_tab, self.collection) = (false, None);
                 }
                 ui.add_space(4.0);
+            }
+            if ui.selectable_label(in_coll, RichText::new("Collections").size(17.0)).clicked() {
+                (self.coll_tab, self.collection) = (true, None);
+            }
+            if let Some(c) = self.collection.and_then(|id| self.collections.iter().find(|c| c.id == id)) {
+                ui.label(RichText::new(format!("›  {}", c.name)).size(17.0).color(Color32::WHITE));
             }
             ui.add_space(16.0);
             let label = if self.search.is_empty() { "Search  (Y)".to_string() } else { format!("Search: {}", self.search) };
@@ -842,6 +857,8 @@ impl GamutApp {
                     }
                 }
                 Pad::Nav(n) if !self.popup() && grid => self.nav(n, false),
+                Pad::Nav(n) if self.coll_tab => self.coll_nav(n),
+                Pad::Confirm if self.coll_tab => self.coll_confirm(),
                 // Details: L2/R2 page through the description (the right stick in the side panel too).
                 Pad::Nav(Nav::PageUp) if self.popup() => self.scroll_details(-420.0),
                 Pad::Nav(Nav::PageDown) if self.popup() => self.scroll_details(420.0),
@@ -874,17 +891,7 @@ impl GamutApp {
                     },
                     None => {}
                 },
-                Pad::Back => {
-                    if self.selected.is_some() {
-                        self.selected = None;
-                    } else if !self.multi.is_empty() {
-                        self.multi.clear();
-                    } else if self.collection.take().is_some() {
-                        self.coll_tab = self.big.is_none();
-                    } else if !grid {
-                        (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
-                    }
-                }
+                Pad::Back => self.back(),
                 Pad::Favorite => {
                     if let Some(id) = self.selected.or(self.cursor.filter(|_| self.kb_focus)) {
                         actions.push(Action::ToggleFav(id));
@@ -892,9 +899,15 @@ impl GamutApp {
                 }
                 // Big screen: filter tabs. Otherwise the top tabs (Library, Achievements, Statistics).
                 Pad::PrevTab | Pad::NextTab if !self.popup() && self.big.is_some() => {
-                    let i = BIG_TABS.iter().position(|(f, _)| *f == self.filter).unwrap_or(0) as isize;
+                    // The filter tabs, then Collections.
+                    let n = BIG_TABS.len() as isize + 1;
+                    let i = if self.coll_tab || self.collection.is_some() { n - 1 } else { BIG_TABS.iter().position(|(f, _)| *f == self.filter).unwrap_or(0) as isize };
                     let d = if matches!(p, Pad::NextTab) { 1 } else { -1 };
-                    self.filter = BIG_TABS[(i + d).rem_euclid(BIG_TABS.len() as isize) as usize].0;
+                    let to = (i + d).rem_euclid(n) as usize;
+                    (self.coll_tab, self.collection) = (to == BIG_TABS.len(), None);
+                    if let Some((f, _)) = BIG_TABS.get(to) {
+                        self.filter = *f;
+                    }
                     self.cursor = None;
                     self.scroll_to = Some(0.0);
                 }
@@ -915,6 +928,21 @@ impl GamutApp {
                 Pad::PrevTab | Pad::NextTab => {}
             }
             self.kb_focus = true;
+        }
+    }
+
+    /// B / Esc-like step back: closes the game, clears the selection, leaves a collection or a tab.
+    fn back(&mut self) {
+        let grid = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab && !self.coll_tab;
+        if self.selected.is_some() {
+            self.selected = None;
+        } else if !self.multi.is_empty() {
+            self.multi.clear();
+        } else if self.collection.take().is_some() {
+            self.coll_tab = true;
+            self.scroll_to = Some(0.0);
+        } else if !grid {
+            (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
         }
     }
 
@@ -1517,6 +1545,9 @@ impl GamutApp {
             let fade = Rect::from_min_max(pos2(banner.left(), banner.bottom() - banner_h * 0.6), banner.right_bottom());
             paint_vgradient(ui.painter(), fade, Color32::TRANSPARENT, theme::PANEL);
             close_button(ui, banner.right_top() + vec2(-24.0, 24.0), &mut self.selected);
+            if let Some(c) = collections::game_chips(ui, banner.left_top() + vec2(pad, 18.0), w - pad - 80.0, &colls, &g) {
+                self.open_collection(c);
+            }
 
             // Cover overlaps the banner's bottom edge.
             let cover_w = if narrow { 120.0 } else if wide { (banner_h * 0.55).clamp(190.0, 320.0) } else { 190.0 };
@@ -2673,6 +2704,7 @@ impl GamutApp {
         c.platform = self.platform.clone();
         c.tag = self.tag.clone();
         c.completion = self.completion.clone();
+        c.collection = self.collection;
         c.window = self.window;
         let _ = c.save_ui_prefs(&self.paths.config);
     }
@@ -2930,6 +2962,10 @@ fn facet_picker(ui: &mut Ui, id: &str, all: &str, current: &str, query: &mut Str
                 }
             });
         });
+    // Modals move to the top each frame; keep the list above them.
+    if Popup::is_id_open(ui.ctx(), pid) {
+        ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Foreground, pid));
+    }
     if !current.is_empty() && !editing && theme::x_button(ui, 22.0).on_hover_text(format!("Show {}", all.to_lowercase())).clicked() {
         pick = Some(String::new());
     }
@@ -3226,6 +3262,9 @@ impl eframe::App for GamutApp {
         self.small_thumbs.begin_frame(&ctx);
 
         let typing = ctx.memory(|m| m.focused().is_some());
+        if !self.any_dialog() && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra1)) {
+            self.back();
+        }
         ctx.input(|i| {
             if i.modifiers.command && i.key_pressed(Key::F) {
                 self.focus_search = true;
@@ -3435,7 +3474,7 @@ impl eframe::App for GamutApp {
         self.thumbs.end_frame();
         self.small_thumbs.end_frame();
         self.track_window(&ctx);
-        let view = (self.sort, self.filter, self.platform.clone(), self.tag.clone(), self.completion.clone());
+        let view = (self.sort, self.filter, self.platform.clone(), self.tag.clone(), self.completion.clone(), self.collection);
         if self.saved_view != view {
             self.saved_view = view;
             self.save_prefs();
