@@ -19,6 +19,8 @@ use std::sync::{Arc, RwLock};
 mod backups;
 mod collections;
 mod list;
+mod storage;
+mod uninstall;
 
 use gamut_core::model::Collection;
 
@@ -125,6 +127,7 @@ enum Action {
     ToggleHidden(i64),
     Refresh(i64),
     Remove(i64),
+    Uninstall(i64),
     PickArt(i64, ArtKind),
     /// Ask to close a running game.
     Stop(i64),
@@ -236,6 +239,8 @@ pub struct GamutApp {
     ed_lists: (Vec<(String, usize)>, Vec<(String, usize)>),
     settings: Option<Config>,
     confirm_remove: Option<i64>,
+    /// Game, its uninstaller, and whether to also remove it from the library.
+    confirm_uninstall: Option<(i64, gamut_core::uninstall::Uninstaller, bool)>,
     confirm_stop: Option<i64>,
     health: Option<crate::health_ui::HealthDialog>,
     /// (game to start, Steam game running) when Steam would have to close one for the other.
@@ -255,6 +260,7 @@ pub struct GamutApp {
     nav_probe: Option<(egui::Id, f32)>,
     settings_tab: usize,
     backup_list: backups::BackupList,
+    storage: storage::StorageView,
     /// Backup the user asked to restore (confirming).
     confirm_restore: Option<std::path::PathBuf>,
     picker: Option<Picker>,
@@ -381,6 +387,7 @@ impl GamutApp {
             ed_lists: Default::default(),
             settings: None,
             confirm_remove: None,
+            confirm_uninstall: None,
             confirm_stop: None,
             health: None,
             confirm_play: None,
@@ -393,6 +400,7 @@ impl GamutApp {
             nav_probe: None,
             settings_tab: 0,
             backup_list: Default::default(),
+            storage: Default::default(),
             confirm_restore: None,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
@@ -662,6 +670,7 @@ impl GamutApp {
                     self.workers.kick();
                 }
                 Action::Remove(id) => self.confirm_remove = Some(id),
+                Action::Uninstall(id) => self.uninstall(id)?,
                 Action::RunAction(id, i) => {
                     let Some(g) = self.game(id).cloned() else { return Ok(()) };
                     let Some(a) = g.actions().get(i).cloned() else { return Ok(()) };
@@ -817,7 +826,10 @@ impl GamutApp {
                 2 => self.health = Some(crate::health_ui::HealthDialog::new(self.cfg.read().unwrap().health.clone(), &self.games)),
                 3 => self.workers.rescan(),
                 4 => self.random_game(&ctx),
-                5 => self.settings = Some(self.cfg.read().unwrap().clone()),
+                5 => {
+                    self.settings = Some(self.cfg.read().unwrap().clone());
+                    self.storage.reset();
+                }
                 _ => self.toggle_big(&ctx),
             }
         }
@@ -1048,6 +1060,7 @@ impl GamutApp {
         self.editor.is_some()
             || self.settings.is_some()
             || self.confirm_restore.is_some()
+            || self.confirm_uninstall.is_some()
             || self.confirm_remove.is_some()
             || self.confirm_refresh.is_some()
             || self.confirm_stop.is_some()
@@ -2241,6 +2254,13 @@ impl GamutApp {
                                 let _ = open::that(&self.paths.root);
                             }
                         });
+                        ui.add_space(12.0);
+                        ui.separator();
+                        let backups = gamut_core::backup::dir(&self.paths, &s.backup);
+                        if storage::section(ui, &mut self.storage, &self.paths, backups) {
+                            self.thumbs.clear();
+                            self.small_thumbs.clear();
+                        }
                         }
                     }
                 });
@@ -2830,8 +2850,14 @@ fn context_menu(ui: &mut Ui, g: &Game, colls: &[Collection], actions: &mut Vec<A
         item(ui, actions, "Open install folder", Action::OpenFolder(id));
     }
     item(ui, actions, "Open save folder", Action::OpenSaves(id));
-    if g.source == Source::Custom {
+    let (un, rm) = (uninstall::offered(g), g.source == Source::Custom);
+    if un || rm {
         ui.separator();
+    }
+    if un {
+        item(ui, actions, "Uninstall…", Action::Uninstall(id));
+    }
+    if rm {
         item(ui, actions, "Remove…", Action::Remove(id));
     }
 }
@@ -3565,6 +3591,7 @@ impl eframe::App for GamutApp {
         self.coll_window(&ctx);
         self.coll_delete_window(&ctx);
         self.restore_window(&ctx);
+        self.uninstall_window(&ctx);
         if let Some(o) = &self.osk {
             o.show(&ctx);
         }

@@ -1,5 +1,7 @@
 pub mod achievements;
 pub mod backup;
+pub mod storage;
+pub mod uninstall;
 pub mod config;
 pub mod db;
 pub mod display;

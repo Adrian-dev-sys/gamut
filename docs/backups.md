@@ -13,3 +13,6 @@ Code: `core/src/backup.rs` (create, list, rotate, stage/apply restore), `app/src
   - moves `library.db` (+ `-journal`/`-wal`/`-shm`, so a stale journal is never replayed into the restored DB) and each restored file to `*.pre-restore-<time>`;
   - puts back art missing from the data folder, only for game ids in the restored DB, and drops those covers' thumbs.
   - The result shows as a toast (`main::RESTORED`).
+
+## Storage (Settings → General)
+`core/src/storage.rs`, `app/src/ui/storage.rs`: sizes measured on a thread each time Settings opens. Clearable: thumbnails (regenerated; loaded textures dropped), `art-quarantine`, old copies (`library.db.*` except `.restoring`, and `*.pre-restore-*`; asks twice).

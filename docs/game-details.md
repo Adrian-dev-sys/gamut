@@ -34,3 +34,8 @@ Columns on `games` (added in `db.rs` `ADDED_COLS`): `sort_name`, `user_score`, `
 
 ## Playnite
 - Import reads SortingName, Notes, UserScore, InstallSize, Links, Icon (.ico decodes too), every GameAction except the first play action, and Display Helper's `[RC]` features. Settings → Playnite → "Links, notes and more" fills these for already imported games, only where Gamut has none (`Library::import_extras`). Playnite must be closed (its files are locked). PreScript/PostScript are not imported: they use Playnite's runspace (`$Game`, `$PlayniteApi`) and would fail in plain PowerShell.
+
+## Uninstall
+`core/src/uninstall.rs`, `app/src/ui/uninstall.rs`. Menu item for installed Steam games and non-emulator games whose folder exists.
+- Steam: `steam://uninstall/<appid>` (digits only); Steam confirms.
+- Others: the Windows Uninstall key (HKCU, HKLM 64/32) whose `InstallLocation`, or the `UninstallString` exe's folder, is exactly the game's folder (no prefix matches: a folder like `D:\Games` would hit every app in it). Gamut shows the command and confirms, then runs it via `cmd /C start "" …` (ShellExecute, so UAC prompts work). Optional: remove from the library too. None found → error toast.
