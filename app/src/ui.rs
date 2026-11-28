@@ -3195,13 +3195,15 @@ impl eframe::App for GamutApp {
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 5)))
             .show(ui, |ui| if self.big.is_some() { big_hints(ui) } else { self.status_bar(ui) });
-        if let (Some(id), true) = (self.selected, self.side()) {
-            egui::Panel::right("details_side")
+        // List mode with a game open: the list narrows to the left (like Playnite), details take the rest.
+        let side_open = self.selected.filter(|_| self.side());
+        if side_open.is_some() {
+            egui::Panel::left("list_side")
                 .resizable(true)
-                .default_size(560.0)
-                .size_range(420.0..=1000.0)
-                .frame(egui::Frame::new().fill(theme::PANEL))
-                .show(ui, |ui| self.details(ui, id, &mut actions));
+                .default_size(340.0)
+                .size_range(240.0..=900.0)
+                .frame(egui::Frame::side_top_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(8)))
+                .show(ui, |ui| self.list(ui, &mut actions));
         }
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
@@ -3223,7 +3225,9 @@ impl eframe::App for GamutApp {
                         None => None,
                     },
                     _ => {
-                        if self.cfg.read().unwrap().list_view && self.big.is_none() {
+                        if let Some(id) = side_open {
+                            self.details(ui, id, &mut actions);
+                        } else if self.cfg.read().unwrap().list_view && self.big.is_none() {
                             self.list(ui, &mut actions);
                         } else {
                             self.grid(ui, &mut actions);

@@ -96,6 +96,8 @@ impl GamutApp {
         self.bulk_bar(ui, actions);
         let avail = ui.available_width() - 8.0;
         let cols = layout(&columns(avail), ui.cursor().left(), avail);
+        // Only Name fits (the narrow list beside the details): a second line with last played and time.
+        let compact = cols.len() == 1;
         self.grid_cols = 1;
         self.grid_pitch = ROW_H;
         self.grid_page = (((ui.available_height() - HEAD_H) / ROW_H).floor() as usize).max(1);
@@ -125,6 +127,15 @@ impl GamutApp {
                 ui.label(RichText::new("No games here. Try Refresh, or + Add game.").color(TEXT_DIM));
             });
             return;
+        }
+        // Moving between the full width and the side panel starts a new scroll area: keep the open game in view.
+        let side = self.selected.is_some();
+        let key = egui::Id::unique("list_in_side");
+        let was = ui.ctx().data_mut(|d| std::mem::replace(d.get_temp_mut_or(key, !side), side));
+        if was != side {
+            if let Some(i) = self.selected.or(self.cursor).and_then(|id| self.view.iter().position(|&gi| self.games[gi].id == id)) {
+                self.scroll_to = Some((i as f32 * ROW_H - ui.available_height() / 3.0).max(0.0));
+            }
         }
         let running = self.running();
         let (games, view, thumbs, multi) = (&self.games, &self.view, &mut self.thumbs, &self.multi);
@@ -183,7 +194,15 @@ impl GamutApp {
                     let mut job = egui::text::LayoutJob::simple_singleline(c.text(g), FontId::proportional(size), color);
                     job.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(10.0));
                     let galley = p.layout_job(job);
-                    p.galley(pos2(left, row.center().y - galley.size().y / 2.0), galley, color);
+                    let y = row.center().y - if compact { 8.0 } else { 0.0 };
+                    p.galley(pos2(left, y - galley.size().y / 2.0), galley, color);
+                    if compact {
+                        let sub = [Col::LastPlayed, Col::Playtime].map(|c| c.text(g)).into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join("  ·  ");
+                        let mut job = egui::text::LayoutJob::simple_singleline(sub, FontId::proportional(11.5), TEXT_DIM);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width((right - x - 8.0).max(10.0));
+                        let galley = p.layout_job(job);
+                        p.galley(pos2(x + 8.0, row.center().y + 10.0 - galley.size().y / 2.0), galley, TEXT_DIM);
+                    }
                 }
                 if hovered {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
