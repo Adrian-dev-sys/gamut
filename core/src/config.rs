@@ -55,6 +55,8 @@ pub struct Config {
     pub reshade: crate::reshade::Settings,
     pub health: crate::health::Settings,
     pub backup: crate::backup::Settings,
+    /// Stores kept in sync (`Store::key`), turned on by their first review.
+    pub stores: Vec<String>,
     /// Folder scanners (arrays of tables come last in TOML).
     pub scanners: Vec<crate::scanner::Scanner>,
 }

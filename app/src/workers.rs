@@ -1,4 +1,5 @@
 //! Background threads: Steam scan, cover + metadata scrapers, playtime tracking.
+use gamut_core::stores::{sync::Planned, Store};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::Context;
 use gamut_core::{achievements, launch::{self, Launched}, specialk, steam, sync, Config, Game, Library, Paths};
@@ -22,6 +23,8 @@ pub enum Event {
     Shots(Arc<Vec<gamut_core::screenshots::Shot>>),
     /// F12 saved a screenshot of this game.
     ShotTaken,
+    /// A store's games matched to the library, for the review dialog.
+    StoreReview(Store, Result<Vec<Planned>, String>),
 }
 
 pub struct Workers {
@@ -33,6 +36,8 @@ pub struct Workers {
     pub pending_meta: Arc<AtomicUsize>,
     pub scanning: Arc<AtomicBool>,
     pub backing_up: Arc<AtomicBool>,
+    /// A store is being read for its review.
+    pub store_busy: Arc<AtomicBool>,
     /// Playnite import progress: (images done, images total); total 0 while idle.
     pub importing: Arc<(AtomicUsize, AtomicUsize)>,
     /// Games Gamut started itself and whose process is still alive.
@@ -72,6 +77,7 @@ impl Workers {
             pending_meta: Default::default(),
             scanning: Default::default(),
             backing_up: Default::default(),
+            store_busy: Default::default(),
             importing: Default::default(),
             running: Default::default(),
             steam_running: Default::default(),
@@ -357,6 +363,41 @@ impl Workers {
         });
     }
 
+    /// Reads a store and matches its games, for the review dialog.
+    pub fn store_review(&self, store: Store) {
+        if self.store_busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (paths, tx, ctx, busy) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), self.store_busy.clone());
+        std::thread::spawn(move || {
+            let r = store.scan().and_then(|games| gamut_core::stores::sync::plan(&Library::open(&paths.db)?, store, &games));
+            busy.store(false, Ordering::SeqCst);
+            let _ = tx.send(Event::StoreReview(store, r.map_err(|e| format!("{e:#}"))));
+            ctx.request_repaint();
+        });
+    }
+
+    /// After Install was clicked for a store game: syncs that store every minute (up to 3 hours) until it's installed.
+    pub fn watch_install(&self, g: &Game) {
+        let Some(store) = g.store.as_deref().and_then(|s| Store::ALL.into_iter().find(|x| x.name() == s)) else { return };
+        let (paths, tx, ctx, id) = (self.paths.clone(), self.tx.clone(), self.ctx.clone(), g.id);
+        std::thread::spawn(move || {
+            for _ in 0..180 {
+                std::thread::sleep(Duration::from_secs(60));
+                let Ok(lib) = Library::open(&paths.db) else { continue };
+                let Ok(links) = lib.store_links(store.name()) else { continue };
+                let Some(sid) = links.iter().find(|(_, g)| **g == id).map(|(s, _)| s.clone()) else { return };
+                let Ok(games) = store.scan() else { continue };
+                if games.iter().any(|g| g.id == sid && g.installed) {
+                    drop(lib);
+                    sync_store(&paths, store, &tx, false);
+                    ctx.request_repaint();
+                    return;
+                }
+            }
+        });
+    }
+
     pub fn rescan(&self) {
         self.scanner().run(false);
     }
@@ -452,6 +493,9 @@ impl Scanner {
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("Steam scan failed: {e:#}")));
                 }
+            }
+            for s in c.stores.iter().filter_map(|k| Store::from_key(k)) {
+                sync_store(&paths, s, &tx, quiet);
             }
             scanning.store(false, Ordering::SeqCst);
             sizes(&paths, &tx, &ctx);
@@ -1121,4 +1165,32 @@ fn run_backup(paths: &Paths, s: &gamut_core::backup::Settings, tx: &Sender<Event
         Err(e) => Event::Error(format!("Backup failed: {e:#}")),
     });
     ctx.request_repaint();
+}
+
+/// Syncs a reviewed store: links follow it, new games are imported, doubts wait for the user.
+fn sync_store(paths: &Paths, store: Store, tx: &Sender<Event>, quiet: bool) {
+    use gamut_core::stores::sync::{self, Decision, Match};
+    let r = store.scan().and_then(|games| {
+        let mut lib = Library::open(&paths.db)?;
+        let plan = sync::plan(&lib, store, &games)?;
+        sync::apply(&mut lib, store, &plan, |p| (p.m == Match::New).then_some(Decision::Import))
+    });
+    match r {
+        Ok(a) => {
+            if a.added + a.updated > 0 {
+                let _ = tx.send(Event::LibraryChanged);
+            }
+            if !quiet || a.added + a.updated + a.pending > 0 {
+                let mut m = format!("{} sync: {} new, {} updated", store.name(), a.added, a.updated);
+                if a.pending > 0 {
+                    m += &format!("; {} may already be in your library: Settings → Stores → Review", a.pending);
+                }
+                let _ = tx.send(Event::Info(format!("{m}.")));
+            }
+        }
+        Err(e) if quiet => log::warn!("{} sync failed: {e:#}", store.name()),
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("{} sync failed: {e:#}", store.name())));
+        }
+    }
 }

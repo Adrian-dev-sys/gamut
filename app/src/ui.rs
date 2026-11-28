@@ -20,6 +20,7 @@ mod backups;
 mod collections;
 mod list;
 mod storage;
+mod stores;
 mod uninstall;
 
 use gamut_core::model::Collection;
@@ -112,7 +113,7 @@ fn from_key<T: Copy>(table: &[(T, &'static str)], k: &str) -> T {
     table.iter().find(|(_, n)| *n == k).map(|(t, _)| *t).unwrap_or(table[0].0)
 }
 
-const SETTINGS_TABS: [&str; 5] = ["Library", "Special K", "ReShade", "Backups", "General"];
+const SETTINGS_TABS: [&str; 6] = ["Library", "Stores", "Special K", "ReShade", "Backups", "General"];
 
 enum Action {
     Play(i64),
@@ -263,6 +264,7 @@ pub struct GamutApp {
     storage: storage::StorageView,
     /// Backup the user asked to restore (confirming).
     confirm_restore: Option<std::path::PathBuf>,
+    store_review: Option<stores::Review>,
     picker: Option<Picker>,
     ctx_handle: egui::Context,
     toasts: Toasts,
@@ -405,6 +407,7 @@ impl GamutApp {
             backup_list: Default::default(),
             storage: Default::default(),
             confirm_restore: None,
+            store_review: None,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
             toasts: Toasts::with(repair_notice.or(theme_err)),
@@ -523,6 +526,10 @@ impl GamutApp {
             match ev {
                 Event::Shots(v) => self.shots.set_all(v),
                 Event::ShotTaken => self.workers.index_shots(),
+                Event::StoreReview(store, r) => match r {
+                    Ok(plan) => self.store_review = Some(stores::Review::new(store, plan)),
+                    Err(e) => self.toasts.error(format!("Reading {} failed: {e}", store.name())),
+                },
                 Event::LibraryChanged => {
                     self.workers.index_shots();
                     self.sessions = None; // Steam scans add sessions
@@ -623,6 +630,12 @@ impl GamutApp {
                     let Some(g) = self.game(id).cloned() else { return Ok(()) };
                     let running = self.running();
                     if running.contains(&id) {
+                        return Ok(());
+                    }
+                    // A store game that isn't installed: open its launcher, and sync once it's installed.
+                    if g.needs_install() && g.source == Source::Custom {
+                        gamut_core::launch::launch(&g)?;
+                        self.workers.watch_install(&g);
                         return Ok(());
                     }
                     // Steam runs one game at a time; other games may run side by side.
@@ -802,7 +815,7 @@ impl GamutApp {
             ("Add game", true, ""),
             ("Scan folders", true, "Find games in a folder and add them"),
             ("Health", true, "Find games that can't start and likely duplicates"),
-            ("Refresh", !scanning, "Rescan Steam and sync its collections"),
+            ("Refresh", !scanning, "Rescan Steam (and its collections) and sync the stores in Settings → Stores"),
             ("Random game", !self.view.is_empty(), "Open a random game from the ones shown (Ctrl+R)"),
             ("Settings", true, ""),
             ("Big screen", true, "Full screen, controller-friendly (F11, or View on a controller)"),
@@ -1064,6 +1077,7 @@ impl GamutApp {
         self.editor.is_some()
             || self.settings.is_some()
             || self.confirm_restore.is_some()
+            || self.store_review.is_some()
             || self.confirm_uninstall.is_some()
             || self.confirm_remove.is_some()
             || self.confirm_refresh.is_some()
@@ -1689,7 +1703,7 @@ impl GamutApp {
                                 actions.push(Action::Stop(id));
                             }
                         } else {
-                            let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
+                            let label = if g.needs_install() { "Install" } else { "Play" };
                             let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
                                 .fill(ACCENT())
                                 .min_size(vec2(150.0, 38.0));
@@ -2019,6 +2033,7 @@ impl GamutApp {
             .unwrap_or_default();
         let mut tab = self.settings_tab;
         let mut restore = None;
+        let mut review_req = None;
         self.key_checks.update(s, ctx);
         let checks = &self.key_checks;
         let screen = ctx.content_rect();
@@ -2155,7 +2170,7 @@ impl GamutApp {
                             }
                         });
                         }
-                        1 => {
+                        2 => {
                         theme::section(ui, "Special K");
                         let sk = &mut s.specialk;
                         egui::Grid::new("sk").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
@@ -2213,7 +2228,7 @@ impl GamutApp {
                             });
                         }
                         }
-                        2 => {
+                        3 => {
                         theme::section(ui, "ReShade");
                         ui.checkbox(&mut s.reshade.enabled, "Install ReShade into games when they first start");
                         ui.checkbox(&mut s.reshade.skip_anticheat, "Skip games with EasyAntiCheat or BattlEye");
@@ -2232,7 +2247,12 @@ impl GamutApp {
                             }
                         });
                         }
-                        3 => backups::tab(ui, &mut s.backup, &self.paths, &self.workers, &mut self.backup_list, &mut restore),
+                        1 => {
+                            if let Some(st) = stores::tab(ui, s, &self.lib, self.workers.store_busy.load(Ordering::Relaxed)) {
+                                review_req = Some(st);
+                            }
+                        }
+                        4 => backups::tab(ui, &mut s.backup, &self.paths, &self.workers, &mut self.backup_list, &mut restore),
                         _ => {
                         theme::section(ui, "Window");
                         let mut tray = !s.quit_on_close;
@@ -2296,6 +2316,9 @@ impl GamutApp {
         self.settings_tab = tab;
         if restore.is_some() {
             self.confirm_restore = restore;
+        }
+        if let Some(st) = review_req {
+            self.workers.store_review(st);
         }
         if let Some(dir) = preview {
             self.workers.playnite_preview(dir);
@@ -2857,7 +2880,7 @@ fn context_menu(ui: &mut Ui, g: &Game, colls: &[Collection], actions: &mut Vec<A
             ui.close();
         }
     };
-    item(ui, actions, if g.source == Source::Steam && !g.installed { "Install" } else { "Play" }, Action::Play(id));
+    item(ui, actions, if g.needs_install() { "Install" } else { "Play" }, Action::Play(id));
     for (i, a) in g.actions().iter().enumerate() {
         item(ui, actions, &a.name, Action::RunAction(id, i));
     }
@@ -3619,6 +3642,7 @@ impl eframe::App for GamutApp {
         self.coll_window(&ctx);
         self.coll_delete_window(&ctx);
         self.restore_window(&ctx);
+        self.review_window(&ctx);
         self.uninstall_window(&ctx);
         if let Some(o) = &self.osk {
             o.show(&ctx);

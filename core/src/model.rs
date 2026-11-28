@@ -186,6 +186,11 @@ impl Game {
     }
 
     /// The game's folder: install folder, else the ROM's, else the exe's.
+    /// Not installed, and Play opens its store to install it (Steam, or a store link like goggalaxy://).
+    pub fn needs_install(&self) -> bool {
+        !self.installed && (self.source == Source::Steam || self.exe.as_deref().is_some_and(|e| e.contains("://")))
+    }
+
     pub fn folder(&self) -> Option<std::path::PathBuf> {
         let d = self.install_dir.as_deref().filter(|d| abs(d)).map(std::path::PathBuf::from);
         d.or_else(|| {

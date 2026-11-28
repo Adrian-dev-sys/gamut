@@ -34,6 +34,11 @@ pub fn launch_with(g: &Game, env: &[(String, String)]) -> Result<Launched> {
                 .unwrap_or(false);
             if !is_exe {
                 // URLs, shortcuts, ROMs with file associations, ...
+                if let Some(scheme) = exe.split_once("://").map(|(s, _)| s.to_lowercase()).filter(|s| s != "http" && s != "https") {
+                    if !protocol_registered(&scheme) {
+                        bail!("{} needs {} to be installed ({scheme}:// links don't open)", g.name, launcher_name(&scheme));
+                    }
+                }
                 open::that_detached(exe)?;
                 return Ok(Launched::External);
             }
@@ -60,11 +65,44 @@ pub fn launch_with(g: &Game, env: &[(String, String)]) -> Result<Launched> {
             let mut child = cmd.spawn()?;
             let start_unix = crate::now();
             let t0 = Instant::now();
+            let dirs = crate::procs::game_dirs(g);
             Ok(Launched::Tracked(std::thread::spawn(move || {
                 child.wait().ok()?;
+                // Exited fast: a launcher (e.g. REDprelauncher) that starts the game itself. Follow the game's folder.
+                if t0.elapsed() < std::time::Duration::from_secs(90) && !dirs.is_empty() {
+                    let gone = || crate::procs::under(&dirs).is_empty();
+                    let wait = Instant::now();
+                    while gone() && wait.elapsed() < std::time::Duration::from_secs(180) {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    while !gone() {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                    }
+                }
                 let mins = (t0.elapsed().as_secs() + 30) / 60;
                 Some((mins as i64, start_unix))
             })))
         }
+    }
+}
+
+/// Whether Windows knows a program for `scheme://` links.
+#[cfg(windows)]
+fn protocol_registered(scheme: &str) -> bool {
+    winreg::RegKey::predef(winreg::enums::HKEY_CLASSES_ROOT).open_subkey(scheme).is_ok()
+}
+
+#[cfg(not(windows))]
+fn protocol_registered(_: &str) -> bool {
+    true
+}
+
+fn launcher_name(scheme: &str) -> &str {
+    match scheme {
+        "goggalaxy" => "GOG Galaxy",
+        "steam" => "Steam",
+        "uplay" => "Ubisoft Connect",
+        "com.epicgames.launcher" => "the Epic Games Launcher",
+        _ => "its launcher",
     }
 }

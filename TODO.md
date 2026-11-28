@@ -8,7 +8,7 @@
 - [x] **Folder scanners** – saved scanners, review with checkboxes, best-guess exe and name, metadata fetched after adding
 - [x] Scanner tweaks: no depth limit, platform dropdown, tag suggestions, unticked results remembered, new games shown first
 - [ ] Scanners step 2: automatic rescans; emulator scanners
-- [ ] GOG (GOG Galaxy / installed games)
+- [x] GOG (GOG Galaxy / installed games)
 - [ ] Epic Games Store
 - [ ] Xbox / Microsoft Store (PC Game Pass)
 - [ ] **Emulator auto-scanners** – point at ROM folders, detect the system (RetroArch, Dolphin, PCSX2, RPCS3, Ryujinx/yuzu forks, Cemu, DuckStation, PPSSPP…), create entries with the right launch command, then fetch metadata and covers per platform

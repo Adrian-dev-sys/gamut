@@ -2,6 +2,7 @@ use crate::achievements::{Achievement, Fetched, State as AchState};
 use crate::model::{state, Collection, Game, Metadata, Rule, Source};
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// SQLite-backed game library. Each thread opens its own handle (rollback journal).
@@ -117,6 +118,9 @@ impl Library {
              CREATE TABLE IF NOT EXISTS collections (id INTEGER PRIMARY KEY, name TEXT NOT NULL, rule TEXT);
              -- Games once marked Beaten for being in Steam's Finished collection (never again).
              CREATE TABLE IF NOT EXISTS steam_beaten (game_id INTEGER PRIMARY KEY);
+             -- Store games (GOG, Epic, ...) and the library rows they are; skipped ones aren't imported.
+             CREATE TABLE IF NOT EXISTS store_links (store TEXT NOT NULL, store_id TEXT NOT NULL, game_id INTEGER NOT NULL, PRIMARY KEY (store, store_id));
+             CREATE TABLE IF NOT EXISTS store_skipped (store TEXT NOT NULL, store_id TEXT NOT NULL, PRIMARY KEY (store, store_id));
              CREATE TABLE IF NOT EXISTS collection_games (
                 collection_id INTEGER NOT NULL, game_id INTEGER NOT NULL, PRIMARY KEY (collection_id, game_id)
              );",
@@ -257,6 +261,8 @@ impl Library {
                 let _ = new.conn.execute_batch(&format!("UPDATE collections SET {col} = (SELECT o.{col} FROM old.collections o WHERE o.id = collections.id)"));
             }
             let _ = new.conn.execute_batch("INSERT OR IGNORE INTO steam_beaten SELECT game_id FROM old.steam_beaten");
+            let _ = new.conn.execute_batch("INSERT OR IGNORE INTO store_links SELECT store, store_id, game_id FROM old.store_links");
+            let _ = new.conn.execute_batch("INSERT OR IGNORE INTO store_skipped SELECT store, store_id FROM old.store_skipped");
             let _ = new.conn.execute_batch("DETACH DATABASE old");
         }
         let backup = format!(".damaged-{}", crate::now());
@@ -550,7 +556,54 @@ impl Library {
         self.conn.execute("DELETE FROM hltb WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM collection_games WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM steam_beaten WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM store_links WHERE game_id = ?1", [id])?;
         Ok(())
+    }
+
+    /// Store game id -> library game, for one store.
+    pub fn store_links(&self, store: &str) -> Result<HashMap<String, i64>> {
+        let mut st = self.conn.prepare("SELECT store_id, game_id FROM store_links WHERE store = ?1")?;
+        let v = st.query_map([store], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        Ok(v)
+    }
+
+    pub fn link_store(&self, store: &str, store_id: &str, game: i64) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO store_links (store, store_id, game_id) VALUES (?1, ?2, ?3)", params![store, store_id, game])?;
+        Ok(())
+    }
+
+    pub fn store_skipped(&self, store: &str) -> Result<HashSet<String>> {
+        let mut st = self.conn.prepare("SELECT store_id FROM store_skipped WHERE store = ?1")?;
+        let v = st.query_map([store], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(v)
+    }
+
+    pub fn skip_store_game(&self, store: &str, store_id: &str) -> Result<()> {
+        self.conn.execute("INSERT OR IGNORE INTO store_skipped (store, store_id) VALUES (?1, ?2)", params![store, store_id])?;
+        Ok(())
+    }
+
+    /// Forgets skipped games of a store, so the next review offers them again.
+    pub fn unskip_store(&self, store: &str) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM store_skipped WHERE store = ?1", [store])?)
+    }
+
+    /// The store's view of a game: installed state, folder and how it starts. Returns whether anything changed.
+    pub fn set_store_state(&self, id: i64, store: &str, installed: bool, install_dir: Option<&str>, launch: Option<(&str, Option<&str>, Option<&str>)>) -> Result<bool> {
+        let n = match launch {
+            Some((exe, args, wd)) => self.conn.execute(
+                "UPDATE games SET store = ?2, installed = ?3, install_dir = ?4, exe = ?5, args = ?6, work_dir = ?7,
+                 platform = COALESCE(platform, 'PC (Windows)')
+                 WHERE id = ?1 AND (store IS NOT ?2 OR installed != ?3 OR install_dir IS NOT ?4 OR exe IS NOT ?5 OR args IS NOT ?6 OR work_dir IS NOT ?7)",
+                params![id, store, installed, install_dir, exe, args, wd],
+            )?,
+            None => self.conn.execute(
+                "UPDATE games SET store = ?2, installed = ?3, install_dir = COALESCE(?4, install_dir), platform = COALESCE(platform, 'PC (Windows)')
+                 WHERE id = ?1 AND (store IS NOT ?2 OR installed != ?3 OR (?4 IS NOT NULL AND install_dir IS NOT ?4))",
+                params![id, store, installed, install_dir],
+            )?,
+        };
+        Ok(n > 0)
     }
 
     /// Every collection with its hand-added games.

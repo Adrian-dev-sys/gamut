@@ -2,6 +2,7 @@ pub mod achievements;
 pub mod backup;
 pub mod secret;
 pub mod storage;
+pub mod stores;
 pub mod uninstall;
 pub mod config;
 pub mod db;
