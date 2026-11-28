@@ -156,7 +156,7 @@ fn main_color(img: &ColorImage) -> Color32 {
     let avg = sum.map(|s| (s / w).round() as u8);
     let mut hsv = egui::ecolor::Hsva::from(Color32::from_rgb(avg[0], avg[1], avg[2]));
     if hsv.s < 0.12 {
-        return crate::theme::ACCENT; // grey cover: no color of its own
+        return crate::theme::ACCENT(); // grey cover: no color of its own
     }
     (hsv.s, hsv.v) = (hsv.s.clamp(0.45, 0.9), hsv.v.max(0.85));
     Color32::from(hsv)

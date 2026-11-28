@@ -68,7 +68,7 @@ pub(super) fn section(ui: &mut Ui, v: &mut StorageView, paths: &gamut_core::Path
                 };
                 let mut b = egui::Button::new(label);
                 if armed {
-                    b = b.fill(theme::DANGER);
+                    b = b.fill(theme::DANGER());
                 }
                 if ui.add_enabled(u.bytes > 0, b).on_hover_text(u.hint).clicked() {
                     if armed || u.kind == Kind::Thumbs {

@@ -171,7 +171,7 @@ impl HealthDialog {
                                     ui.checkbox(mv, format!("Add their playtime ({}) to the kept copy", util::playtime(mins)));
                                 }
                                 ui.horizontal(|ui| {
-                                    if ui.button(RichText::new("Remove the others").color(ACCENT)).clicked() {
+                                    if ui.button(RichText::new("Remove the others").color(ACCENT())).clicked() {
                                         out = Some(HealthOut::KeepOnly { keep: *keep, remove: others.iter().map(|g| g.id).collect(), move_playtime: *mv && mins > 0 });
                                     }
                                     if ui.button("Cancel").clicked() {
@@ -212,7 +212,7 @@ fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 
 fn title(ui: &mut Ui, g: &Game) {
     ui.label(RichText::new(&g.name).strong().size(15.0));
-    ui.label(RichText::new(health::platform(g)).color(TEXT_DIM));
+    ui.label(RichText::new(health::platform(g)).color(TEXT_DIM()));
 }
 
 /// One copy of a duplicate: how it starts on the first line, where it came from and what it has below.
@@ -220,7 +220,7 @@ fn copy_row(ui: &mut Ui, g: &Game, suggested: bool, out: &mut Option<HealthOut>,
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             let head = if suggested { format!("{}  (suggested)", launcher(g)) } else { launcher(g) };
-            ui.label(if suggested { RichText::new(head).color(ACCENT) } else { RichText::new(head) });
+            ui.label(if suggested { RichText::new(head).color(ACCENT()) } else { RichText::new(head) });
             ui.label(theme::hint(&details(g)));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

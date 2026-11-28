@@ -158,35 +158,35 @@ fn preview(ui: &mut Ui, d: &VnDetails, src: &str) -> Option<bool> {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new(&d.title).strong().size(15.0));
-        ui.label(RichText::new(format!("· {src} has {have} of 9 fields")).color(TEXT_DIM));
+        ui.label(RichText::new(format!("· {src} has {have} of 9 fields")).color(TEXT_DIM()));
     });
     ui.add_space(4.0);
     egui::Grid::new("ed_preview").num_columns(2).spacing([14.0, 6.0]).min_col_width(110.0).show(ui, |ui| {
         for (label, v) in rows {
-            ui.label(RichText::new(label).color(TEXT_DIM));
+            ui.label(RichText::new(label).color(TEXT_DIM()));
             match v {
                 Some(v) => ui.add(egui::Label::new(v).wrap()),
-                None => ui.label(RichText::new("—").color(TEXT_DIM)),
+                None => ui.label(RichText::new("—").color(TEXT_DIM())),
             };
             ui.end_row();
         }
-        ui.label(RichText::new("Description").color(TEXT_DIM));
+        ui.label(RichText::new("Description").color(TEXT_DIM()));
         if text.is_empty() {
-            ui.label(RichText::new("—").color(TEXT_DIM));
+            ui.label(RichText::new("—").color(TEXT_DIM()));
         } else {
             let pics = if images > 0 { format!(", {images} images") } else { String::new() };
-            ui.label(RichText::new(format!("{} words{pics}", text.split_whitespace().count())).color(TEXT_DIM));
+            ui.label(RichText::new(format!("{} words{pics}", text.split_whitespace().count())).color(TEXT_DIM()));
         }
         ui.end_row();
     });
     if !text.is_empty() {
         egui::ScrollArea::vertical().id_salt("ed_preview_desc").max_height(120.0).show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(&text).color(TEXT)).wrap());
+            ui.add(egui::Label::new(RichText::new(&text).color(TEXT())).wrap());
         });
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        let fill = egui::Button::new(RichText::new("Fill form").color(Color32::WHITE)).fill(ACCENT);
+        let fill = egui::Button::new(RichText::new("Fill form").color(Color32::WHITE)).fill(ACCENT());
         if ui.add(fill).on_hover_text("Replace the form's fields with these (nothing is saved until Save)").clicked() {
             out = Some(true);
         }
@@ -375,7 +375,7 @@ impl Editor {
                             open = false;
                         }
                         let ok = !self.name.trim().is_empty();
-                        let save = egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT).min_size(vec2(90.0, 0.0));
+                        let save = egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT()).min_size(vec2(90.0, 0.0));
                         if ui.add_enabled(ok, save).on_disabled_hover_text("A name is required").clicked() {
                             out = EditorOutcome::Save;
                         }
@@ -410,9 +410,9 @@ impl Editor {
                     ui.add_enabled_ui(!steam, |ui| {
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut self.play_h).desired_width(50.0));
-                            ui.label(RichText::new("h").color(TEXT_DIM));
+                            ui.label(RichText::new("h").color(TEXT_DIM()));
                             ui.add(egui::TextEdit::singleline(&mut self.play_m).desired_width(36.0));
-                            ui.label(RichText::new("m").color(TEXT_DIM));
+                            ui.label(RichText::new("m").color(TEXT_DIM()));
                         });
                     })
                     .response
@@ -450,7 +450,7 @@ impl Editor {
     fn lookup_panel(&mut self, ui: &mut Ui, cfg: Option<&Config>) {
         if let Some(c) = self.compare.as_mut() {
             let mut out = None;
-            egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            egui::Frame::new().fill(CARD()).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                 theme::raised_widgets(ui);
                 out = c.show(ui, cfg);
             });
@@ -485,7 +485,7 @@ impl Editor {
         match self.lookup.as_mut() {
             None => {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Fill from").color(TEXT_DIM));
+                    ui.label(RichText::new("Fill from").color(TEXT_DIM()));
                     for src in srcs {
                         let on = src != Src::Igdb || cfg.is_some();
                         let r = ui
@@ -499,19 +499,19 @@ impl Editor {
                         }
                     }
                     ui.separator();
-                    let all = egui::Button::new(RichText::new("Compare all…").color(Color32::WHITE)).fill(ACCENT);
+                    let all = egui::Button::new(RichText::new("Compare all…").color(Color32::WHITE)).fill(ACCENT());
                     if ui.add(all).on_hover_text("Search every source at once, side by side, and mix fields between them").clicked() {
                         let year = util::release_input(&self.release).get(..4).and_then(|y| y.parse().ok());
                         self.compare = Some(Compare::new(ui.ctx(), cfg, &self.name, &self.platform, year));
                     }
                     if let Some(f) = &self.filled {
-                        ui.label(RichText::new(f).color(TEXT_DIM));
+                        ui.label(RichText::new(f).color(TEXT_DIM()));
                     }
                 });
             }
             Some(s) => {
                 let mut close = false;
-                egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                egui::Frame::new().fill(CARD()).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                     theme::raised_widgets(ui);
                     ui.horizontal(|ui| {
                         // Switching source keeps the query, so the same game can be compared across sources.
@@ -537,7 +537,7 @@ impl Editor {
                         }
                     });
                     if let Some(e) = &s.error {
-                        ui.label(RichText::new(e).color(theme::DANGER));
+                        ui.label(RichText::new(e).color(theme::DANGER()));
                     }
                     if let Some((d, igdb_id)) = &s.preview {
                         match preview(ui, d, s.src.name()) {
@@ -548,7 +548,7 @@ impl Editor {
                         return;
                     }
                     if s.error.is_none() && !s.busy && s.results.is_empty() {
-                        ui.label(RichText::new("Nothing found. Try a shorter or different name.").color(TEXT_DIM));
+                        ui.label(RichText::new("Nothing found. Try a shorter or different name.").color(TEXT_DIM()));
                     }
                     let mut picked = None;
                     egui::ScrollArea::vertical().id_salt("ed_lookup").max_height(220.0).show(ui, |ui| {
@@ -965,7 +965,7 @@ impl Editor {
                     self.cover_file = rfd::FileDialog::new().add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file();
                 }
                 let t = self.cover_file.as_ref().map_or("none".into(), |p| p.file_name().unwrap_or_default().to_string_lossy().to_string());
-                ui.label(RichText::new(t).color(TEXT_DIM));
+                ui.label(RichText::new(t).color(TEXT_DIM()));
             });
             return None;
         }
@@ -1074,7 +1074,7 @@ impl Editor {
 /// An art preview: the image fitted into `size`, a spinner while it loads, or a placeholder.
 fn art_box(ui: &mut Ui, tex: Option<&Option<egui::TextureHandle>>, size: egui::Vec2, empty: &str) {
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(8), CARD);
+    ui.painter().rect_filled(rect, CornerRadius::same(8), CARD());
     match tex {
         Some(Some(t)) => {
             // Fit inside the box, keeping the image's aspect ratio.
@@ -1084,7 +1084,7 @@ fn art_box(ui: &mut Ui, tex: Option<&Option<egui::TextureHandle>>, size: egui::V
             egui::Image::new(t).corner_radius(CornerRadius::same(8)).paint_at(ui, r);
         }
         Some(None) => {
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, empty, egui::FontId::proportional(13.0), TEXT_DIM);
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, empty, egui::FontId::proportional(13.0), TEXT_DIM());
         }
         None => {
             ui.put(egui::Rect::from_center_size(rect.center(), vec2(18.0, 18.0)), egui::Spinner::new());
@@ -1093,7 +1093,7 @@ fn art_box(ui: &mut Ui, tex: Option<&Option<egui::TextureHandle>>, size: egui::V
 }
 
 fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
-    ui.label(RichText::new(label).color(TEXT_DIM));
+    ui.label(RichText::new(label).color(TEXT_DIM()));
     add(ui);
     ui.end_row();
 }
@@ -1154,14 +1154,14 @@ fn completion(ui: &mut Ui, v: &mut String, known: &[(String, usize)], w: f32) {
 
 /// One removable chip; long text is cut with "…" (full text on hover). True when ✕ was clicked.
 fn chip(ui: &mut Ui, text: &str, id: egui::Id) -> bool {
-    let mut job = egui::text::LayoutJob::simple_singleline(text.into(), egui::FontId::proportional(13.0), TEXT);
+    let mut job = egui::text::LayoutJob::simple_singleline(text.into(), egui::FontId::proportional(13.0), TEXT());
     job.wrap = egui::text::TextWrapping::truncate_at_width(220.0);
     let galley = ui.painter().layout_job(job);
     let cut = galley.elided;
     let (h, x) = (24.0, 18.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(10.0 + galley.size().x + 6.0 + x + 3.0, h), egui::Sense::hover());
-    ui.painter().rect(rect, CornerRadius::same(12), CARD, Stroke::new(1.0, CARD_HI), egui::StrokeKind::Inside);
-    ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, TEXT);
+    ui.painter().rect(rect, CornerRadius::same(12), CARD(), Stroke::new(1.0, CARD_HI()), egui::StrokeKind::Inside);
+    ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, TEXT());
     if cut {
         resp.on_hover_text(text);
     }

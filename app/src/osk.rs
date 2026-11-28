@@ -74,8 +74,8 @@ impl Osk {
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
                 egui::Frame::new()
-                    .fill(PANEL)
-                    .stroke(Stroke::new(1.0, crate::theme::BORDER))
+                    .fill(PANEL())
+                    .stroke(Stroke::new(1.0, crate::theme::BORDER()))
                     .corner_radius(CornerRadius::same(12))
                     .inner_margin(egui::Margin::same(14))
                     .shadow(ctx.global_style().visuals.window_shadow)
@@ -84,11 +84,11 @@ impl Osk {
                         let (rect, _) = ui.allocate_exact_size(vec2(w, 5.0 * key_h + 4.0 * gap + 26.0), egui::Sense::hover());
                         let p = ui.painter();
                         let key = |r: Rect, label: &str, on: bool, lit: bool| {
-                            let fill = if on { ACCENT.gamma_multiply(0.45) } else if lit { ACCENT.gamma_multiply(0.2) } else { CARD_HI };
+                            let fill = if on { ACCENT().gamma_multiply(0.45) } else if lit { ACCENT().gamma_multiply(0.2) } else { CARD_HI() };
                             p.rect_filled(r, CornerRadius::same(6), fill);
-                            let s = if on { Stroke::new(2.5, Color32::WHITE) } else { Stroke::new(1.0, CARD) };
+                            let s = if on { Stroke::new(2.5, Color32::WHITE) } else { Stroke::new(1.0, CARD()) };
                             p.rect_stroke(r, CornerRadius::same(6), s, StrokeKind::Inside);
-                            p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(18.0), TEXT);
+                            p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(18.0), TEXT());
                         };
                         let at = |row: usize, from: usize, to: usize| {
                             let min = rect.min + vec2(from as f32 * (key_w + gap), row as f32 * (key_h + gap));
@@ -109,7 +109,7 @@ impl Osk {
                             Align2::CENTER_CENTER,
                             "A type · X delete · Y space · LB/RB shift · B done",
                             FontId::proportional(13.5),
-                            TEXT_DIM,
+                            TEXT_DIM(),
                         );
                     });
             });

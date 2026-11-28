@@ -156,7 +156,7 @@ pub fn show(ui: &mut egui::Ui, poster_url: &str, poster: egui::Image, size: egui
 pub fn show_gif(ui: &mut egui::Ui, url: &str, size: egui::Vec2) {
     let rect = run(ui, url, size);
     if !paint_frame(ui, url, rect) {
-        ui.painter().rect_filled(rect, 6.0, crate::theme::CARD);
+        ui.painter().rect_filled(rect, 6.0, crate::theme::CARD());
         ui.put(egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)), egui::Spinner::new().size(22.0));
     }
 }

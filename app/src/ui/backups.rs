@@ -105,7 +105,7 @@ impl GamutApp {
             ));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new("Restore and restart").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                if ui.add(egui::Button::new(RichText::new("Restore and restart").color(Color32::WHITE)).fill(ACCENT())).clicked() {
                     match backup::stage(&self.paths, &path) {
                         Ok(()) => self.restart(ctx),
                         Err(e) => self.toasts.error(format!("Can't restore: {e:#}")),

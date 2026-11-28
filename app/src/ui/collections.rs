@@ -164,7 +164,7 @@ impl GamutApp {
     pub(super) fn collection_chip(&mut self, ui: &mut Ui) {
         if let Some(c) = self.collection.and_then(|id| self.collections.iter().find(|c| c.id == id)) {
             let name = c.name.clone();
-            egui::Frame::new().fill(ACCENT.gamma_multiply(0.25)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
+            egui::Frame::new().fill(ACCENT().gamma_multiply(0.25)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(8, 2)).show(ui, |ui| {
                 ui.label(RichText::new(name).strong().color(Color32::WHITE));
                 if theme::x_button(ui, 20.0).on_hover_text("Back to all games").clicked() {
                     self.collection = None;
@@ -289,9 +289,9 @@ impl GamutApp {
             }
         }
         ui.horizontal(|ui| {
-            ui.label(RichText::new("YOUR COLLECTIONS").font(theme::bold(13.0)).color(TEXT_DIM));
+            ui.label(RichText::new("YOUR COLLECTIONS").font(theme::bold(13.0)).color(TEXT_DIM()));
             let r = ui.available_rect_before_wrap();
-            ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, CARD_HI));
+            ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, CARD_HI()));
         });
         let avail = ui.available_width() - 8.0;
         let cols = (((avail + GAP) / (TILE + GAP)).floor() as usize).max(1);
@@ -370,7 +370,7 @@ impl GamutApp {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Sort by").color(TEXT_DIM));
+                ui.label(RichText::new("Sort by").color(TEXT_DIM()));
                 let label = |s: Option<Sort>| s.and_then(|s| SORT_LABELS.iter().find(|(x, _)| *x == s)).map_or("Library default", |(_, l)| *l);
                 egui::ComboBox::from_id_salt("coll_sort").width(180.0).height(400.0).selected_text(label(d.sort)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut d.sort, None, "Library default");
@@ -387,7 +387,7 @@ impl GamutApp {
             if d.dynamic {
                 ui.add_space(8.0);
                 egui::Grid::new("coll_rule").num_columns(2).spacing(vec2(14.0, 10.0)).show(ui, |ui| {
-                    ui.label(RichText::new("Show").color(TEXT_DIM));
+                    ui.label(RichText::new("Show").color(TEXT_DIM()));
                     let cur = from_key(&FILTERS, &d.rule.filter);
                     egui::ComboBox::from_id_salt("coll_filter")
                         .width(160.0)
@@ -401,19 +401,19 @@ impl GamutApp {
                         });
                     ui.end_row();
                     let [pq, tq, cq] = &mut d.queries;
-                    ui.label(RichText::new("Platform").color(TEXT_DIM));
+                    ui.label(RichText::new("Platform").color(TEXT_DIM()));
                     ui.horizontal(|ui| {
                         if let Some(p) = facet_picker(ui, "coll_platform", "All platforms", &d.rule.platform, pq, &self.platforms) {
                             d.rule.platform = p;
                         }
                     });
                     ui.end_row();
-                    ui.label(RichText::new("Tags").color(TEXT_DIM));
+                    ui.label(RichText::new("Tags").color(TEXT_DIM()));
                     ui.vertical(|ui| {
                         ui.horizontal_wrapped(|ui| {
                             let mut drop = None;
                             for (i, t) in d.rule.tags.iter().enumerate() {
-                                egui::Frame::new().fill(CARD_HI).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin { left: 8, right: 2, top: 2, bottom: 2 }).show(ui, |ui| {
+                                egui::Frame::new().fill(CARD_HI()).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin { left: 8, right: 2, top: 2, bottom: 2 }).show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.label(t);
                                         if theme::x_button(ui, 18.0).on_hover_text("Remove").clicked() {
@@ -440,7 +440,7 @@ impl GamutApp {
                         }
                     });
                     ui.end_row();
-                    ui.label(RichText::new("Status").color(TEXT_DIM));
+                    ui.label(RichText::new("Status").color(TEXT_DIM()));
                     ui.horizontal(|ui| {
                         if let Some(c) = facet_picker(ui, "coll_status", "Any status", &d.rule.completion, cq, &self.completions) {
                             d.rule.completion = c;
@@ -449,9 +449,9 @@ impl GamutApp {
                     ui.end_row();
                 });
                 ui.add_space(4.0);
-                ui.label(RichText::new(format!("{matching} games match")).color(TEXT_DIM));
+                ui.label(RichText::new(format!("{matching} games match")).color(TEXT_DIM()));
             } else if !d.add.is_empty() {
-                ui.label(RichText::new(format!("{} games will be added", d.add.len())).color(TEXT_DIM));
+                ui.label(RichText::new(format!("{} games will be added", d.add.len())).color(TEXT_DIM()));
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -546,14 +546,14 @@ fn new_tile(ui: &mut Ui, rect: Rect, is_cursor: bool) -> egui::Response {
     let r = CornerRadius::same(4);
     let hot = resp.hovered() || is_cursor;
     if hot {
-        p.rect_filled(rect, r, CARD);
+        p.rect_filled(rect, r, CARD());
     }
-    p.rect_stroke(rect, r, Stroke::new(1.5, if hot { TEXT_DIM } else { CARD_HI }), StrokeKind::Inside);
+    p.rect_stroke(rect, r, Stroke::new(1.5, if hot { TEXT_DIM() } else { CARD_HI() }), StrokeKind::Inside);
     let c = rect.center() - vec2(0.0, 18.0);
-    let s = Stroke::new(2.5, TEXT);
+    let s = Stroke::new(2.5, TEXT());
     p.line_segment([c - vec2(11.0, 0.0), c + vec2(11.0, 0.0)], s);
     p.line_segment([c - vec2(0.0, 11.0), c + vec2(0.0, 11.0)], s);
-    p.text(rect.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, "CREATE A NEW\nCOLLECTION", theme::bold(13.0), TEXT);
+    p.text(rect.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, "CREATE A NEW\nCOLLECTION", theme::bold(13.0), TEXT());
     if is_cursor {
         cursor_ring(p, rect);
     }
@@ -595,12 +595,12 @@ fn tile(ui: &mut Ui, rect: Rect, c: &Collection, count: usize, covers: &[Texture
     let mut job = egui::text::LayoutJob::simple(c.name.to_uppercase(), theme::bold(17.0), Color32::WHITE, TILE - 24.0);
     job.halign = Align::Center;
     let name = p.layout_job(job);
-    let count_g = p.layout_no_wrap(format!("( {count} )"), theme::bold(13.5), TEXT);
+    let count_g = p.layout_no_wrap(format!("( {count} )"), theme::bold(13.5), TEXT());
     let total = name.size().y + 4.0 + count_g.size().y;
     let top = rect.center().y - total / 2.0;
     // Centered galley: x is the middle of each line.
     p.galley(pos2(rect.center().x, top), name.clone(), Color32::WHITE);
-    p.galley(pos2(rect.center().x - count_g.size().x / 2.0, top + name.size().y + 4.0), count_g, TEXT);
+    p.galley(pos2(rect.center().x - count_g.size().x / 2.0, top + name.size().y + 4.0), count_g, TEXT());
     if c.rule.is_some() && c.id != FAVORITES {
         paint_bolt(&p, rect.right_bottom() + vec2(-15.0, -15.0));
     }

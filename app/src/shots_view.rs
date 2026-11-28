@@ -127,7 +127,7 @@ impl ShotsView {
         let s = &self.all[list[pos]];
         let (path, preview) = (s.path.clone(), s.thumb.clone());
         let radius = CornerRadius::same(6);
-        ui.painter().rect_filled(rect, radius, CARD);
+        ui.painter().rect_filled(rect, radius, CARD());
         if let Some(t) = self.texture(&path, THUMB_W, preview.as_ref()) {
             let [tw, th] = t.size().map(|v| v as f32);
             // Cover: crop the longer side.
@@ -142,7 +142,7 @@ impl ShotsView {
             egui::Image::new(&t).uv(uv).corner_radius(radius).paint_at(ui, rect);
         }
         if r.hovered() {
-            ui.painter().rect_stroke(rect, radius, egui::Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Inside);
+            ui.painter().rect_stroke(rect, radius, egui::Stroke::new(2.0, theme::ACCENT()), egui::StrokeKind::Inside);
         }
         if r.clicked() {
             self.viewer = Some(Viewer { list: list.to_vec(), pos });
@@ -199,11 +199,11 @@ pub fn game_tab(ui: &mut Ui, v: &mut ShotsView, game: &Game) {
     let list: Vec<usize> = (0..v.all.len()).filter(|&i| v.all[i].game_id == game.id).collect();
     if list.is_empty() {
         let key = if game.source == gamut_core::Source::Steam { "Steam's screenshot key" } else { "F12" };
-        ui.label(RichText::new(format!("No screenshots yet. Press {key} while playing.")).color(TEXT_DIM));
+        ui.label(RichText::new(format!("No screenshots yet. Press {key} while playing.")).color(TEXT_DIM()));
         return;
     }
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{} screenshots", list.len())).size(15.0).color(TEXT));
+        ui.label(RichText::new(format!("{} screenshots", list.len())).size(15.0).color(TEXT()));
         if let Some(dir) = v.all[list[0]].path.parent().map(PathBuf::from) {
             if ui.button(RichText::new("Open folder").size(12.5)).clicked() {
                 let _ = open::that_detached(dir);
@@ -301,10 +301,10 @@ pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
     }
     let names: HashMap<i64, &str> = shown.iter().map(|(id, g)| (*id, g.name.as_str())).collect();
     let n: usize = by_game.values().map(Vec::len).sum();
-    ui.label(RichText::new(format!("{n} screenshots in {} games · F12 or PS/Guide + R1 in non-Steam games, Steam's key in Steam games", order.len())).color(TEXT_DIM));
+    ui.label(RichText::new(format!("{n} screenshots in {} games · F12 or PS/Guide + R1 in non-Steam games, Steam's key in Steam games", order.len())).color(TEXT_DIM()));
     ui.add_space(6.0);
     if order.is_empty() {
-        ui.label(RichText::new(if v.all.is_empty() { "No screenshots yet." } else { "No screenshots match." }).color(TEXT_DIM));
+        ui.label(RichText::new(if v.all.is_empty() { "No screenshots yet." } else { "No screenshots match." }).color(TEXT_DIM()));
         return None;
     }
     let width = ui.available_width() - 16.0;
@@ -330,12 +330,12 @@ pub fn overview(ui: &mut Ui, v: &mut ShotsView, games: &[Game]) -> Option<Ask> {
             let rect = Rect::from_min_size(origin + vec2(0.0, y), vec2(width, h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                 ui.horizontal(|ui| {
-                    let name = RichText::new(names[id]).size(16.0).color(TEXT).strong();
+                    let name = RichText::new(names[id]).size(16.0).color(TEXT()).strong();
                     if ui.add(egui::Label::new(name).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         ask = Some(Ask::OpenGame(*id));
                     }
                     let latest = crate::util::date(v.all[list[0]].taken + gamut_core::utc_offset());
-                    ui.label(RichText::new(format!("{} · latest {latest}", list.len())).color(TEXT_DIM));
+                    ui.label(RichText::new(format!("{} · latest {latest}", list.len())).color(TEXT_DIM()));
                 });
                 ui.add_space(HEAD - 26.0);
                 for chunk in (0..list.len()).collect::<Vec<_>>().chunks(cols) {
@@ -394,7 +394,7 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
         let when = crate::util::date(shot.taken + gamut_core::utc_offset());
         let secs = (shot.taken + gamut_core::utc_offset()).rem_euclid(86_400);
         let text = format!("{name}  ·  {when} {:02}:{:02}  ·  {} / {n}{}", secs / 3600, secs / 60 % 60, pos + 1, if shot.steam { "  ·  Steam" } else { "" });
-        ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), TEXT);
+        ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), TEXT());
         let bar = Rect::from_min_size(egui::pos2(rect.right() - 520.0, rect.top() + 14.0), vec2(496.0, 32.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
             if ui.button("Close").clicked() {
@@ -423,7 +423,7 @@ pub fn viewer(ctx: &egui::Context, v: &mut ShotsView, games: &[Game]) {
             }
             let r = at.align_size_within_rect(vec2(56.0, 120.0), rect.shrink(8.0));
             let resp = ui.interact(r, ui.scope_id().with(label), Sense::click());
-            let c = if resp.hovered() { TEXT } else { TEXT_DIM };
+            let c = if resp.hovered() { TEXT() } else { TEXT_DIM() };
             ui.painter().text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(54.0), c);
             if resp.clicked() {
                 pos = if label == "‹" { pos - 1 } else { pos + 1 };

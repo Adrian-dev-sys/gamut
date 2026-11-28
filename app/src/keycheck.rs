@@ -97,19 +97,19 @@ impl KeyChecks {
         let s = self.state.lock().unwrap()[i].clone();
         ui.horizontal(|ui| match s {
             Check::NotSet => {
-                ui.label(RichText::new("○ Not set").color(TEXT_DIM));
+                ui.label(RichText::new("○ Not set").color(TEXT_DIM()));
             }
             Check::Checking => {
                 ui.add(egui::Spinner::new().size(12.0));
-                ui.label(RichText::new("Checking…").color(TEXT_DIM));
+                ui.label(RichText::new("Checking…").color(TEXT_DIM()));
             }
             Check::Ok(m) => {
-                ui.label(RichText::new("● ").color(GOOD));
+                ui.label(RichText::new("● ").color(GOOD()));
                 ui.label(m);
             }
             Check::Err(m) => {
-                ui.label(RichText::new("● ").color(DANGER));
-                ui.label(RichText::new(m).color(DANGER));
+                ui.label(RichText::new("● ").color(DANGER()));
+                ui.label(RichText::new(m).color(DANGER()));
             }
         });
         ui.end_row();

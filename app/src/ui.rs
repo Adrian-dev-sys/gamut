@@ -311,10 +311,13 @@ pub struct GamutApp {
     /// HowLongToBeat times of the selected game, from the cache.
     hltb: Option<(i64, Option<gamut_core::hltb::Times>)>,
     key_checks: crate::keycheck::KeyChecks,
+    theme_watch: theme::Watcher,
 }
 
 impl GamutApp {
     pub fn new(cc: &eframe::CreationContext, paths: Paths) -> anyhow::Result<Self> {
+        let theme_err = theme::load(&theme::file(&paths.root)).err();
+        let theme_watch = theme::Watcher::new(&paths.root);
         theme::apply(&cc.egui_ctx);
         let loaded = Config::load(&paths.config);
         let tray = crate::tray::Tray::new(&cc.egui_ctx);
@@ -404,7 +407,7 @@ impl GamutApp {
             confirm_restore: None,
             picker: None,
             ctx_handle: cc.egui_ctx.clone(),
-            toasts: Toasts::with(repair_notice),
+            toasts: Toasts::with(repair_notice.or(theme_err)),
             playnite: None,
             playnite_sure: false,
             focus_search: false,
@@ -423,6 +426,7 @@ impl GamutApp {
             sessions: None,
             hltb: None,
             key_checks: Default::default(),
+            theme_watch,
             collections: Vec::new(),
             collection: saved_coll,
             coll_tab: false,
@@ -891,7 +895,7 @@ impl GamutApp {
                     let ctx = ui.ctx().clone();
                     self.random_game(&ctx);
                 }
-                ui.label(RichText::new(format!("{} games", self.view.len())).color(TEXT_DIM).size(15.0));
+                ui.label(RichText::new(format!("{} games", self.view.len())).color(TEXT_DIM()).size(15.0));
             });
         });
     }
@@ -1153,34 +1157,34 @@ impl GamutApp {
         ui.horizontal(|ui| {
             let visible = self.games.iter().filter(|g| !g.hidden).count();
             let installed = self.games.iter().filter(|g| !g.hidden && g.installed).count();
-            ui.label(RichText::new(format!("{visible} games · {installed} installed")).color(TEXT_DIM));
+            ui.label(RichText::new(format!("{visible} games · {installed} installed")).color(TEXT_DIM()));
             if self.workers.scanning.load(Ordering::Relaxed) {
                 ui.spinner();
-                ui.label(RichText::new("Scanning Steam…").color(TEXT_DIM));
+                ui.label(RichText::new("Scanning Steam…").color(TEXT_DIM()));
             }
             let imp = &self.workers.importing;
             let total = imp.1.load(Ordering::Relaxed);
             if total > 0 {
                 ui.spinner();
                 let done = imp.0.load(Ordering::Relaxed);
-                ui.label(RichText::new(format!("Importing from Playnite: {done}/{total} images")).color(TEXT_DIM));
+                ui.label(RichText::new(format!("Importing from Playnite: {done}/{total} images")).color(TEXT_DIM()));
             }
             let c = self.workers.pending_cover.load(Ordering::Relaxed);
             let m = self.workers.pending_meta.load(Ordering::Relaxed);
             if c + m > 0 {
                 ui.spinner();
-                ui.label(RichText::new(format!("Fetching: {c} covers, {m} metadata")).color(TEXT_DIM));
+                ui.label(RichText::new(format!("Fetching: {c} covers, {m} metadata")).color(TEXT_DIM()));
             }
             if !self.workers.ach_busy.lock().unwrap().is_empty() {
                 ui.spinner();
-                ui.label(RichText::new("Checking achievements…").color(TEXT_DIM));
+                ui.label(RichText::new("Checking achievements…").color(TEXT_DIM()));
             }
             let cfg = self.cfg.read().unwrap();
             if cfg.steam_api_key.trim().is_empty() {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
                         RichText::new("Installed Steam games only — add a Steam API key in Settings for your full library")
-                            .color(TEXT_DIM),
+                            .color(TEXT_DIM()),
                     );
                 });
             }
@@ -1192,7 +1196,7 @@ impl GamutApp {
         if self.multi.is_empty() {
             return;
         }
-        egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+        egui::Frame::new().fill(CARD()).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
             theme::raised_widgets(ui);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{} selected", self.multi.len())).strong());
@@ -1215,7 +1219,7 @@ impl GamutApp {
                     if ui.button("Select all").on_hover_text("Ctrl+A").clicked() {
                         self.select_all();
                     }
-                    ui.label(RichText::new("Ctrl+click to add, Shift+click for a range").color(TEXT_DIM).size(12.0));
+                    ui.label(RichText::new("Ctrl+click to add, Shift+click for a range").color(TEXT_DIM()).size(12.0));
                 });
             });
         });
@@ -1377,7 +1381,7 @@ impl GamutApp {
 
         if self.view.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("No games here. Try Refresh, or + Add game.").color(TEXT_DIM));
+                ui.label(RichText::new("No games here. Try Refresh, or + Add game.").color(TEXT_DIM()));
             });
             return;
         }
@@ -1421,7 +1425,7 @@ impl GamutApp {
                     let is_cursor = cursor == Some(g.id);
                     let hot = ui.ctx().animate_bool_with_time_and_easing(resp.id.with("hot"), hovered || is_cursor, 0.18, egui::emath::easing::cubic_out);
                     let cover = cover.translate(vec2(0.0, -4.0 * hot));
-                    let tint = thumbs.color(g.id).unwrap_or(ACCENT);
+                    let tint = thumbs.color(g.id).unwrap_or(ACCENT());
                     let strength = if is_cursor { 0.75 } else { 0.5 } * hot + if in_multi { 0.25 } else { 0.0 };
                     if strength > 0.01 {
                         let glow = egui::epaint::Shadow { offset: [0, 4], blur: 26, spread: 2, color: tint.gamma_multiply(strength.min(1.0)) };
@@ -1432,14 +1436,14 @@ impl GamutApp {
                             // Covers fade in as they load (or scroll back into view).
                             let a = theme::appear(ui.ctx(), resp.id.with("tex"), 0.22);
                             if a < 1.0 {
-                                painter.rect_filled(cover, r, CARD);
+                                painter.rect_filled(cover, r, CARD());
                             }
                             egui::Image::from_texture(t).corner_radius(r).tint(Color32::WHITE.gamma_multiply(a)).paint_at(ui, cover);
                         }
                         None => {
-                            painter.rect_filled(cover, r, CARD);
+                            painter.rect_filled(cover, r, CARD());
                             let lower = Rect::from_min_max(pos2(cover.left(), cover.center().y), cover.max);
-                            paint_vgradient(painter, lower, Color32::TRANSPARENT, CARD_HI);
+                            paint_vgradient(painter, lower, Color32::TRANSPARENT, CARD_HI());
                             let galley = painter.layout(
                                 g.name.clone(),
                                 FontId::proportional(15.0),
@@ -1451,7 +1455,7 @@ impl GamutApp {
                         }
                     }
                     if in_multi {
-                        painter.rect_filled(cover, r, ACCENT.gamma_multiply(0.18));
+                        painter.rect_filled(cover, r, ACCENT().gamma_multiply(0.18));
                     }
                     if g.favorite {
                         let c = cover.right_top() + vec2(-16.0, 16.0);
@@ -1459,7 +1463,7 @@ impl GamutApp {
                         paint_star(painter, c, 9.0, true);
                     }
                     if running.contains(&g.id) {
-                        badge(painter, cover.left_top() + vec2(8.0, 8.0), "RUNNING", GOOD);
+                        badge(painter, cover.left_top() + vec2(8.0, 8.0), "RUNNING", GOOD());
                     }
                     if in_multi {
                         paint_check(painter, cover.left_bottom() + vec2(16.0, -16.0));
@@ -1467,19 +1471,19 @@ impl GamutApp {
                     if is_cursor {
                         painter.rect_stroke(cover, r, Stroke::new(3.0, Color32::WHITE.gamma_multiply(0.4 + 0.6 * hot)), StrokeKind::Outside);
                     } else if in_multi {
-                        painter.rect_stroke(cover, r, Stroke::new(2.5, ACCENT), StrokeKind::Outside);
+                        painter.rect_stroke(cover, r, Stroke::new(2.5, ACCENT()), StrokeKind::Outside);
                     } else if hot > 0.01 {
                         painter.rect_stroke(cover, r, Stroke::new(1.5, tint.gamma_multiply(0.9 * hot)), StrokeKind::Outside);
                     }
                     // Platform pill right of the title (Steam, PS5, Switch…).
                     let title_w = {
-                        let tag = painter.layout_no_wrap(short_platform(g), FontId::proportional(11.5), TEXT_DIM);
+                        let tag = painter.layout_no_wrap(short_platform(g), FontId::proportional(11.5), TEXT_DIM());
                         let pill = Rect::from_min_size(
                             pos2(x + card_w - tag.size().x - 10.0, cover.bottom() + 6.0),
                             tag.size() + vec2(10.0, 4.0),
                         );
-                        painter.rect_filled(pill, CornerRadius::same(4), CARD);
-                        painter.galley(pill.min + vec2(5.0, 2.0), tag, TEXT_DIM);
+                        painter.rect_filled(pill, CornerRadius::same(4), CARD());
+                        painter.galley(pill.min + vec2(5.0, 2.0), tag, TEXT_DIM());
                         pill.left() - x - 6.0
                     };
                     let mut job = egui::text::LayoutJob::simple_singleline(
@@ -1590,7 +1594,7 @@ impl GamutApp {
             // Controller/keyboard: make the focused button obvious.
             let w = &mut ui.visuals_mut().widgets;
             w.active.bg_stroke = Stroke::new(3.0, Color32::WHITE);
-            w.active.weak_bg_fill = ACCENT.gamma_multiply(0.45);
+            w.active.weak_bg_fill = ACCENT().gamma_multiply(0.45);
         }
         let mut area = ScrollArea::vertical().id_salt(("details", id)).auto_shrink([false, false]);
         // Freshly opened: start at the top, not where it was last closed.
@@ -1622,12 +1626,12 @@ impl GamutApp {
                         .paint_at(ui, banner);
                 }
                 None => {
-                    ui.painter().rect_filled(banner, top_r, CARD);
+                    ui.painter().rect_filled(banner, top_r, CARD());
                 }
             }
             // Fade the banner's lower part into the panel so the title stays readable.
             let fade = Rect::from_min_max(pos2(banner.left(), banner.bottom() - banner_h * 0.6), banner.right_bottom());
-            paint_vgradient(ui.painter(), fade, Color32::TRANSPARENT, theme::PANEL);
+            paint_vgradient(ui.painter(), fade, Color32::TRANSPARENT, theme::PANEL());
             close_button(ui, banner.right_top() + vec2(-24.0, 24.0), &mut self.selected);
             if let Some(c) = collections::game_chips(ui, banner.left_top() + vec2(pad, 18.0), w - pad - 80.0, &colls, &g) {
                 self.open_collection(c);
@@ -1646,7 +1650,7 @@ impl GamutApp {
                     egui::Image::from_texture(t).corner_radius(CornerRadius::same(8)).paint_at(ui, cover);
                 }
                 None => {
-                    ui.painter().rect_filled(cover, CornerRadius::same(8), CARD);
+                    ui.painter().rect_filled(cover, CornerRadius::same(8), CARD());
                 }
             }
             // Art pickers appear on hover: one for the cover, one for the banner.
@@ -1679,7 +1683,7 @@ impl GamutApp {
                     ui.horizontal(|ui| {
                         if is_running {
                             let b = egui::Button::new(RichText::new("Running").size(17.0).strong().color(Color32::WHITE))
-                                .fill(GOOD)
+                                .fill(GOOD())
                                 .min_size(vec2(150.0, 38.0));
                             if ui.add(b).on_hover_text("This game is running. Click to close it.").clicked() {
                                 actions.push(Action::Stop(id));
@@ -1687,7 +1691,7 @@ impl GamutApp {
                         } else {
                             let label = if g.source == Source::Steam && !g.installed { "Install" } else { "Play" };
                             let play = egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::WHITE))
-                                .fill(ACCENT)
+                                .fill(ACCENT())
                                 .min_size(vec2(150.0, 38.0));
                             let can_play = g.source == Source::Steam || g.exe.is_some();
                             let r = ui.add_enabled(can_play, play).on_disabled_hover_text("No way to start this game on this PC");
@@ -1777,7 +1781,7 @@ impl GamutApp {
                     tabs.push((3, if shots > 0 { format!("Screenshots  {shots}") } else { "Screenshots".into() }));
                     for (i, label) in tabs {
                         let on = self.detail_tab == i || (i == 0 && self.detail_tab == 1 && ach_src.is_none());
-                        let text = RichText::new(label).size(15.0).color(if on { theme::TEXT } else { TEXT_DIM });
+                        let text = RichText::new(label).size(15.0).color(if on { theme::TEXT() } else { TEXT_DIM() });
                         if ui.add(egui::Button::selectable(on, text).min_size(vec2(0.0, 30.0))).clicked() {
                             self.detail_tab = i;
                         }
@@ -1846,7 +1850,7 @@ impl GamutApp {
                                 }
                                 if let Some(d) = location {
                                     ui.add_space(2.0);
-                                    ui.label(RichText::new("Location").color(TEXT_DIM));
+                                    ui.label(RichText::new("Location").color(TEXT_DIM()));
                                     ui.add(egui::Label::new(RichText::new(d).size(12.5)).truncate()); // egui shows the full text on hover when it's cut.
                                 }
                             });
@@ -1859,7 +1863,7 @@ impl GamutApp {
                                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                                 for t in split_list(&g.tags) {
                                     let b = egui::Button::new(RichText::new(t).size(12.5))
-                                        .fill(CARD)
+                                        .fill(CARD())
                                         .corner_radius(CornerRadius::same(10));
                                     if ui.add(b).on_hover_text("Show games with this tag").clicked() {
                                         pick_tag = Some(t.to_string());
@@ -1893,9 +1897,9 @@ impl GamutApp {
                                     ui.response()
                                 }
                                 None if g.meta_state == state::PENDING => {
-                                    ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM))
+                                    ui.label(RichText::new("Fetching metadata…").color(TEXT_DIM()))
                                 }
-                                None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
+                                None => ui.label(RichText::new("No description.").color(TEXT_DIM())),
                             };
                         });
                         if crate::shots_view::strip(ui, &mut self.shots, &g) {
@@ -2244,6 +2248,23 @@ impl GamutApp {
                         ui.label(theme::hint("The tray icon opens Gamut, big screen, or one of your recently played games."));
                         ui.add_space(12.0);
                         ui.separator();
+                        theme::section(ui, "Appearance");
+                        let tf = theme::file(&self.paths.root);
+                        ui.horizontal(|ui| {
+                            let label = if tf.exists() { "Edit theme" } else { "Customize theme" };
+                            if ui.button(label).on_hover_text("Colors, corner radius, spacing, text size and fonts in theme.toml").clicked() {
+                                let r = if tf.exists() { Ok(()) } else { std::fs::write(&tf, theme::template()) };
+                                if let Err(e) = r.and_then(|_| open::that_detached(&tf)) {
+                                    log::warn!("theme file: {e}");
+                                }
+                            }
+                            if tf.exists() && ui.button("Built-in theme").on_hover_text("Deletes theme.toml").clicked() {
+                                let _ = std::fs::remove_file(&tf);
+                            }
+                        });
+                        ui.label(theme::hint("Edit theme.toml in any text editor; saved changes show right away."));
+                        ui.add_space(12.0);
+                        ui.separator();
                         theme::section(ui, "Files");
                         ui.label(theme::hint(&format!("Data folder: {}", self.paths.root.display())));
                         ui.horizontal(|ui| {
@@ -2266,7 +2287,7 @@ impl GamutApp {
                 });
                 ui.separator();
                 ui.add_space(8.0);
-                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                if ui.add(egui::Button::new(RichText::new("Save").color(Color32::WHITE)).fill(ACCENT())).clicked() {
                     save = true;
                 }
             });
@@ -2654,7 +2675,7 @@ impl GamutApp {
                     act = Some(false);
                 }
                 if ui
-                    .add(egui::Button::new(RichText::new("Force close").color(Color32::WHITE)).fill(theme::DANGER))
+                    .add(egui::Button::new(RichText::new("Force close").color(Color32::WHITE)).fill(theme::DANGER()))
                     .on_hover_text("Ends the game's processes immediately")
                     .clicked()
                 {
@@ -2735,20 +2756,20 @@ impl GamutApp {
                              anything you edited here. Covers and backgrounds are replaced too, and so are launch \
                              settings for non-Steam games. This can't be undone.",
                         )
-                        .color(theme::DANGER),
+                        .color(theme::DANGER()),
                     );
                     ui.add_space(8.0);
                 }
                 ui.horizontal(|ui| {
                     if sure {
-                        if ui.add(egui::Button::new(RichText::new("Yes, overwrite").color(Color32::WHITE)).fill(theme::DANGER)).clicked() {
+                        if ui.add(egui::Button::new(RichText::new("Yes, overwrite").color(Color32::WHITE)).fill(theme::DANGER())).clicked() {
                             go = true;
                         }
                         if ui.button("Back").clicked() {
                             back = true;
                         }
                     } else {
-                        if ui.add(egui::Button::new(RichText::new("Import").color(Color32::WHITE)).fill(ACCENT)).clicked() {
+                        if ui.add(egui::Button::new(RichText::new("Import").color(Color32::WHITE)).fill(ACCENT())).clicked() {
                             ask = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -2867,22 +2888,22 @@ fn big_hints(ui: &mut Ui) {
     ui.horizontal(|ui| {
         for (k, v) in [("A", "Open / Play"), ("B", "Back"), ("X", "Favorite"), ("Y", "Search"), ("Start", "Menu"), ("LB/RB", "Filter"), ("LT/RT", "Page"), ("View / PS", "Exit big screen")] {
             egui::Frame::new()
-                .fill(CARD_HI)
+                .fill(CARD_HI())
                 .corner_radius(CornerRadius::same(4))
                 .inner_margin(egui::Margin::symmetric(7, 2))
                 .show(ui, |ui| ui.label(RichText::new(k).strong().size(14.0)));
-            ui.label(RichText::new(v).color(TEXT_DIM).size(14.0));
+            ui.label(RichText::new(v).color(TEXT_DIM()).size(14.0));
             ui.add_space(14.0);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new("Keyboard: arrows, Enter, Esc, F11").color(TEXT_DIM).size(13.0));
+            ui.label(RichText::new("Keyboard: arrows, Enter, Esc, F11").color(TEXT_DIM()).size(13.0));
         });
     });
 }
 
 /// Right-click menu on a multi-selection.
 fn bulk_menu(ui: &mut Ui, n: usize, colls: &[Collection], active: Option<&Collection>, actions: &mut Vec<Action>) {
-    ui.label(RichText::new(format!("{n} selected")).color(TEXT_DIM));
+    ui.label(RichText::new(format!("{n} selected")).color(TEXT_DIM()));
     ui.separator();
     for (label, op) in [
         ("Favorite", Bulk::Fav(true)),
@@ -2907,7 +2928,7 @@ fn bulk_menu(ui: &mut Ui, n: usize, colls: &[Collection], active: Option<&Collec
 
 /// Round accent badge with a check mark (multi-selected card).
 fn paint_check(p: &egui::Painter, c: egui::Pos2) {
-    p.circle_filled(c, 11.0, ACCENT);
+    p.circle_filled(c, 11.0, ACCENT());
     p.circle_stroke(c, 11.0, Stroke::new(1.5, Color32::WHITE));
     let s = Stroke::new(2.2, Color32::WHITE);
     p.line_segment([c + vec2(-5.0, 0.0), c + vec2(-1.5, 3.5)], s);
@@ -2930,7 +2951,7 @@ fn paint_star(p: &egui::Painter, c: egui::Pos2, r: f32, on: bool) {
             p.add(egui::Shape::convex_polygon(vec![c, pts[i], pts[(i + 1) % 10]], gold, Stroke::NONE));
         }
     } else {
-        p.add(egui::Shape::closed_line(pts, Stroke::new(1.5, TEXT_DIM)));
+        p.add(egui::Shape::closed_line(pts, Stroke::new(1.5, TEXT_DIM())));
     }
 }
 
@@ -2939,7 +2960,7 @@ fn art_pill(ui: &mut Ui, c: egui::Pos2, text: &str, salt: &str) -> bool {
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(13.0), Color32::WHITE);
     let rect = Rect::from_center_size(c, galley.size() + vec2(24.0, 14.0));
     let r = ui.interact(rect, ui.scope_id().with(salt), Sense::click());
-    let bg = if r.hovered() { ACCENT } else { Color32::from_black_alpha(170) };
+    let bg = if r.hovered() { ACCENT() } else { Color32::from_black_alpha(170) };
     ui.painter().rect_filled(rect, CornerRadius::same(16), bg);
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
     if r.hovered() {
@@ -2994,8 +3015,8 @@ fn paint_vgradient(p: &egui::Painter, r: Rect, top: Color32, bottom: Color32) {
 /// Caption over a value, used for stat tiles.
 fn stat(ui: &mut Ui, label: &str, value: &str) {
     egui::Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(CARD())
+        .stroke(Stroke::new(1.0, theme::BORDER()))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(14, 8))
         .show(ui, |ui| {
@@ -3009,7 +3030,7 @@ fn stat(ui: &mut Ui, label: &str, value: &str) {
 
 /// A titled group in the details column.
 fn card(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
-    egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+    egui::Frame::new().fill(CARD()).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.label(theme::caption(title));
@@ -3025,7 +3046,7 @@ fn fact(ui: &mut Ui, k: &str, v: &str) {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(vec2(LABEL_W, 0.0), Layout::top_down(Align::Min), |ui| {
             ui.set_width(LABEL_W);
-            ui.label(RichText::new(k).color(TEXT_DIM));
+            ui.label(RichText::new(k).color(TEXT_DIM()));
         });
         ui.allocate_ui_with_layout(vec2(ui.available_width(), 0.0), Layout::top_down(Align::Min), |ui| {
             ui.add(egui::Label::new(v).wrap());
@@ -3360,6 +3381,11 @@ impl eframe::App for GamutApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_events();
+        match self.theme_watch.poll(&ctx) {
+            Some(Ok(())) => self.toasts.info("Theme applied."),
+            Some(Err(e)) => self.toasts.error(e),
+            None => {}
+        }
         match crate::RESTORED.lock().unwrap().take() {
             Some(Ok(m)) => self.toasts.success(m),
             Some(Err(e)) => self.toasts.error(format!("Restoring the backup failed: {e}")),
@@ -3434,7 +3460,7 @@ impl eframe::App for GamutApp {
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 10)))
             .show(ui, |ui| if self.big.is_some() { self.big_bar(ui) } else { self.top_bar(ui) });
         let line = Rect::from_min_size(top.response.rect.left_bottom() - vec2(0.0, 1.0), vec2(top.response.rect.width(), 1.5));
-        theme::hgradient(ui.painter(), line, ACCENT.gamma_multiply(0.7), theme::ACCENT_2.gamma_multiply(0.15));
+        theme::hgradient(ui.painter(), line, ACCENT().gamma_multiply(0.7), theme::ACCENT_2().gamma_multiply(0.15));
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(18, 5)))
             .show(ui, |ui| if self.big.is_some() { big_hints(ui) } else { self.status_bar(ui) });
@@ -3445,11 +3471,11 @@ impl eframe::App for GamutApp {
                 .resizable(true)
                 .default_size(340.0)
                 .size_range(240.0..=900.0)
-                .frame(egui::Frame::side_top_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(8)))
+                .frame(egui::Frame::side_top_panel(ui.style()).fill(theme::BG()).inner_margin(egui::Margin::same(8)))
                 .show(ui, |ui| self.list(ui, &mut actions));
         }
         egui::CentralPanel::no_frame()
-            .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
+            .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG()).inner_margin(egui::Margin::same(10)))
             .show(ui, |ui| {
                 // Switching tabs cross-fades the content in.
                 let tab = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else if self.shots_tab { 3 } else if self.coll_tab { 4 } else { 0 };
@@ -3510,7 +3536,7 @@ impl eframe::App for GamutApp {
             let screen = ctx.content_rect();
             let size = vec2((screen.width() * 0.9).min(1800.0), (screen.height() * 0.92).min(1200.0));
             let frame = egui::Frame::new()
-                .fill(theme::PANEL)
+                .fill(theme::PANEL())
                 .corner_radius(CornerRadius::same(10))
                 .shadow(ctx.global_style().visuals.window_shadow)
                 .stroke(Stroke::new(1.0, Color32::from_gray(50)));
@@ -3741,7 +3767,7 @@ fn description(ui: &mut Ui, d: &str) {
                 if !ready {
                     // Faint placeholder with a small spinner (egui's own spinner fills the whole image).
                     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                    ui.painter().rect_filled(rect, 6.0, CARD);
+                    ui.painter().rect_filled(rect, 6.0, CARD());
                     ui.put(Rect::from_center_size(rect.center(), vec2(22.0, 22.0)), egui::Spinner::new().size(22.0));
                 } else if crate::video::is_clip_poster(url) {
                     crate::video::show(ui, url, img, size);
@@ -3769,7 +3795,7 @@ fn description(ui: &mut Ui, d: &str) {
             ui.add_space(gap);
         }
         if heading {
-            ui.add(egui::Label::new(RichText::new(text.replace("**", "")).size(16.0).color(theme::TEXT)).wrap());
+            ui.add(egui::Label::new(RichText::new(text.replace("**", "")).size(16.0).color(theme::TEXT())).wrap());
             ui.add_space(4.0);
         } else if bullet {
             ui.horizontal_top(|ui| {
@@ -3798,7 +3824,7 @@ fn rich_line(text: &str, body: Color32) -> egui::text::LayoutJob {
         let fmt = egui::TextFormat {
             font_id: FontId::proportional(14.5),
             line_height: Some(22.0),
-            color: if bold { theme::TEXT } else { body },
+            color: if bold { theme::TEXT() } else { body },
             ..Default::default()
         };
         job.append(p, 0.0, fmt);

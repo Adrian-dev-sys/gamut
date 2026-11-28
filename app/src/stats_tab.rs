@@ -345,8 +345,8 @@ fn top(m: HashMap<String, f32>, n: usize) -> Vec<(String, f32, Option<i64>)> {
 
 fn tile(ui: &mut Ui, label: &str, value: &str, tip: &str) {
     egui::Frame::new()
-        .fill(CARD)
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .fill(CARD())
+        .stroke(egui::Stroke::new(1.0, theme::BORDER()))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(16, 10))
         .show(ui, |ui| {
@@ -362,7 +362,7 @@ fn tile(ui: &mut Ui, label: &str, value: &str, tip: &str) {
 
 fn empty(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
-    ui.label(RichText::new(text).color(TEXT_DIM));
+    ui.label(RichText::new(text).color(TEXT_DIM()));
 }
 
 fn span_header(ui: &mut Ui, title: &str, span: &mut Span) {
@@ -390,7 +390,7 @@ fn column_chart(ui: &mut Ui, id: &str, bars: &[Bar], fmt: &dyn Fn(f32) -> String
         let v = max * i as f32 / 2.0;
         let y = plot.bottom() - plot.height() * i as f32 / 2.0;
         p.hline(plot.x_range(), y, egui::Stroke::new(1.0, grid));
-        p.text(pos2(plot.left() - 8.0, y), Align2::RIGHT_CENTER, fmt(v), FontId::proportional(11.0), TEXT_DIM);
+        p.text(pos2(plot.left() - 8.0, y), Align2::RIGHT_CENTER, fmt(v), FontId::proportional(11.0), TEXT_DIM());
     }
     let slot = plot.width() / bars.len() as f32;
     let bar_w = (slot * 0.62).clamp(3.0, 36.0);
@@ -404,11 +404,11 @@ fn column_chart(ui: &mut Ui, id: &str, bars: &[Bar], fmt: &dyn Fn(f32) -> String
         if b.value > 0.0 {
             let h = (plot.height() * b.value / max).max(2.0);
             let r = Rect::from_min_max(pos2(cx - bar_w / 2.0, plot.bottom() - h), pos2(cx + bar_w / 2.0, plot.bottom()));
-            let fill = if hot { Color32::from_rgb(150, 172, 255) } else { ACCENT };
+            let fill = if hot { Color32::from_rgb(150, 172, 255) } else { ACCENT() };
             ui.painter().rect_filled(r, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, fill);
         }
         if i % every == (bars.len() - 1) % every {
-            ui.painter().text(pos2(cx, plot.bottom() + 6.0), Align2::CENTER_TOP, &b.label, FontId::proportional(11.0), TEXT_DIM);
+            ui.painter().text(pos2(cx, plot.bottom() + 6.0), Align2::CENTER_TOP, &b.label, FontId::proportional(11.0), TEXT_DIM());
         }
         ui.interact(col, egui::Id::unique(("stats_bar", id, i)), Sense::hover()).on_hover_text(&b.tip);
     }
@@ -424,21 +424,21 @@ fn hbars(ui: &mut Ui, rows: &[(String, f32, Option<i64>)], fmt: &dyn Fn(f32) -> 
             continue;
         }
         if resp.hovered() && game.is_some() {
-            ui.painter().rect_filled(rect, 4.0, CARD);
+            ui.painter().rect_filled(rect, 4.0, CARD());
         }
         let label_w = (rect.width() * 0.42).min(240.0);
         let value_w = 70.0;
         let p = ui.painter();
-        let mut job = egui::text::LayoutJob::simple_singleline(label.clone(), FontId::proportional(13.0), TEXT);
+        let mut job = egui::text::LayoutJob::simple_singleline(label.clone(), FontId::proportional(13.0), TEXT());
         job.wrap = egui::text::TextWrapping::truncate_at_width(label_w - 8.0);
         let galley = p.layout_job(job);
-        p.galley(pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0), galley, TEXT);
+        p.galley(pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0), galley, TEXT());
         let track = Rect::from_min_max(pos2(rect.left() + label_w, rect.center().y - 4.0), pos2(rect.right() - value_w, rect.center().y + 4.0));
-        p.rect_filled(track, 4.0, CARD_HI);
+        p.rect_filled(track, 4.0, CARD_HI());
         let mut fill = track;
         fill.set_width((track.width() * v / max).max(4.0));
-        p.rect_filled(fill, 4.0, ACCENT);
-        p.text(pos2(rect.right() - 4.0, rect.center().y), Align2::RIGHT_CENTER, fmt(*v), FontId::proportional(12.0), TEXT_DIM);
+        p.rect_filled(fill, 4.0, ACCENT());
+        p.text(pos2(rect.right() - 4.0, rect.center().y), Align2::RIGHT_CENTER, fmt(*v), FontId::proportional(12.0), TEXT_DIM());
         let resp = resp.on_hover_text(format!("{label}\n{}", fmt(*v)));
         if resp.clicked() {
             clicked = *game;

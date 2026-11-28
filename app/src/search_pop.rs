@@ -74,13 +74,13 @@ impl SearchPop {
     /// Draws the popup; true when it should close (Done, Enter, Esc or a click outside).
     pub fn show(&mut self, ctx: &egui::Context, q: &mut String, results: usize) -> bool {
         let mut close = false;
-        let frame = egui::Frame::new().fill(theme::PANEL).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::same(20));
+        let frame = egui::Frame::new().fill(theme::PANEL()).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::same(20));
         let resp = theme::popup(ctx, egui::Id::unique("search_pop"), frame, Color32::TRANSPARENT, |ui| {
                 ui.set_width(640.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Search").size(22.0).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(format!("{results} games")).color(TEXT_DIM).size(15.0));
+                        ui.label(RichText::new(format!("{results} games")).color(TEXT_DIM()).size(15.0));
                     });
                 });
                 ui.add_space(8.0);
@@ -98,8 +98,8 @@ impl SearchPop {
                 let key = |ui: &mut egui::Ui, label: &str, w: f32, on: bool| -> bool {
                     let b = egui::Button::new(RichText::new(label).size(18.0))
                         .min_size(vec2(w, 46.0))
-                        .fill(if on { ACCENT.gamma_multiply(0.45) } else { CARD_HI })
-                        .stroke(if on { Stroke::new(2.5, Color32::WHITE) } else { Stroke::new(1.0, CARD) });
+                        .fill(if on { ACCENT().gamma_multiply(0.45) } else { CARD_HI() })
+                        .stroke(if on { Stroke::new(2.5, Color32::WHITE) } else { Stroke::new(1.0, CARD()) });
                     ui.add(b).clicked()
                 };
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
@@ -123,7 +123,7 @@ impl SearchPop {
                 });
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("A type · X delete · B / Y close · Results update behind this popup").color(TEXT_DIM).size(14.0),
+                    RichText::new("A type · X delete · B / Y close · Results update behind this popup").color(TEXT_DIM()).size(14.0),
                 );
             });
         close || resp.should_close()

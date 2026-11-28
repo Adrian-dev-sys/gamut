@@ -296,7 +296,7 @@ impl Compare {
         });
         ui.label(
             RichText::new("Each source's closest match is shown. Click a cell to take that field from that source; \"Suggested\" marks the most complete one.")
-                .color(TEXT_DIM),
+                .color(TEXT_DIM()),
         );
         ui.add_space(6.0);
 
@@ -319,11 +319,11 @@ impl Compare {
                         ui.label(RichText::new(head).strong()).on_hover_text(c.src.hint());
                         if best == Some(i) {
                             egui::Frame::new()
-                                .fill(ACCENT.gamma_multiply(0.25))
-                                .stroke(Stroke::new(1.0, ACCENT))
+                                .fill(ACCENT().gamma_multiply(0.25))
+                                .stroke(Stroke::new(1.0, ACCENT()))
                                 .corner_radius(CornerRadius::same(4))
                                 .inner_margin(egui::Margin::symmetric(6, 1))
-                                .show(ui, |ui| ui.label(RichText::new("Suggested").size(12.0).color(TEXT)))
+                                .show(ui, |ui| ui.label(RichText::new("Suggested").size(12.0).color(TEXT())))
                                 .response
                                 .on_hover_text("The most complete entry; its fields are selected by default");
                         }
@@ -343,9 +343,9 @@ impl Compare {
                     if c.busy {
                         ui.add(egui::Spinner::new().size(12.0));
                     } else if let Some(e) = &c.error {
-                        ui.label(RichText::new(e).color(theme::DANGER).size(12.0));
+                        ui.label(RichText::new(e).color(theme::DANGER()).size(12.0));
                     } else if c.hits.is_empty() {
-                        ui.label(RichText::new("Nothing found").color(TEXT_DIM).size(12.0));
+                        ui.label(RichText::new("Nothing found").color(TEXT_DIM()).size(12.0));
                     } else if c.details.is_some() && ui.button("Use all from here").clicked() {
                         take_all = Some(i);
                     }
@@ -354,11 +354,11 @@ impl Compare {
             ui.end_row();
 
             for f in 0..FIELDS.len() {
-                ui.label(RichText::new(FIELDS[f]).color(TEXT_DIM));
+                ui.label(RichText::new(FIELDS[f]).color(TEXT_DIM()));
                 for i in 0..self.cols.len() {
                     let v = self.cols[i].details.as_ref().and_then(|d| field(d, f));
                     let Some(v) = v else {
-                        ui.label(RichText::new("—").color(TEXT_DIM));
+                        ui.label(RichText::new("—").color(TEXT_DIM()));
                         continue;
                     };
                     let chosen = self.choice[f] == Some(i);
@@ -374,13 +374,13 @@ impl Compare {
                         (v, None)
                     };
                     let frame = egui::Frame::new()
-                        .fill(if chosen { CARD_HI } else { egui::Color32::TRANSPARENT })
-                        .stroke(if chosen { Stroke::new(1.5, ACCENT) } else { Stroke::new(1.0, CARD_HI) })
+                        .fill(if chosen { CARD_HI() } else { egui::Color32::TRANSPARENT })
+                        .stroke(if chosen { Stroke::new(1.5, ACCENT()) } else { Stroke::new(1.0, CARD_HI()) })
                         .corner_radius(CornerRadius::same(6))
                         .inner_margin(egui::Margin::same(6))
                         .show(ui, |ui| {
                             ui.set_width(col_w - 14.0);
-                            ui.add(egui::Label::new(RichText::new(&shown).color(if chosen { TEXT } else { TEXT_DIM })).wrap().selectable(false));
+                            ui.add(egui::Label::new(RichText::new(&shown).color(if chosen { TEXT() } else { TEXT_DIM() })).wrap().selectable(false));
                         });
                     let r = ui.interact(frame.response.rect, ui.scope_id().with(("cmp_cell", f, i)), egui::Sense::click());
                     let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -415,11 +415,11 @@ impl Compare {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let n = self.choice.iter().filter(|c| c.is_some()).count();
-            let apply = egui::Button::new(RichText::new(format!("Fill {n} fields")).color(egui::Color32::WHITE)).fill(ACCENT);
+            let apply = egui::Button::new(RichText::new(format!("Fill {n} fields")).color(egui::Color32::WHITE)).fill(ACCENT());
             if ui.add_enabled(n > 0, apply).on_hover_text("Fill the form with the selected cells (nothing is saved until Save)").clicked() {
                 out = Some(CompareOut::Apply(self.picked()));
             }
-            ui.label(RichText::new("Unselected fields keep what the form has.").color(TEXT_DIM));
+            ui.label(RichText::new("Unselected fields keep what the form has.").color(TEXT_DIM()));
         });
         out
     }

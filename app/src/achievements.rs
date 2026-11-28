@@ -76,12 +76,12 @@ pub enum Ask {
 pub fn section(ui: &mut Ui, a: &mut GameAch, src: Source, busy: bool) -> Option<Ask> {
     theme::section(ui, "Achievements");
     let note = |ui: &mut Ui, t: &str| {
-        ui.add(egui::Label::new(RichText::new(t).color(TEXT_DIM)).wrap());
+        ui.add(egui::Label::new(RichText::new(t).color(TEXT_DIM())).wrap());
     };
     let spinner = |ui: &mut Ui, t: &str| {
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new().size(14.0));
-            ui.label(RichText::new(t).color(TEXT_DIM));
+            ui.label(RichText::new(t).color(TEXT_DIM()));
         });
     };
     let mut ask = None;
@@ -126,18 +126,18 @@ pub fn section(ui: &mut Ui, a: &mut GameAch, src: Source, busy: bool) -> Option<
     let (done, total) = (a.unlocked(), a.list.len());
     let pct = done as f32 / total as f32;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{done} of {total} unlocked")).size(15.0).color(TEXT));
-        ui.label(RichText::new(format!("{:.0}%", pct * 100.0)).size(15.0).color(if done == total { GOLD } else { TEXT_DIM }));
+        ui.label(RichText::new(format!("{done} of {total} unlocked")).size(15.0).color(TEXT()));
+        ui.label(RichText::new(format!("{:.0}%", pct * 100.0)).size(15.0).color(if done == total { GOLD } else { TEXT_DIM() }));
         if busy {
             ui.add(egui::Spinner::new().size(13.0));
         }
     });
     ui.add_space(6.0);
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width().min(520.0), 6.0), Sense::hover());
-    ui.painter().rect_filled(bar, 3.0, CARD);
+    ui.painter().rect_filled(bar, 3.0, CARD());
     let mut fill = bar;
     fill.set_width(bar.width() * pct);
-    ui.painter().rect_filled(fill, 3.0, if done == total { GOLD } else { ACCENT });
+    ui.painter().rect_filled(fill, 3.0, if done == total { GOLD } else { ACCENT() });
     ui.add_space(14.0);
 
     // Newest unlocks first, then locked ones from most to least common.
@@ -178,7 +178,7 @@ fn card(ui: &mut Ui, a: &Achievement, w: f32) {
     let open = a.unlocked > 0;
     let veiled = a.hidden && !open;
     let r = egui::Frame::new()
-        .fill(CARD)
+        .fill(CARD())
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
@@ -194,29 +194,29 @@ fn card(ui: &mut Ui, a: &Achievement, w: f32) {
                     ui.add(if open || !a.icon_locked.is_empty() { img } else { img.tint(Color32::from_gray(90)) });
                 } else {
                     let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-                    ui.painter().rect_filled(r, 4.0, theme::CARD_HI);
+                    ui.painter().rect_filled(r, 4.0, theme::CARD_HI());
                 }
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let name = if veiled { "Hidden achievement" } else { &a.name };
-                    let color = if open { TEXT } else { TEXT_DIM };
+                    let color = if open { TEXT() } else { TEXT_DIM() };
                     ui.add(egui::Label::new(RichText::new(name).size(14.0).color(color)).truncate());
                     let desc = if veiled { "Hover to reveal" } else { &a.description };
                     if !desc.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(desc).size(12.5).color(TEXT_DIM)).wrap());
+                        ui.add(egui::Label::new(RichText::new(desc).size(12.5).color(TEXT_DIM())).wrap());
                     }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
                         if open {
-                            ui.label(RichText::new(crate::util::date(a.unlocked)).size(11.5).color(GOOD));
+                            ui.label(RichText::new(crate::util::date(a.unlocked)).size(11.5).color(GOOD()));
                         }
                         if a.points > 0 {
-                            ui.label(RichText::new(format!("{} pts", a.points)).size(11.5).color(TEXT_DIM));
+                            ui.label(RichText::new(format!("{} pts", a.points)).size(11.5).color(TEXT_DIM()));
                         }
                         if let Some(p) = a.percent {
                             let rare = p < RARE;
                             let t = format!("{}{p:.1}% of players", if rare { "Rare · " } else { "" });
-                            ui.label(RichText::new(t).size(11.5).color(if rare { GOLD } else { TEXT_DIM }));
+                            ui.label(RichText::new(t).size(11.5).color(if rare { GOLD } else { TEXT_DIM() }));
                         }
                     });
                 });
@@ -268,7 +268,7 @@ impl RetroPick {
         theme::dialog(ctx, "Pick RetroAchievements game", true, |ui| {
             ui.set_width(560.0);
             crate::ui::dialog_header(ui, "Pick RetroAchievements game", &mut open);
-            ui.label(RichText::new(format!("Which RetroAchievements game is \"{}\"?", self.name)).color(TEXT_DIM));
+            ui.label(RichText::new(format!("Which RetroAchievements game is \"{}\"?", self.name)).color(TEXT_DIM()));
             ui.add_space(6.0);
             ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search").desired_width(f32::INFINITY));
             ui.add_space(6.0);
@@ -277,7 +277,7 @@ impl RetroPick {
                     ui.add(egui::Spinner::new());
                 }
                 Some(Err(e)) => {
-                    ui.label(RichText::new(e).color(theme::DANGER));
+                    ui.label(RichText::new(e).color(theme::DANGER()));
                 }
                 Some(Ok(list)) => {
                     let words: Vec<String> = gamut_core::retro::title_key(&self.query).split(' ').map(str::to_string).collect();
@@ -296,7 +296,7 @@ impl RetroPick {
                         }
                     });
                     if hits.is_empty() {
-                        ui.label(RichText::new("No games match.").color(TEXT_DIM));
+                        ui.label(RichText::new("No games match.").color(TEXT_DIM()));
                     }
                 }
             }

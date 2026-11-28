@@ -549,11 +549,11 @@ impl Picker {
                                     .paint_at(ui, rect);
                             }
                             None => {
-                                ui.painter().rect_filled(rect, round, CARD);
+                                ui.painter().rect_filled(rect, round, CARD());
                             }
                         }
                         if r.hovered() && !self.applying {
-                            ui.painter().rect_stroke(rect, round, Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
+                            ui.painter().rect_stroke(rect, round, Stroke::new(2.0, ACCENT()), egui::StrokeKind::Inside);
                         }
                         let size = format!("{} × {}", t.art.width, t.art.height);
                         let r = r.on_hover_text(match t.art.source {
@@ -568,7 +568,7 @@ impl Picker {
                 if self.tiles.is_empty() && self.busy {
                     ui.add_space(20.0);
                     let what = if self.chosen.is_some() { "Loading images from SteamGridDB…" } else { "Searching SteamGridDB…" };
-                    ui.label(RichText::new(what).color(TEXT_DIM));
+                    ui.label(RichText::new(what).color(TEXT_DIM()));
                 }
             });
             if let Some(i) = picked {

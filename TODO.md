@@ -2,7 +2,7 @@
 
 ## Next up
 - [x] **Import from Playnite** – read Playnite's library (games, custom entries, edited metadata, covers, playtime) so an existing setup carries over in one go.
-- [ ] **Themes** – load colors, fonts, spacing and corner radius from a `theme.toml`; hot-reload while editing.
+- [x] **Themes** – load colors, fonts, spacing and corner radius from a `theme.toml`; hot-reload while editing.
 
 ## More sources
 - [x] **Folder scanners** – saved scanners, review with checkboxes, best-guess exe and name, metadata fetched after adding

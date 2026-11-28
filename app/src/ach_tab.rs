@@ -55,11 +55,11 @@ pub fn show(ui: &mut Ui, ov: &mut Overview, games: &[Game], thumbs: &mut crate::
     if rows.is_empty() {
         ui.add_space(60.0);
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No achievements yet").size(18.0).color(TEXT));
+            ui.label(RichText::new("No achievements yet").size(18.0).color(TEXT()));
             ui.add_space(6.0);
             ui.label(
                 RichText::new("Add a Steam Web API key or a RetroAchievements login in Settings. Played games are checked in the background.")
-                    .color(TEXT_DIM),
+                    .color(TEXT_DIM()),
             );
             if busy {
                 ui.add_space(10.0);
@@ -185,8 +185,8 @@ fn body(
 
 fn tile(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
     egui::Frame::new()
-        .fill(CARD)
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .fill(CARD())
+        .stroke(egui::Stroke::new(1.0, theme::BORDER()))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(16, 10))
         .show(ui, |ui| {
@@ -207,14 +207,14 @@ fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
         return false;
     }
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 6.0, CARD);
+        ui.painter().rect_filled(rect, 6.0, CARD());
     }
     let icon = egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(64.0, 64.0));
     if a.icon.starts_with("http") {
         let img = egui::Image::new(a.icon.as_str()).corner_radius(6);
         img.texture_options(crate::achievements::ICON_TEX).paint_at(ui, icon);
     } else {
-        ui.painter().rect_filled(icon, 4.0, theme::CARD_HI);
+        ui.painter().rect_filled(icon, 4.0, theme::CARD_HI());
     }
     let x = icon.right() + 12.0;
     let max = rect.right() - x - 4.0;
@@ -224,8 +224,8 @@ fn unlock_row(ui: &mut Ui, a: &Achievement, game: &str, extra: &str) -> bool {
         job.wrap = egui::text::TextWrapping::truncate_at_width(max);
         p.galley(egui::pos2(x, rect.top() + y), p.layout_job(job), color);
     };
-    line(a.name.clone(), 15.0, TEXT, 15.0);
-    line(format!("{game} · {extra}"), 12.5, TEXT_DIM, 38.0);
+    line(a.name.clone(), 15.0, TEXT(), 15.0);
+    line(format!("{game} · {extra}"), 12.5, TEXT_DIM(), 38.0);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let resp = if a.description.is_empty() { resp } else { resp.on_hover_text(&a.description) };
     resp.clicked()
@@ -242,7 +242,7 @@ fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCac
     }
     let rect = outer.shrink2(vec2(8.0, 3.0));
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 6.0, CARD);
+        ui.painter().rect_filled(rect, 6.0, CARD());
     }
     // Pixel-aligned at the decoded size, so the texture maps 1:1.
     let ppp = ui.ctx().pixels_per_point();
@@ -253,7 +253,7 @@ fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCac
             egui::Image::from_texture(t).corner_radius(4).paint_at(ui, cover);
         }
         None => {
-            ui.painter().rect_filled(cover, 3.0, theme::CARD_HI);
+            ui.painter().rect_filled(cover, 3.0, theme::CARD_HI());
         }
     }
     let (done, frac) = (r.2 == r.1, pct(r));
@@ -266,22 +266,22 @@ fn game_row(ui: &mut Ui, g: &Game, r: &Row, thumbs: &mut crate::thumbs::ThumbCac
         job.wrap = egui::text::TextWrapping::truncate_at_width(bar.left() - x - 20.0);
         p.galley(egui::pos2(x, rect.top() + y), p.layout_job(job), color);
     };
-    text(g.name.clone(), 15.5, TEXT, 36.0);
+    text(g.name.clone(), 15.5, TEXT(), 36.0);
     let sub = match g.source {
         gamut_core::Source::Steam => "Steam".to_string(),
         _ => g.platform.clone().unwrap_or_default(),
     };
-    text(sub, 12.5, TEXT_DIM, 60.0);
-    p.rect_filled(bar, 3.0, theme::CARD_HI);
+    text(sub, 12.5, TEXT_DIM(), 60.0);
+    p.rect_filled(bar, 3.0, theme::CARD_HI());
     let mut fill = bar;
     fill.set_width(bar.width() * frac);
-    p.rect_filled(fill, 3.0, if done { GOLD } else { ACCENT });
+    p.rect_filled(fill, 3.0, if done { GOLD } else { ACCENT() });
     p.text(
         egui::pos2(rect.right() - 8.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         format!("{} / {}   {:.0}%", r.2, r.1, frac * 100.0),
         egui::FontId::proportional(12.5),
-        if done { GOLD } else { TEXT_DIM },
+        if done { GOLD } else { TEXT_DIM() },
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }

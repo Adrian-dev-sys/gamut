@@ -73,12 +73,12 @@ impl Toasts {
             .show(ctx, |ui| {
                 for (i, t) in self.items.iter().enumerate().rev() {
                     let color = match t.level {
-                        Level::Info => theme::ACCENT,
-                        Level::Success => theme::GOOD,
+                        Level::Info => theme::ACCENT(),
+                        Level::Success => theme::GOOD(),
                         Level::Error => Color32::from_rgb(230, 85, 85),
                     };
                     let r = egui::Frame::new()
-                        .fill(CARD)
+                        .fill(CARD())
                         .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
                         .corner_radius(CornerRadius::same(8))
                         .inner_margin(egui::Margin { left: 14, right: 10, top: 10, bottom: 10 })
@@ -101,7 +101,7 @@ impl Toasts {
                                     }
                                 });
                             });
-                            ui.add(egui::Label::new(RichText::new(&t.text).color(TEXT)).wrap());
+                            ui.add(egui::Label::new(RichText::new(&t.text).color(TEXT())).wrap());
                         });
                     hovered |= r.response.contains_pointer();
                     ui.add_space(6.0);

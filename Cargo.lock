@@ -1490,6 +1490,8 @@ dependencies = [
  "open",
  "raw-window-handle",
  "rfd",
+ "serde",
+ "toml 1.2.3+spec-1.1.0",
  "tray-icon",
  "windows",
  "windows-sys 0.61.2",

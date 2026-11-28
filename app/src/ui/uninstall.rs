@@ -37,7 +37,7 @@ impl GamutApp {
             ui.checkbox(&mut remove, "Also remove it from the library");
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new("Uninstall").color(Color32::WHITE)).fill(theme::DANGER)).clicked() {
+                if ui.add(egui::Button::new(RichText::new("Uninstall").color(Color32::WHITE)).fill(theme::DANGER())).clicked() {
                     go = true;
                 }
                 if ui.button("Cancel").clicked() {

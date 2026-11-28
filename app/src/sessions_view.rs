@@ -37,7 +37,7 @@ pub fn section(ui: &mut Ui, s: &mut GameSessions) {
         ui.label(RichText::new(format!(
             "No sessions recorded{from}. Games Gamut starts are timed; Steam play is picked up from library scans."
         ))
-        .color(TEXT_DIM));
+        .color(TEXT_DIM()));
         return;
     }
     let total: i64 = s.list.iter().map(|x| x.1).sum();
@@ -74,20 +74,20 @@ fn row(ui: &mut Ui, local: i64, mins: i64, steam: bool) {
         return;
     }
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 6.0, CARD);
+        ui.painter().rect_filled(rect, 6.0, CARD());
     }
     let p = ui.painter();
     let y = rect.center().y;
     let font = |s: f32| egui::FontId::proportional(s);
     let weekday = DAYS[(local.div_euclid(86_400) + 3).rem_euclid(7) as usize];
-    p.text(egui::pos2(rect.left() + 10.0, y), egui::Align2::LEFT_CENTER, format!("{weekday}  {}", util::date(local)), font(14.0), TEXT);
+    p.text(egui::pos2(rect.left() + 10.0, y), egui::Align2::LEFT_CENTER, format!("{weekday}  {}", util::date(local)), font(14.0), TEXT());
     let hm = |t: i64| format!("{:02}:{:02}", t.rem_euclid(86_400) / 3600, t.rem_euclid(3600) / 60);
     let time = if steam { format!("~{}", hm(local)) } else { format!("{} – {}", hm(local), hm(local + mins * 60)) };
-    p.text(egui::pos2(rect.left() + 190.0, y), egui::Align2::LEFT_CENTER, time, font(13.0), TEXT_DIM);
+    p.text(egui::pos2(rect.left() + 190.0, y), egui::Align2::LEFT_CENTER, time, font(13.0), TEXT_DIM());
     let src = if steam { "Steam" } else { "Gamut" };
-    p.text(egui::pos2(rect.left() + 340.0, y), egui::Align2::LEFT_CENTER, src, font(12.5), TEXT_DIM);
+    p.text(egui::pos2(rect.left() + 340.0, y), egui::Align2::LEFT_CENTER, src, font(12.5), TEXT_DIM());
     let dur = if mins > 0 { util::playtime(mins) } else { "<1m".into() };
-    p.text(egui::pos2(rect.right() - 10.0, y), egui::Align2::RIGHT_CENTER, dur, font(14.0), TEXT);
+    p.text(egui::pos2(rect.right() - 10.0, y), egui::Align2::RIGHT_CENTER, dur, font(14.0), TEXT());
     if steam {
         resp.on_hover_text("Picked up from Steam's playtime total after the game closed; the start time is approximate.");
     }
@@ -95,8 +95,8 @@ fn row(ui: &mut Ui, local: i64, mins: i64, steam: bool) {
 
 fn tile(ui: &mut Ui, label: &str, value: &str) {
     egui::Frame::new()
-        .fill(CARD)
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .fill(CARD())
+        .stroke(egui::Stroke::new(1.0, theme::BORDER()))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(14, 8))
         .show(ui, |ui| {

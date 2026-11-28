@@ -221,7 +221,7 @@ impl ScanDialog {
                     ui.label(theme::hint(&format!("Skips folders with their own scanner: {}.", names.join(", "))));
                 }
                 if let Some(e) = &self.error {
-                    ui.colored_label(theme::DANGER, e);
+                    ui.colored_label(theme::DANGER(), e);
                 }
             });
         });
@@ -232,7 +232,7 @@ impl ScanDialog {
             s.nested = scanner::nested_dirs(&s.dir, &self.scanners);
             let can_tag = !s.dir.trim().is_empty() && (!s.tags.trim().is_empty() || s.tag_rules.contains('='));
             let label = if busy { "Scanning…" } else { "Scan" };
-            let scan = egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT);
+            let scan = egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT());
             if ui.add_enabled(!busy && !s.dir.trim().is_empty(), scan).clicked() {
                 self.error = None;
                 self.commit_tag_input();
@@ -282,7 +282,7 @@ fn review(ui: &mut Ui, r: &mut Review) -> Option<bool> {
     let existing = r.rows.iter().filter(|w| w.c.existing).count();
     let ignored = r.rows.iter().filter(|w| w.c.ignored && !w.c.existing).count();
     let new = r.rows.len() - existing - ignored;
-    ui.label(RichText::new(format!("{new} new in {}", r.scanner.dir)).color(TEXT_DIM));
+    ui.label(RichText::new(format!("{new} new in {}", r.scanner.dir)).color(TEXT_DIM()));
     ui.horizontal(|ui| {
         if ui.button("Select all").clicked() {
             r.rows.iter_mut().filter(|w| !w.c.existing).for_each(|w| w.on = true);
@@ -328,7 +328,7 @@ fn review(ui: &mut Ui, r: &mut Review) -> Option<bool> {
                                 }
                             });
                     } else {
-                        ui.label(RichText::new(rel(&w.c.exes[w.exe])).color(TEXT_DIM));
+                        ui.label(RichText::new(rel(&w.c.exes[w.exe])).color(TEXT_DIM()));
                     }
                     if !w.c.tags.is_empty() {
                         ui.label(theme::hint(&w.c.tags));
@@ -341,7 +341,7 @@ fn review(ui: &mut Ui, r: &mut Review) -> Option<bool> {
     ui.separator();
     ui.horizontal(|ui| {
         let n = r.rows.iter().filter(|w| w.on && !w.c.existing && !w.name.trim().is_empty()).count();
-        let add = egui::Button::new(RichText::new(format!("Add {n} games")).color(Color32::WHITE)).fill(ACCENT);
+        let add = egui::Button::new(RichText::new(format!("Add {n} games")).color(Color32::WHITE)).fill(ACCENT());
         if ui.add_enabled(n > 0, add).clicked() {
             res = Some(true);
         }

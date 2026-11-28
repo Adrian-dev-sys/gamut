@@ -108,11 +108,11 @@ impl GamutApp {
             let r = Rect::from_min_size(pos2(x, head.top()), vec2(w, HEAD_H));
             let on = c.sort() == Some(self.sort);
             let label = if on { format!("{}  ↓", c.label()) } else { c.label().into() };
-            let mut color = if on { TEXT } else { TEXT_DIM };
+            let mut color = if on { TEXT() } else { TEXT_DIM() };
             if let Some(s) = c.sort() {
                 let resp = ui.interact(r, ui.scope_id().with(("head", c.label())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
                 if resp.hovered() {
-                    color = TEXT;
+                    color = TEXT();
                 }
                 if resp.clicked() {
                     self.sort = s;
@@ -120,11 +120,11 @@ impl GamutApp {
             }
             ui.painter().text(pos2(x + 8.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), color);
         }
-        ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, CARD_HI));
+        ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, CARD_HI()));
 
         if self.view.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("No games here. Try Refresh, or + Add game.").color(TEXT_DIM));
+                ui.label(RichText::new("No games here. Try Refresh, or + Add game.").color(TEXT_DIM()));
             });
             return;
         }
@@ -156,11 +156,11 @@ impl GamutApp {
                 let p = ui.painter();
                 let r = CornerRadius::same(6);
                 if in_multi {
-                    p.rect_filled(row, r, ACCENT.gamma_multiply(0.18));
+                    p.rect_filled(row, r, ACCENT().gamma_multiply(0.18));
                 } else if hovered || is_cursor {
-                    p.rect_filled(row, r, CARD_HI);
+                    p.rect_filled(row, r, CARD_HI());
                 } else if i % 2 == 1 {
-                    p.rect_filled(row, r, CARD.gamma_multiply(0.45));
+                    p.rect_filled(row, r, CARD().gamma_multiply(0.45));
                 }
                 if is_cursor {
                     p.rect_stroke(row.shrink(1.0), r, Stroke::new(2.0, Color32::WHITE.gamma_multiply(0.8)), StrokeKind::Inside);
@@ -172,7 +172,7 @@ impl GamutApp {
                         egui::Image::from_texture(t).uv(Rect::from_min_max(pos2(0.0, 1.0 / 6.0), pos2(1.0, 5.0 / 6.0))).corner_radius(CornerRadius::same(4)).paint_at(ui, art);
                     }
                     None => {
-                        p.rect_filled(art, CornerRadius::same(4), CARD);
+                        p.rect_filled(art, CornerRadius::same(4), CARD());
                     }
                 }
                 if in_multi {
@@ -187,11 +187,11 @@ impl GamutApp {
                             left += 18.0;
                         }
                         if running.contains(&g.id) {
-                            badge(p, pos2(left, row.center().y - 9.0), "RUNNING", GOOD);
+                            badge(p, pos2(left, row.center().y - 9.0), "RUNNING", GOOD());
                             left += 70.0;
                         }
                     }
-                    let (size, color) = if c == Col::Name { (14.0, if in_multi || is_cursor { Color32::WHITE } else { TEXT }) } else { (12.5, TEXT_DIM) };
+                    let (size, color) = if c == Col::Name { (14.0, if in_multi || is_cursor { Color32::WHITE } else { TEXT() }) } else { (12.5, TEXT_DIM()) };
                     let mut job = egui::text::LayoutJob::simple_singleline(c.text(g), FontId::proportional(size), color);
                     job.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(10.0));
                     let galley = p.layout_job(job);
@@ -199,10 +199,10 @@ impl GamutApp {
                     p.galley(pos2(left, y - galley.size().y / 2.0), galley, color);
                     if compact {
                         let sub = [Col::LastPlayed, Col::Playtime].map(|c| c.text(g)).into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join("  ·  ");
-                        let mut job = egui::text::LayoutJob::simple_singleline(sub, FontId::proportional(11.5), TEXT_DIM);
+                        let mut job = egui::text::LayoutJob::simple_singleline(sub, FontId::proportional(11.5), TEXT_DIM());
                         job.wrap = egui::text::TextWrapping::truncate_at_width((right - x - 8.0).max(10.0));
                         let galley = p.layout_job(job);
-                        p.galley(pos2(x + 8.0, row.center().y + 10.0 - galley.size().y / 2.0), galley, TEXT_DIM);
+                        p.galley(pos2(x + 8.0, row.center().y + 10.0 - galley.size().y / 2.0), galley, TEXT_DIM());
                     }
                 }
                 if hovered {
