@@ -1434,7 +1434,9 @@ impl GamutApp {
             // The list's side panel is narrow: smaller cover and margins.
             let narrow = w < 760.0;
             let pad = if narrow { 18.0 } else { 28.0 };
-            let banner_h = (w * 0.30).clamp(200.0, 380.0);
+            // Wider than the popup (list mode's details): banner and cover grow with the window.
+            let wide = w > 1400.0;
+            let banner_h = if wide { (w * 0.28).min(ui.available_height() * 0.5).max(380.0) } else { (w * 0.30).clamp(200.0, 380.0) };
             let banner = Rect::from_min_size(ui.cursor().min, vec2(w, banner_h));
             ui.allocate_rect(banner, Sense::hover());
             let top_r = CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 };
@@ -1456,7 +1458,7 @@ impl GamutApp {
             close_button(ui, banner.right_top() + vec2(-24.0, 24.0), &mut self.selected);
 
             // Cover overlaps the banner's bottom edge.
-            let cover_w = if narrow { 120.0 } else { 190.0 };
+            let cover_w = if narrow { 120.0 } else if wide { (banner_h * 0.55).clamp(190.0, 320.0) } else { 190.0 };
             let cover = Rect::from_min_size(
                 pos2(banner.left() + pad, banner.bottom() - cover_w * 1.5 * 0.55),
                 vec2(cover_w, cover_w * 1.5),
