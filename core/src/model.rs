@@ -262,4 +262,6 @@ pub struct Collection {
     pub name: String,
     pub rule: Option<Rule>,
     pub games: std::collections::HashSet<i64>,
+    /// Steam collection id when it's synced from Steam (Steam games in it follow Steam).
+    pub steam: Option<String>,
 }

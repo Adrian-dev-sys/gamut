@@ -52,21 +52,29 @@ pub(super) fn active(colls: &[Collection], id: Option<i64>) -> Option<&Collectio
 }
 
 /// Add-to-collection submenu: checkboxes for one game, plain items for a selection (`game` None).
-pub(super) fn collect_menu(ui: &mut Ui, colls: &[Collection], game: Option<i64>, actions: &mut Vec<Action>) {
+pub(super) fn collect_menu(ui: &mut Ui, colls: &[Collection], game: Option<&Game>, actions: &mut Vec<Action>) {
     ui.menu_button("Add to collection", |ui| {
         let manual: Vec<&Collection> = colls.iter().filter(|c| c.rule.is_none()).collect();
         for c in &manual {
             match game {
-                Some(id) => {
-                    let mut on = c.games.contains(&id);
-                    if ui.checkbox(&mut on, &c.name).clicked() {
-                        actions.push(Action::Collect(c.id, Some(id), on));
+                Some(g) => {
+                    let mut on = c.games.contains(&g.id);
+                    // Steam decides which Steam games are in collections synced from it.
+                    let synced = c.steam.is_some() && g.source == Source::Steam;
+                    let r = ui.add_enabled(!synced, egui::Checkbox::new(&mut on, &c.name));
+                    if r.clicked() {
+                        actions.push(Action::Collect(c.id, Some(g.id), on));
                     }
+                    r.on_disabled_hover_text("Synced from Steam: change it in Steam");
                 }
                 None => {
-                    if ui.button(&c.name).clicked() {
+                    let r = ui.button(&c.name);
+                    if r.clicked() {
                         actions.push(Action::Collect(c.id, None, true));
                         ui.close();
+                    }
+                    if c.steam.is_some() {
+                        r.on_hover_text("Synced from Steam: Steam games go back to Steam's list on the next scan");
                     }
                 }
             }
@@ -75,7 +83,7 @@ pub(super) fn collect_menu(ui: &mut Ui, colls: &[Collection], game: Option<i64>,
             ui.separator();
         }
         if ui.button("New collection…").clicked() {
-            actions.push(Action::NewCollection(game));
+            actions.push(Action::NewCollection(game.map(|g| g.id)));
             ui.close();
         }
     });
@@ -110,7 +118,7 @@ impl GamutApp {
     /// Rereads collections (Favorites first, then by name) and drops cached tile numbers.
     pub(super) fn load_collections(&mut self) {
         let fav = Rule { filter: "favorites".into(), ..Default::default() };
-        let mut v = vec![Collection { id: FAVORITES, name: "Favorites".into(), rule: Some(fav), games: Default::default() }];
+        let mut v = vec![Collection { id: FAVORITES, name: "Favorites".into(), rule: Some(fav), games: Default::default(), steam: None }];
         match self.lib.collections() {
             Ok(mut c) => {
                 c.sort_by_cached_key(|c| util::nat_key(&c.name.to_lowercase()));
@@ -298,6 +306,7 @@ impl GamutApp {
                     let texs: Vec<TextureHandle> = covers.iter().filter_map(|&id| self.thumbs.get(id, true).cloned()).collect();
                     let tint = covers.first().and_then(|&id| self.thumbs.color(id));
                     let resp = tile(ui, rect, coll, count, &texs, tint, is_cursor);
+                    let resp = if coll.steam.is_some() { resp.on_hover_text("Synced from Steam") } else { resp };
                     if resp.clicked() {
                         open = Some(coll.id);
                     }
@@ -331,7 +340,7 @@ impl GamutApp {
         let Some(mut d) = self.coll_dialog.take() else { return };
         let (mut close, mut open) = (false, true);
         let title = if d.id.is_some() { "Edit collection" } else { "New collection" };
-        let probe = Collection { id: 0, name: String::new(), rule: Some(d.rule.clone()), games: Default::default() };
+        let probe = Collection { id: 0, name: String::new(), rule: Some(d.rule.clone()), games: Default::default(), steam: None };
         let matching = self.games.iter().filter(|g| !g.hidden && contains(&probe, g)).count();
         theme::dialog(ctx, "collection", false, |ui| {
             ui.set_width(600.0);
@@ -453,11 +462,15 @@ impl GamutApp {
     pub(super) fn coll_delete_window(&mut self, ctx: &egui::Context) {
         let Some(id) = self.confirm_coll_delete else { return };
         let name = self.collections.iter().find(|c| c.id == id).map(|c| c.name.clone()).unwrap_or_default();
+        let synced = self.collections.iter().any(|c| c.id == id && c.steam.is_some());
         let (mut close, mut open) = (false, true);
         theme::dialog(ctx, "Delete collection", false, |ui| {
             ui.set_max_width(460.0);
             dialog_header(ui, "Delete collection", &mut open);
             ui.label(format!("Delete \"{name}\"? Its games stay in the library."));
+            if synced {
+                ui.label(theme::hint("It's synced from Steam and comes back on the next scan; delete it in Steam, or turn off Steam sync in Settings."));
+            }
             ui.horizontal(|ui| {
                 if ui.button("Delete").clicked() {
                     if let Err(e) = self.lib.delete_collection(id) {
@@ -572,6 +585,7 @@ mod tests {
             name: String::new(),
             rule: Some(Rule { tags: tags.iter().map(|t| t.to_string()).collect(), all_tags: all, ..Default::default() }),
             games: Default::default(),
+            steam: None,
         };
         assert!(contains(&rule(false, &["3D", "2D"]), &g));
         assert!(!contains(&rule(true, &["3D", "2D"]), &g));

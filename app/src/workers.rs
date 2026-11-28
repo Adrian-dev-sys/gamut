@@ -378,12 +378,38 @@ impl Scanner {
         std::thread::spawn(move || {
             let c = cfg.read().unwrap().clone();
             let r = steam::scan(&c).and_then(|(entries, warn)| {
-                Library::open(&paths.db)?.sync_steam(&entries)?;
-                Ok(warn)
+                let mut lib = Library::open(&paths.db)?;
+                let before = lib.steam_games()?.len();
+                lib.sync_steam(&entries)?;
+                let total = lib.steam_games()?.len();
+                // Steam is the master list for its games' collections.
+                let mut colls = None;
+                if let Some(root) = steam::steam_path().filter(|_| !c.no_steam_collections) {
+                    match gamut_core::steam_collections::sync(&mut lib, &root, &steam::steam_id(&c)) {
+                        Ok(s) => colls = Some(s),
+                        Err(e) => log::warn!("Steam collections: {e:#}"),
+                    }
+                }
+                Ok((warn, total, total.saturating_sub(before), colls))
             });
             match r {
-                Ok(warn) => {
+                Ok((warn, total, new, colls)) => {
                     let _ = tx.send(Event::LibraryChanged);
+                    let changed = colls.as_ref().map_or(0, |s| s.changed);
+                    // Automatic scans only speak up when something changed.
+                    if !quiet || new > 0 || changed > 0 {
+                        let mut m = format!("Steam scan done: {total} games");
+                        if new > 0 {
+                            m += &format!(", {new} new");
+                        }
+                        if let Some(s) = colls {
+                            m += &format!(". {} collections synced from Steam", s.synced);
+                            if s.changed > 0 {
+                                m += &format!(" ({} updated)", s.changed);
+                            }
+                        }
+                        let _ = tx.send(Event::Info(format!("{m}.")));
+                    }
                     match warn {
                         Some(w) if quiet => log::warn!("Steam library import: {w}"),
                         Some(w) => {

@@ -454,8 +454,7 @@ impl GamutApp {
         }
         (self.platforms, self.tags) = facets(&self.games);
         self.completions = completion_facets(&self.games);
-        self.view_key = None;
-        self.coll_stats = None;
+        self.load_collections();
         if let Some(h) = self.health.as_mut() {
             h.stale = true;
         }
@@ -1956,6 +1955,11 @@ impl GamutApp {
                         });
                         ui.hyperlink_to("Get a Steam Web API key", "https://steamcommunity.com/dev/apikey");
                         ui.label(theme::hint("Your profile's game details must be public, or the key must belong to this account."));
+                        let mut sync = !s.no_steam_collections;
+                        if ui.checkbox(&mut sync, "Sync collections from Steam").changed() {
+                            s.no_steam_collections = !sync;
+                        }
+                        ui.label(theme::hint("Steam's Favorites (as \"To play\") and your own Steam collections, updated on every scan. Steam decides which Steam games are in them; games from elsewhere you add in Gamut stay."));
                         ui.add_space(12.0);
                         ui.separator();
                         theme::section(ui, "SteamGridDB");
@@ -2725,7 +2729,7 @@ fn context_menu(ui: &mut Ui, g: &Game, colls: &[Collection], actions: &mut Vec<A
     item(ui, actions, "Edit…", Action::Edit(id));
     item(ui, actions, if g.favorite { "Unfavorite" } else { "Favorite" }, Action::ToggleFav(id));
     item(ui, actions, if g.hidden { "Unhide" } else { "Hide" }, Action::ToggleHidden(id));
-    collections::collect_menu(ui, colls, Some(id), actions);
+    collections::collect_menu(ui, colls, Some(g), actions);
     item(ui, actions, "Change cover…", Action::PickArt(id, ArtKind::Cover));
     item(ui, actions, "Change banner…", Action::PickArt(id, ArtKind::Banner));
     item(ui, actions, "Refresh metadata", Action::Refresh(id));

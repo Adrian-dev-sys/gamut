@@ -119,6 +119,11 @@ impl Library {
                 collection_id INTEGER NOT NULL, game_id INTEGER NOT NULL, PRIMARY KEY (collection_id, game_id)
              );",
         )?;
+        let has_steam = conn.query_row("SELECT count(*) FROM pragma_table_info('collections') WHERE name = 'steam'", [], |r| r.get::<_, i64>(0))?;
+        if has_steam == 0 {
+            // Another handle may have added it meanwhile.
+            let _ = conn.execute("ALTER TABLE collections ADD COLUMN steam TEXT", []);
+        }
         let mut lib = Library { conn };
         lib.migrate()?;
         Ok(lib)
@@ -240,11 +245,12 @@ impl Library {
             // Collections only point at game ids, so they carry over as they are.
             let _ = new.conn.execute_batch(&format!(
                 "ATTACH DATABASE '{}' AS old;
-                 INSERT OR IGNORE INTO collections SELECT id, name, rule FROM old.collections;
-                 INSERT OR IGNORE INTO collection_games SELECT collection_id, game_id FROM old.collection_games;
-                 DETACH DATABASE old;",
+                 INSERT OR IGNORE INTO collections (id, name, rule) SELECT id, name, rule FROM old.collections;
+                 INSERT OR IGNORE INTO collection_games SELECT collection_id, game_id FROM old.collection_games;",
                 path.display().to_string().replace('\'', "''")
             ));
+            let _ = new.conn.execute_batch("UPDATE collections SET steam = (SELECT o.steam FROM old.collections o WHERE o.id = collections.id)");
+            let _ = new.conn.execute_batch("DETACH DATABASE old");
         }
         let backup = format!(".damaged-{}", crate::now());
         for sfx in ["", "-wal", "-shm"] {
@@ -541,11 +547,12 @@ impl Library {
 
     /// Every collection with its hand-added games.
     pub fn collections(&self) -> Result<Vec<Collection>> {
-        let mut st = self.conn.prepare("SELECT id, name, rule FROM collections")?;
+        let mut st = self.conn.prepare("SELECT id, name, rule, steam FROM collections")?;
         let mut out: Vec<Collection> = st
             .query_map([], |r| {
                 let rule: Option<String> = r.get(2)?;
-                Ok(Collection { id: r.get(0)?, name: r.get(1)?, rule: rule.map(|j| serde_json::from_str(&j).unwrap_or_default()), games: Default::default() })
+                let rule = rule.map(|j| serde_json::from_str(&j).unwrap_or_default());
+                Ok(Collection { id: r.get(0)?, name: r.get(1)?, rule, games: Default::default(), steam: r.get(3)? })
             })?
             .collect::<rusqlite::Result<_>>()?;
         let mut st = self.conn.prepare("SELECT collection_id, game_id FROM collection_games")?;
@@ -576,6 +583,39 @@ impl Library {
         tx.execute("DELETE FROM collections WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn set_collection_steam(&self, id: i64, steam: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE collections SET steam = ?2 WHERE id = ?1", params![id, steam])?;
+        Ok(())
+    }
+
+    /// (game id, appid, installed) of every Steam game.
+    pub fn steam_games(&self) -> Result<Vec<(i64, u32, bool)>> {
+        let mut st = self.conn.prepare("SELECT id, source_id, installed FROM games WHERE source = 'steam'")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?;
+        Ok(rows.filter_map(|r| r.ok()).filter_map(|(id, app, inst)| Some((id, app.parse().ok()?, inst))).collect())
+    }
+
+    /// Sets which Steam games are in a collection; other games in it stay. Returns whether it changed.
+    pub fn replace_steam_members(&mut self, id: i64, games: &[i64]) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        let old: std::collections::HashSet<i64> = tx
+            .prepare("SELECT game_id FROM collection_games WHERE collection_id = ?1 AND game_id IN (SELECT id FROM games WHERE source = 'steam')")?
+            .query_map([id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if old == games.iter().copied().collect() {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM collection_games WHERE collection_id = ?1 AND game_id IN (SELECT id FROM games WHERE source = 'steam')",
+            [id],
+        )?;
+        for g in games {
+            tx.execute("INSERT OR IGNORE INTO collection_games (collection_id, game_id) VALUES (?1, ?2)", [id, *g])?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Adds games to (or removes them from) a hand-filled collection.

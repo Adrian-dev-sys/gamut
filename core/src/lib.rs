@@ -24,6 +24,7 @@ pub mod screenshots;
 pub mod scripts;
 pub mod specialk;
 pub mod steam;
+pub mod steam_collections;
 pub mod status;
 pub mod sync;
 pub mod vdf;

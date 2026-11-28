@@ -25,3 +25,15 @@ Steam-style groups of games, shown as tiles on the **Collections** tab (between 
 - Details show chips for the game's collections (not Favorites) over the banner; clicking one opens it.
 - Tile text uses Segoe UI Bold from Windows (`theme::bold`), falling back to the regular font.
 - Code: `app/src/ui/collections.rs`; shared filter predicate `matches()` in `ui.rs`.
+
+## Steam sync
+- `core/src/steam_collections.rs` reads `Steam\userdata\<account>\config\cloudstorage\cloud-storage-namespace-1.json`
+  (`user-collections.*` entries: `added`/`removed` appids, optional `filterSpec`) after every Steam scan.
+- Synced: `favorite` (as "To play") and user collections (`uc-*`); not `hidden` or tool-made ones (`srm-*`). Empty static ones are skipped.
+- Dynamic Steam filters understood: play state "installed" (group 1, option 1) and feature "VR supported" (group 2, option 3).
+  VR comes from `appcache\appinfo.vdf` (binary KeyValues v28/v29): `common.openvrsupport` / `onlyvrsupport` / `othervrsupport`.
+  Steam's own VR filter is slightly narrower (it showed 15 where these flags give 18). Other filters: only hand-added games sync.
+- Linked by `collections.steam` (Steam's collection id). Steam decides the Steam games in a synced collection; non-Steam games added in Gamut stay.
+  The name is set once, so renaming in Gamut sticks. Deleted in Steam → deleted here (or unlinked if it holds non-Steam games).
+- Toggle: Settings → Library → "Sync collections from Steam" (`no_steam_collections`).
+- Scans end with a toast (games, new ones, collections synced/updated); automatic hourly scans only when something changed.

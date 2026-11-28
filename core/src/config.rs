@@ -41,6 +41,8 @@ pub struct Config {
     pub no_screenshot_key: bool,
     /// No shutter sound when a screenshot is taken.
     pub no_screenshot_sound: bool,
+    /// Don't mirror Steam's library collections (Favorites as "To play", the user's own).
+    pub no_steam_collections: bool,
     /// Last window placement (kept last: TOML tables follow plain keys).
     pub window: Option<WindowState>,
     pub specialk: crate::specialk::Settings,
