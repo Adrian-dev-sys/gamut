@@ -18,6 +18,8 @@ pub struct Config {
     pub igdb_client_secret: String,
     /// Grid card width in logical pixels.
     pub card_width: f32,
+    /// The library shows as a list instead of the cover grid.
+    pub list_view: bool,
     /// Last grid sort (see `SORTS` in app/src/ui.rs).
     pub sort: String,
     /// Last grid filter ("all", "installed", "favorites", "steam", "custom", "hidden").
@@ -80,6 +82,7 @@ impl Config {
     pub fn save_ui_prefs(&self, path: &Path) -> anyhow::Result<()> {
         let mut on_disk = Config::load(path);
         on_disk.card_width = self.card_width;
+        on_disk.list_view = self.list_view;
         on_disk.sort = self.sort.clone();
         on_disk.filter = self.filter.clone();
         on_disk.platform = self.platform.clone();

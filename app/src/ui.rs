@@ -16,6 +16,8 @@ use std::sync::atomic::Ordering;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
+mod list;
+
 #[derive(Clone, Copy, PartialEq)]
 enum Filter {
     All,
@@ -952,13 +954,21 @@ impl GamutApp {
             })
             .response
             .on_hover_cursor(egui::CursorIcon::PointingHand);
-        let mut w = self.cfg.read().unwrap().card_width;
-        if ui
-            .add(egui::Slider::new(&mut w, 110.0..=280.0).show_value(false))
-            .on_hover_text("Cover size")
-            .changed()
+        let (mut w, list) = { let c = self.cfg.read().unwrap(); (c.card_width, c.list_view) };
+        if !list
+            && ui
+                .add(egui::Slider::new(&mut w, 110.0..=280.0).show_value(false))
+                .on_hover_text("Cover size")
+                .changed()
         {
             self.cfg.write().unwrap().card_width = w;
+        }
+        for (on, label, tip) in [(false, "Grid", "Cover grid"), (true, "List", "One row per game, sortable columns")] {
+            let b = ui.add(egui::Button::new(label).selected(list == on)).on_hover_text(tip);
+            if b.clicked() && list != on {
+                self.cfg.write().unwrap().list_view = on;
+                self.scroll_to = Some(0.0);
+            }
         }
     }
 
@@ -1312,6 +1322,11 @@ impl GamutApp {
             }
         });
         self.grid_scroll = (out.state.clamped_offset().y, out.inner_rect.height());
+        self.apply_clicks(ui, clicks);
+    }
+
+    /// Clicks on a grid card or list row: Ctrl toggles, Shift adds a range, a plain click opens the game.
+    fn apply_clicks(&mut self, ui: &Ui, clicks: Vec<(i64, egui::Modifiers, bool)>) {
         for (id, m, _) in clicks {
             self.kb_focus = false;
             self.cursor = Some(id);
@@ -3175,7 +3190,11 @@ impl eframe::App for GamutApp {
                         None => None,
                     },
                     _ => {
-                        self.grid(ui, &mut actions);
+                        if self.cfg.read().unwrap().list_view && self.big.is_none() {
+                            self.list(ui, &mut actions);
+                        } else {
+                            self.grid(ui, &mut actions);
+                        }
                         None
                     }
                 };

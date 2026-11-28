@@ -53,3 +53,8 @@ Kept cheap: they only repaint while running.
 
 ## Random game
 - "Random game" (top bar and big screen bar, Ctrl+R) opens a random game from the current view, so filters, search and tags narrow it; never the game already open. The grid cursor moves to it.
+
+## List mode
+- Grid / List buttons next to the cover-size slider (`Config::list_view`, saved with the other UI prefs). Big screen always uses the grid.
+- `app/src/ui/list.rs`: one 44 px row per game (small cover crop, favorite star, RUNNING badge) with columns Name, Platform, Status, Time played, Last played, Added, Score. Clicking a header picks that sort (same `Sort` as the dropdown); Platform isn't sortable. Narrow windows drop Added, Score, Status, Last played, Platform in that order.
+- It's a one-column grid to `nav`: cursor, keys, controller, multi-select, context/bulk menus and clicks (`apply_clicks`) are shared with the grid.
