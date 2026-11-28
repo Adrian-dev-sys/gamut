@@ -1862,6 +1862,9 @@ impl GamutApp {
                                 None => ui.label(RichText::new("No description.").color(TEXT_DIM)),
                             };
                         });
+                        if crate::shots_view::strip(ui, &mut self.shots, &g) {
+                            self.detail_tab = 3;
+                        }
                     }
                     if let (Some(a), Some(src), true) = (self.ach.as_mut().filter(|a| a.id == id), ach_src, show_ach) {
                         let busy = self.workers.ach_busy.lock().unwrap().contains(&id);

@@ -160,6 +160,40 @@ fn day(taken: i64) -> i64 {
     (taken + gamut_core::utc_offset()).div_euclid(86_400)
 }
 
+/// The About tab's row of the newest screenshots (the viewer browses all of them).
+/// Returns true when "All screenshots" is clicked.
+pub fn strip(ui: &mut Ui, v: &mut ShotsView, game: &Game) -> bool {
+    let list: Vec<usize> = (0..v.all.len()).filter(|&i| v.all[i].game_id == game.id).collect();
+    if list.is_empty() {
+        return false;
+    }
+    let mut all = false;
+    ui.add_space(18.0);
+    ui.horizontal(|ui| {
+        ui.label(theme::caption("Screenshots"));
+        if ui.button(RichText::new(format!("All {}", list.len())).size(12.5)).clicked() {
+            all = true;
+        }
+    });
+    ui.add_space(6.0);
+    // Bigger tiles than the Screenshots tab: one or two rows.
+    let width = ui.available_width();
+    let cols = ((width + 8.0) / (320.0 + 8.0)).floor().clamp(1.0, 4.0) as usize;
+    let w = (width - 8.0 * (cols - 1) as f32) / cols as f32;
+    let size = vec2(w, (w * 9.0 / 16.0).round());
+    let shown = list.len().min(cols * 2);
+    for row in (0..shown).collect::<Vec<_>>().chunks(cols) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for &p in row {
+                v.thumb(ui, size, &list, p);
+            }
+        });
+        ui.add_space(8.0);
+    }
+    all
+}
+
 /// A game's screenshots, newest first, grouped by day.
 pub fn game_tab(ui: &mut Ui, v: &mut ShotsView, game: &Game) {
     let list: Vec<usize> = (0..v.all.len()).filter(|&i| v.all[i].game_id == game.id).collect();

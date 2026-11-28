@@ -19,3 +19,5 @@
 - Viewer: full window, ←/→/Esc, Full screen (undone on close), Open, Show in folder (`explorer /select,"path"` via `raw_arg`); neighbours preload. Thumbnails are 640 px with mipmaps, decoded on 3 threads only when visible; Steam's own previews (200 px) are too small, so the full image is decoded instead; unseen textures are dropped past 300.
 - Viewer "Delete" (or Del) sends a Gamut shot and its `.thumbs` preview to the Recycle Bin; Steam shots can't be deleted here (Steam Cloud re-syncs them).
 - A short synthesized shutter click (`shots::sys::shutter`, `PlaySoundW` from memory) plays when the frame is grabbed; Settings can turn it off (`no_screenshot_sound`).
+
+- The details About tab shows the newest screenshots under the description (up to 2 rows, 320 px tiles; "All N" opens the Screenshots tab).
