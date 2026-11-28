@@ -229,3 +229,22 @@ pub struct Metadata {
     pub critic_score: Option<i64>,
     pub community_score: Option<i64>,
 }
+
+/// Filters a dynamic collection matches; empty strings mean any. `filter` uses the app's config keys.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Rule {
+    pub filter: String,
+    pub platform: String,
+    pub tag: String,
+    pub completion: String,
+}
+
+/// A user collection: games added by hand, or (with a rule) every game matching it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub rule: Option<Rule>,
+    pub games: std::collections::HashSet<i64>,
+}

@@ -27,6 +27,7 @@ Long checkout paths break MSVC linking (LNK1104): set `CARGO_TARGET_DIR` to a sh
 - `docs/achievements.md` – achievement cache, Steam + RetroAchievements fetching and title matching, refresh rules, Achievements tab.
 - `docs/statistics.md` – Statistics tab, play session logging (Gamut-timed + Steam scan deltas), Steam as playtime master.
 - `docs/grid.md` – grid sort order, list mode, keyboard cursor, multi-select, bulk actions, controller, big screen.
+- `docs/collections.md` – Collections tab: hand-filled and dynamic (filter) collections, storage, tiles.
 - `docs/scanners.md` – folder scanners: finding game folders/collections, main exe guess, name cleanup, review and import.
 - `docs/game-details.md` – sorting name, user score, notes, links, extra actions, before/after scripts, install size, icon, save folder (PCGamingWiki), HowLongToBeat, Playnite extras.
 - `docs/health.md` – Library health: missing exe/ROM/folder/drive, no launcher, same-platform duplicates, skip/ignore settings.

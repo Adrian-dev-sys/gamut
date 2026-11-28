@@ -17,8 +17,8 @@
 ## Library & UI
 - [x] Keyboard navigation in the grid (arrow keys, Home/End, PageUp/PageDown)
 - [x] Natural sort order ("#56" before "#556")
-- [ ] List view and a compact/details view alongside the grid
-- [ ] Tags/categories and user collections
+- [x] List view with a details side panel, alongside the grid
+- [x] Tags/categories and user collections (hand-filled and dynamic, Steam-style tiles)
 - [x] Multi-select + bulk edit (hide, favorite, refresh metadata)
 - [x] Choose between several covers/banners per game (SteamGridDB, IGDB, VNDB, Steam alternatives)
 - [x] Remember window size/position and last selected filter/sort

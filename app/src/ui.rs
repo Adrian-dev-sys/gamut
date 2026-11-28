@@ -16,7 +16,10 @@ use std::sync::atomic::Ordering;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
+mod collections;
 mod list;
+
+use gamut_core::model::Collection;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Filter {
@@ -78,6 +81,22 @@ const SORT_LABELS: [(Sort, &str); 9] = [
 /// Grid order for completion statuses; anything unknown sorts after these.
 const COMPLETION_ORDER: [&str; 8] = ["Playing", "Beaten", "Completed", "Played", "On Hold", "Plan to Play", "Not Played", "Abandoned"];
 
+/// The library filters (hidden games only under Hidden); empty strings mean any.
+fn matches(g: &Game, filter: Filter, platform: &str, tag: &str, completion: &str) -> bool {
+    let pass = match filter {
+        Filter::Hidden => g.hidden,
+        _ if g.hidden => false,
+        Filter::All => true,
+        Filter::Installed => g.installed,
+        Filter::Favorites => g.favorite,
+        Filter::Steam => g.source == Source::Steam,
+        Filter::Custom => g.source == Source::Custom,
+    };
+    pass && (platform.is_empty() || platforms_of(g).any(|p| p == platform))
+        && (tag.is_empty() || split_list(&g.tags).any(|t| t == tag))
+        && (completion.is_empty() || completion_of(g) == completion)
+}
+
 /// A game's completion status; games without one count as "Not Played".
 fn completion_of(g: &Game) -> &str {
     g.completion.as_deref().filter(|c| !c.is_empty()).unwrap_or("Not Played")
@@ -110,6 +129,10 @@ enum Action {
     Stop(i64),
     /// Applies to every selected game.
     Bulk(Bulk),
+    /// Puts a game (None: the selection) in a hand-filled collection, or takes it out.
+    Collect(i64, Option<i64>, bool),
+    /// Opens the new collection dialog for a game (None: the selection).
+    NewCollection(Option<i64>),
 }
 
 #[derive(Clone, Copy)]
@@ -251,6 +274,13 @@ pub struct GamutApp {
     /// The all-games Screenshots tab is showing.
     shots_tab: bool,
     shots: crate::shots_view::ShotsView,
+    /// Collections (Favorites first), the one the library is narrowed to, and the Collections tab.
+    collections: Vec<Collection>,
+    collection: Option<i64>,
+    coll_tab: bool,
+    coll_stats: Option<collections::Stats>,
+    coll_dialog: Option<collections::CollDialog>,
+    confirm_coll_delete: Option<i64>,
     /// Details page tab: 0 = About, 1 = Achievements (kept while browsing games).
     detail_tab: usize,
     sessions: Option<crate::sessions_view::GameSessions>,
@@ -276,7 +306,7 @@ impl GamutApp {
         workers.igdb_requeue();
         workers.rescan();
         let (hero_tx, hero_rx) = unbounded();
-        Ok(GamutApp {
+        let mut app = GamutApp {
             tray,
             quitting: false,
             keep_hidden: 0,
@@ -361,13 +391,21 @@ impl GamutApp {
             sessions: None,
             hltb: None,
             key_checks: Default::default(),
-        })
+            collections: Vec::new(),
+            collection: None,
+            coll_tab: false,
+            coll_stats: None,
+            coll_dialog: None,
+            confirm_coll_delete: None,
+        };
+        app.load_collections();
+        Ok(app)
     }
 
     /// Ids of games running now: ones Gamut launched and is tracking, plus whatever Steam reports.
     /// List mode shows the open game in a side panel instead of the popup.
     fn side(&self) -> bool {
-        self.cfg.read().unwrap().list_view && self.big.is_none() && self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab
+        self.cfg.read().unwrap().list_view && self.big.is_none() && self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab && !self.coll_tab
     }
 
     /// The details popup is up (not the list's side panel).
@@ -389,6 +427,14 @@ impl GamutApp {
         set
     }
 
+    /// One game, or (None) the selected games in view order.
+    fn ids_for(&self, game: Option<i64>) -> Vec<i64> {
+        match game {
+            Some(id) => vec![id],
+            None => self.view.iter().map(|&i| self.games[i].id).filter(|id| self.multi.contains(id)).collect(),
+        }
+    }
+
     fn game(&self, id: i64) -> Option<&Game> {
         self.games.iter().find(|g| g.id == id)
     }
@@ -401,6 +447,7 @@ impl GamutApp {
         (self.platforms, self.tags) = facets(&self.games);
         self.completions = completion_facets(&self.games);
         self.view_key = None;
+        self.coll_stats = None;
         if let Some(h) = self.health.as_mut() {
             h.stale = true;
         }
@@ -414,6 +461,7 @@ impl GamutApp {
                 self.games.push(g);
             }
             self.view_key = None;
+            self.coll_stats = None;
         }
         self.thumbs.invalidate(id);
         self.small_thumbs.invalidate(id);
@@ -484,28 +532,18 @@ impl GamutApp {
             self.sort,
             self.games.len(),
             self.platform.clone(),
-            format!("{}\u{1}{}", self.tag, self.completion),
+            format!("{}\u{1}{}\u{1}{:?}", self.tag, self.completion, self.collection),
         );
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
         let q = self.search.to_lowercase();
+        let coll = self.collection.and_then(|id| self.collections.iter().find(|c| c.id == id));
         let mut v: Vec<usize> = (0..self.games.len())
             .filter(|&i| {
                 let g = &self.games[i];
-                let pass = match self.filter {
-                    Filter::Hidden => g.hidden,
-                    _ if g.hidden => false,
-                    Filter::All => true,
-                    Filter::Installed => g.installed,
-                    Filter::Favorites => g.favorite,
-                    Filter::Steam => g.source == Source::Steam,
-                    Filter::Custom => g.source == Source::Custom,
-                };
-                pass
-                    && (self.platform.is_empty() || platforms_of(g).any(|p| p == self.platform))
-                    && (self.tag.is_empty() || split_list(&g.tags).any(|t| t == self.tag))
-                    && (self.completion.is_empty() || completion_of(g) == self.completion)
+                matches(g, self.filter, &self.platform, &self.tag, &self.completion)
+                    && coll.is_none_or(|c| collections::contains(c, g))
                     && (q.is_empty() || g.name.to_lowercase().contains(&q))
             })
             .collect();
@@ -632,6 +670,14 @@ impl GamutApp {
                     }
                     self.reload_all();
                 }
+                Action::Collect(cid, game, on) => {
+                    let ids = self.ids_for(game);
+                    self.collect(cid, &ids, on)?;
+                }
+                Action::NewCollection(game) => {
+                    let ids = self.ids_for(game);
+                    self.coll_dialog = Some(collections::CollDialog::new(ids, None));
+                }
                 Action::PickArt(id, kind) => {
                     if let Some(g) = self.game(id) {
                         let cfg = self.cfg.read().unwrap().clone();
@@ -652,20 +698,25 @@ impl GamutApp {
         ui.horizontal(|ui| {
             theme::logo(ui);
             ui.add_space(14.0);
-            let library = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab;
+            let library = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab && !self.coll_tab;
             let now = ui.input(|i| i.time);
             let tab = |ui: &mut Ui, on: bool, label: &str| ui.selectable_label(on, RichText::new(label).size(15.0)).clicked();
-            if tab(ui, library, "Library") {
-                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
+            if tab(ui, library && self.collection.is_none(), "Library") {
+                (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
+                self.collection = None;
+            }
+            if tab(ui, self.coll_tab || (library && self.collection.is_some()), "Collections") {
+                (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, true);
+                self.collection = None;
             }
             if tab(ui, self.ach_tab.is_some(), "Achievements") && self.ach_tab.is_none() {
-                (self.ach_tab, self.stats_tab, self.shots_tab) = (Some(crate::ach_tab::Overview::load(&self.lib, now)), None, false);
+                (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (Some(crate::ach_tab::Overview::load(&self.lib, now)), None, false, false);
             }
             if tab(ui, self.stats_tab.is_some(), "Statistics") && self.stats_tab.is_none() {
-                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, Some(crate::stats_tab::Stats::load(&self.lib, now)), false);
+                (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, Some(crate::stats_tab::Stats::load(&self.lib, now)), false, false);
             }
             if tab(ui, self.shots_tab, "Screenshots") {
-                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, true);
+                (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, true, false);
             }
             ui.add_space(14.0);
             if library {
@@ -713,7 +764,8 @@ impl GamutApp {
                 self.big = Some(ctx.zoom_factor());
                 ctx.set_zoom_factor(ctx.zoom_factor() * 1.35);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-                (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
+                self.collection = None;
+                (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
                 if self.filter == Filter::Hidden {
                     self.filter = Filter::All;
                 }
@@ -774,7 +826,7 @@ impl GamutApp {
             return;
         }
         for p in events {
-            let grid = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab;
+            let grid = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab && !self.coll_tab;
             match p {
                 Pad::BigScreen => self.toggle_big(ctx),
                 // In dialogs the D-pad/A drive egui focus (raw_input_hook); B cancels simple ones.
@@ -797,7 +849,7 @@ impl GamutApp {
                 Pad::Scroll(_) | Pad::Screenshot => {}
                 Pad::Nav(_) => {}
                 Pad::Search if !self.popup() => {
-                    (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
+                    (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
                     if self.big.is_some() {
                         self.search_pop = Some(crate::search_pop::SearchPop::new());
                     } else {
@@ -827,8 +879,10 @@ impl GamutApp {
                         self.selected = None;
                     } else if !self.multi.is_empty() {
                         self.multi.clear();
+                    } else if self.collection.take().is_some() {
+                        self.coll_tab = self.big.is_none();
                     } else if !grid {
-                        (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
+                        (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
                     }
                 }
                 Pad::Favorite => {
@@ -845,14 +899,16 @@ impl GamutApp {
                     self.scroll_to = Some(0.0);
                 }
                 Pad::PrevTab | Pad::NextTab if !self.popup() => {
-                    let i = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else if self.shots_tab { 3 } else { 0 };
-                    let d = if matches!(p, Pad::NextTab) { 1 } else { 3 };
+                    let i = if self.coll_tab || self.collection.is_some() { 1 } else if self.ach_tab.is_some() { 2 } else if self.stats_tab.is_some() { 3 } else if self.shots_tab { 4 } else { 0 };
+                    let d = if matches!(p, Pad::NextTab) { 1 } else { 4 };
                     let now = ctx.input(|i| i.time);
-                    (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
-                    match (i + d) % 4 {
-                        1 => self.ach_tab = Some(crate::ach_tab::Overview::load(&self.lib, now)),
-                        2 => self.stats_tab = Some(crate::stats_tab::Stats::load(&self.lib, now)),
-                        3 => self.shots_tab = true,
+                    (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
+                    self.collection = None;
+                    match (i + d) % 5 {
+                        1 => self.coll_tab = true,
+                        2 => self.ach_tab = Some(crate::ach_tab::Overview::load(&self.lib, now)),
+                        3 => self.stats_tab = Some(crate::stats_tab::Stats::load(&self.lib, now)),
+                        4 => self.shots_tab = true,
                         _ => {}
                     }
                 }
@@ -914,6 +970,8 @@ impl GamutApp {
             || self.scans.is_some()
             || self.health.is_some()
             || self.shots.viewer.is_some()
+            || self.coll_dialog.is_some()
+            || self.confirm_coll_delete.is_some()
     }
 
     /// Search, filters, sort and cover size for the library grid.
@@ -926,6 +984,7 @@ impl GamutApp {
         if std::mem::take(&mut self.focus_search) {
             search.request_focus();
         }
+        self.collection_chip(ui);
         egui::ComboBox::from_id_salt("filter")
             .selected_text(match self.filter {
                 Filter::All => "All games",
@@ -1092,7 +1151,7 @@ impl GamutApp {
             i = (i + 1 + r / n % (n - 1)) % n;
         }
         let id = self.games[self.view[i]].id;
-        (self.ach_tab, self.stats_tab, self.shots_tab) = (None, None, false);
+        (self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (None, None, false, false);
         (self.cursor, self.anchor) = (Some(id), Some(id));
         let cols = self.grid_cols.max(1);
         self.scroll_to = Some((i / cols as usize) as f32 * self.grid_pitch.max(1.0));
@@ -1220,6 +1279,7 @@ impl GamutApp {
         }
 
         let running = self.running();
+        let (colls, active) = (&self.collections, collections::active(&self.collections, self.collection));
         let games = &self.games;
         let view = &self.view;
         let thumbs = &mut self.thumbs;
@@ -1334,9 +1394,9 @@ impl GamutApp {
                         actions.push(Action::Play(g.id));
                     }
                     if in_multi && multi.len() > 1 {
-                        resp.context_menu(|ui| bulk_menu(ui, multi.len(), actions));
+                        resp.context_menu(|ui| bulk_menu(ui, multi.len(), colls, active, actions));
                     } else {
-                        resp.context_menu(|ui| context_menu(ui, g, actions));
+                        resp.context_menu(|ui| context_menu(ui, g, colls, actions));
                     }
                 }
             }
@@ -1371,6 +1431,7 @@ impl GamutApp {
 
     fn details(&mut self, ui: &mut Ui, id: i64, actions: &mut Vec<Action>) {
         let Some(g) = self.game(id).cloned() else { return };
+        let colls = self.collections.clone();
         let is_running = self.running().contains(&id);
         let mut pick_tag: Option<String> = None;
 
@@ -1532,7 +1593,7 @@ impl GamutApp {
                         if ui.add(egui::Button::new("Edit").min_size(vec2(0.0, 38.0))).clicked() {
                             actions.push(Action::Edit(id));
                         }
-                        ui.menu_button("More", |ui| context_menu(ui, &g, actions))
+                        ui.menu_button("More", |ui| context_menu(ui, &g, &colls, actions))
                             .response
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
                     });
@@ -2259,7 +2320,8 @@ impl GamutApp {
             match self.import_scanned(&s, &picked) {
                 Ok(n) => {
                     // Show them: newest first, nothing filtered out.
-                    (self.sort, self.filter, self.ach_tab, self.stats_tab, self.shots_tab) = (Sort::Added, Filter::All, None, None, false);
+                    (self.sort, self.filter, self.ach_tab, self.stats_tab, self.shots_tab, self.coll_tab) = (Sort::Added, Filter::All, None, None, false, false);
+                    self.collection = None;
                     (self.platform, self.tag, self.completion) = (String::new(), String::new(), String::new());
                     self.search.clear();
                     self.scroll_to = Some(0.0);
@@ -2331,9 +2393,9 @@ impl GamutApp {
             ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
                 ui.spacing_mut().button_padding = vec2(14.0, 9.0);
                 if bulk {
-                    bulk_menu(ui, self.multi.len(), actions);
+                    bulk_menu(ui, self.multi.len(), &self.collections, collections::active(&self.collections, self.collection), actions);
                 } else {
-                    context_menu(ui, &g, actions);
+                    context_menu(ui, &g, &self.collections, actions);
                 }
             });
         });
@@ -2616,32 +2678,33 @@ impl GamutApp {
     }
 }
 
-fn context_menu(ui: &mut Ui, g: &Game, actions: &mut Vec<Action>) {
+fn context_menu(ui: &mut Ui, g: &Game, colls: &[Collection], actions: &mut Vec<Action>) {
     let id = g.id;
-    let mut item = |ui: &mut Ui, label: &str, a: Action| {
+    let item = |ui: &mut Ui, actions: &mut Vec<Action>, label: &str, a: Action| {
         if ui.button(label).clicked() {
             actions.push(a);
             ui.close();
         }
     };
-    item(ui, if g.source == Source::Steam && !g.installed { "Install" } else { "Play" }, Action::Play(id));
+    item(ui, actions, if g.source == Source::Steam && !g.installed { "Install" } else { "Play" }, Action::Play(id));
     for (i, a) in g.actions().iter().enumerate() {
-        item(ui, &a.name, Action::RunAction(id, i));
+        item(ui, actions, &a.name, Action::RunAction(id, i));
     }
-    item(ui, "Edit…", Action::Edit(id));
-    item(ui, if g.favorite { "Unfavorite" } else { "Favorite" }, Action::ToggleFav(id));
-    item(ui, if g.hidden { "Unhide" } else { "Hide" }, Action::ToggleHidden(id));
-    item(ui, "Change cover…", Action::PickArt(id, ArtKind::Cover));
-    item(ui, "Change banner…", Action::PickArt(id, ArtKind::Banner));
-    item(ui, "Refresh metadata", Action::Refresh(id));
+    item(ui, actions, "Edit…", Action::Edit(id));
+    item(ui, actions, if g.favorite { "Unfavorite" } else { "Favorite" }, Action::ToggleFav(id));
+    item(ui, actions, if g.hidden { "Unhide" } else { "Hide" }, Action::ToggleHidden(id));
+    collections::collect_menu(ui, colls, Some(id), actions);
+    item(ui, actions, "Change cover…", Action::PickArt(id, ArtKind::Cover));
+    item(ui, actions, "Change banner…", Action::PickArt(id, ArtKind::Banner));
+    item(ui, actions, "Refresh metadata", Action::Refresh(id));
     ui.separator();
     if g.folder().is_some() {
-        item(ui, "Open install folder", Action::OpenFolder(id));
+        item(ui, actions, "Open install folder", Action::OpenFolder(id));
     }
-    item(ui, "Open save folder", Action::OpenSaves(id));
+    item(ui, actions, "Open save folder", Action::OpenSaves(id));
     if g.source == Source::Custom {
         ui.separator();
-        item(ui, "Remove…", Action::Remove(id));
+        item(ui, actions, "Remove…", Action::Remove(id));
     }
 }
 
@@ -2664,7 +2727,7 @@ fn big_hints(ui: &mut Ui) {
 }
 
 /// Right-click menu on a multi-selection.
-fn bulk_menu(ui: &mut Ui, n: usize, actions: &mut Vec<Action>) {
+fn bulk_menu(ui: &mut Ui, n: usize, colls: &[Collection], active: Option<&Collection>, actions: &mut Vec<Action>) {
     ui.label(RichText::new(format!("{n} selected")).color(TEXT_DIM));
     ui.separator();
     for (label, op) in [
@@ -2676,6 +2739,13 @@ fn bulk_menu(ui: &mut Ui, n: usize, actions: &mut Vec<Action>) {
     ] {
         if ui.button(label).clicked() {
             actions.push(Action::Bulk(op));
+            ui.close();
+        }
+    }
+    collections::collect_menu(ui, colls, None, actions);
+    if let Some(c) = active {
+        if ui.button(format!("Remove from {}", c.name)).clicked() {
+            actions.push(Action::Collect(c.id, None, false));
             ui.close();
         }
     }
@@ -3162,7 +3232,7 @@ impl eframe::App for GamutApp {
             }
         });
         let mut actions = Vec::new();
-        let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab;
+        let grid_shown = self.ach_tab.is_none() && self.stats_tab.is_none() && !self.shots_tab && !self.coll_tab;
         let blocked = self.popup() || self.any_dialog();
         // Before handle_pad: a B that closes a dialog mustn't also close the details under it.
         let blocked_by_dialog = self.any_dialog();
@@ -3211,7 +3281,7 @@ impl eframe::App for GamutApp {
             .frame(egui::Frame::central_panel(ui.style()).fill(theme::BG).inner_margin(egui::Margin::same(10)))
             .show(ui, |ui| {
                 // Switching tabs cross-fades the content in.
-                let tab = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else if self.shots_tab { 3 } else { 0 };
+                let tab = if self.ach_tab.is_some() { 1 } else if self.stats_tab.is_some() { 2 } else if self.shots_tab { 3 } else if self.coll_tab { 4 } else { 0 };
                 ui.multiply_opacity(theme::appear(&ctx, egui::Id::unique("tab_fade").with(tab), 0.18));
                 let clicked = match (self.ach_tab.as_mut(), self.stats_tab.as_mut()) {
                     (Some(ov), _) => {
@@ -3219,6 +3289,10 @@ impl eframe::App for GamutApp {
                         crate::ach_tab::show(ui, ov, &self.games, &mut self.small_thumbs, busy)
                     }
                     (_, Some(st)) => crate::stats_tab::show(ui, st, &self.games),
+                    _ if self.coll_tab => {
+                        self.collections_home(ui);
+                        None
+                    }
                     _ if self.shots_tab => match crate::shots_view::overview(ui, &mut self.shots, &self.games) {
                         Some(crate::shots_view::Ask::OpenGame(id)) => {
                             self.detail_tab = 3;
@@ -3343,6 +3417,8 @@ impl eframe::App for GamutApp {
         self.playnite_window(&ctx);
         self.game_menu_window(&ctx, &mut actions);
         self.scan_window(&ctx);
+        self.coll_window(&ctx);
+        self.coll_delete_window(&ctx);
         if let Some(o) = &self.osk {
             o.show(&ctx);
         }

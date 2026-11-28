@@ -139,6 +139,7 @@ impl GamutApp {
         }
         let running = self.running();
         let (games, view, thumbs, multi) = (&self.games, &self.view, &mut self.thumbs, &self.multi);
+        let (colls, active) = (&self.collections, collections::active(&self.collections, self.collection));
         let cursor = self.cursor.filter(|_| self.kb_focus);
         let mut clicks: Vec<(i64, egui::Modifiers, bool)> = Vec::new();
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -214,9 +215,9 @@ impl GamutApp {
                     actions.push(Action::Play(g.id));
                 }
                 if in_multi && multi.len() > 1 {
-                    resp.context_menu(|ui| bulk_menu(ui, multi.len(), actions));
+                    resp.context_menu(|ui| bulk_menu(ui, multi.len(), colls, active, actions));
                 } else {
-                    resp.context_menu(|ui| context_menu(ui, g, actions));
+                    resp.context_menu(|ui| context_menu(ui, g, colls, actions));
                 }
             }
         });

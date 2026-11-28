@@ -1,5 +1,5 @@
 use crate::achievements::{Achievement, Fetched, State as AchState};
-use crate::model::{state, Game, Metadata, Source};
+use crate::model::{state, Collection, Game, Metadata, Rule, Source};
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::Path;
@@ -112,6 +112,11 @@ impl Library {
              CREATE TABLE IF NOT EXISTS achievement_state (
                 game_id INTEGER PRIMARY KEY, fetched INTEGER NOT NULL DEFAULT 0, schema_at INTEGER NOT NULL DEFAULT 0,
                 total INTEGER NOT NULL DEFAULT 0, unlocked INTEGER NOT NULL DEFAULT 0, error TEXT
+             );
+             -- rule: JSON filters for a dynamic collection, NULL for one filled by hand.
+             CREATE TABLE IF NOT EXISTS collections (id INTEGER PRIMARY KEY, name TEXT NOT NULL, rule TEXT);
+             CREATE TABLE IF NOT EXISTS collection_games (
+                collection_id INTEGER NOT NULL, game_id INTEGER NOT NULL, PRIMARY KEY (collection_id, game_id)
              );",
         )?;
         let mut lib = Library { conn };
@@ -232,6 +237,14 @@ impl Library {
                 }
             }
             saved = seen.len();
+            // Collections only point at game ids, so they carry over as they are.
+            let _ = new.conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS old;
+                 INSERT OR IGNORE INTO collections SELECT id, name, rule FROM old.collections;
+                 INSERT OR IGNORE INTO collection_games SELECT collection_id, game_id FROM old.collection_games;
+                 DETACH DATABASE old;",
+                path.display().to_string().replace('\'', "''")
+            ));
         }
         let backup = format!(".damaged-{}", crate::now());
         for sfx in ["", "-wal", "-shm"] {
@@ -522,6 +535,60 @@ impl Library {
         self.conn.execute("DELETE FROM steam_seen WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM igdb_match WHERE game_id = ?1", [id])?;
         self.conn.execute("DELETE FROM hltb WHERE game_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM collection_games WHERE game_id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Every collection with its hand-added games.
+    pub fn collections(&self) -> Result<Vec<Collection>> {
+        let mut st = self.conn.prepare("SELECT id, name, rule FROM collections")?;
+        let mut out: Vec<Collection> = st
+            .query_map([], |r| {
+                let rule: Option<String> = r.get(2)?;
+                Ok(Collection { id: r.get(0)?, name: r.get(1)?, rule: rule.map(|j| serde_json::from_str(&j).unwrap_or_default()), games: Default::default() })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut st = self.conn.prepare("SELECT collection_id, game_id FROM collection_games")?;
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (c, g) = row?;
+            if let Some(c) = out.iter_mut().find(|x| x.id == c) {
+                c.games.insert(g);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn create_collection(&self, name: &str, rule: Option<&Rule>) -> Result<i64> {
+        let rule = rule.map(serde_json::to_string).transpose()?;
+        self.conn.execute("INSERT INTO collections (name, rule) VALUES (?1, ?2)", params![name, rule])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_collection(&self, id: i64, name: &str, rule: Option<&Rule>) -> Result<()> {
+        let rule = rule.map(serde_json::to_string).transpose()?;
+        self.conn.execute("UPDATE collections SET name = ?2, rule = ?3 WHERE id = ?1", params![id, name, rule])?;
+        Ok(())
+    }
+
+    pub fn delete_collection(&mut self, id: i64) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM collection_games WHERE collection_id = ?1", [id])?;
+        tx.execute("DELETE FROM collections WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Adds games to (or removes them from) a hand-filled collection.
+    pub fn set_in_collection(&mut self, id: i64, games: &[i64], on: bool) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for g in games {
+            if on {
+                tx.execute("INSERT OR IGNORE INTO collection_games (collection_id, game_id) VALUES (?1, ?2)", [id, *g])?;
+            } else {
+                tx.execute("DELETE FROM collection_games WHERE collection_id = ?1 AND game_id = ?2", [id, *g])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1029,6 +1096,40 @@ fn client_hash(id: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collections_round_trip() {
+        let dir = std::env::temp_dir().join(format!("gamut-coll-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let mut lib = Library::open(&path).unwrap();
+        let rows = vec![
+            ("A".to_string(), "a.exe".to_string(), None, String::new()),
+            ("B".to_string(), "b.exe".to_string(), None, String::new()),
+        ];
+        lib.add_scanned(&rows, "").unwrap();
+        let ids: Vec<i64> = lib.all().unwrap().iter().map(|g| g.id).collect();
+        let fav = lib.create_collection("Finished", None).unwrap();
+        let rule = Rule { tag: "VR".into(), ..Default::default() };
+        let vr = lib.create_collection("VR", Some(&rule)).unwrap();
+        lib.set_in_collection(fav, &ids, true).unwrap();
+        lib.set_in_collection(fav, &ids, true).unwrap();
+        lib.set_in_collection(fav, &ids[..1], false).unwrap();
+        lib.update_collection(fav, "Done", None).unwrap();
+        lib.delete(ids[1]).unwrap();
+        let all = lib.collections().unwrap();
+        let c = all.iter().find(|c| c.id == fav).unwrap();
+        assert_eq!((c.name.as_str(), c.games.len(), c.rule.is_none()), ("Done", 0, true));
+        assert_eq!(all.iter().find(|c| c.id == vr).unwrap().rule, Some(rule));
+        lib.delete_collection(vr).unwrap();
+        lib.set_in_collection(fav, &ids[..1], true).unwrap();
+        drop(lib);
+        // A rebuild keeps collections and their games.
+        Library::salvage(&path).unwrap();
+        let c = Library::open(&path).unwrap().collections().unwrap();
+        assert_eq!((c.len(), c[0].games.len()), (1, 1));
+    }
 
     #[test]
     fn adds_scanned_games_with_platform_and_tags() {
